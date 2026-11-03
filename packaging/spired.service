@@ -1,0 +1,20 @@
+[Unit]
+Description=SpireUEM Endpoint Management Client Daemon (spired)
+Documentation=https://github.com/spire-uem/spire-uem
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/spired --config /etc/spire/config.yaml
+Restart=always
+RestartSec=10
+Environment=DEBIAN_FRONTEND=noninteractive
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=spired
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,47 @@
+{{define "layout.html"}}
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}} - SpireUEM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased">
+    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-10">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="h-9 w-9 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
+                    S
+                </div>
+                <div>
+                    <span class="text-xl font-bold tracking-tight text-white">Spire<span class="text-indigo-400">UEM</span></span>
+                    <span class="hidden sm:inline-block ml-2 text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">Debian Fleet MDM</span>
+                </div>
+            </div>
+            <nav class="flex items-center space-x-1 sm:space-x-4">
+                <a href="/admin/devices" class="px-3 py-2 rounded-md text-sm font-medium {{if eq .ActiveNav "devices"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/60{{end}} transition">
+                    Devices
+                </a>
+                <a href="/admin/policies" class="px-3 py-2 rounded-md text-sm font-medium {{if eq .ActiveNav "policies"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/60{{end}} transition">
+                    Policies
+                </a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {{if eq .ActiveNav "devices"}}
+            {{template "devices_content" .}}
+        {{else if eq .ActiveNav "policies"}}
+            {{template "policies_content" .}}
+        {{end}}
+    </main>
+
+    <footer class="border-t border-slate-900 py-4 text-center text-xs text-slate-500">
+        SpireUEM &mdash; Pull-Based Open-Source Debian Endpoint Management
+    </footer>
+</body>
+</html>
+{{end}}

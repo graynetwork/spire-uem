@@ -1,0 +1,39 @@
+name: "spire-agent"
+arch: "amd64"
+platform: "linux"
+version: "0.1.0"
+section: "admin"
+priority: "optional"
+maintainer: "SpireUEM Engineering <engineering@spire-uem.org>"
+description: |
+  SpireUEM Unified Endpoint Management Agent Daemon (spired) for Debian desktop fleets.
+vendor: "SpireUEM"
+homepage: "https://github.com/spire-uem/spire-uem"
+license: "Apache-2.0"
+
+contents:
+  - src: ./bin/spired
+    dst: /usr/local/bin/spired
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: ./packaging/spired.service
+    dst: /lib/systemd/system/spired.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  - src: ./packaging/config.example.yaml
+    dst: /etc/spire/config.yaml.example
+    type: config
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+scripts:
+  postinstall: ./packaging/scripts/postinstall.sh
+  preremove: ./packaging/scripts/preremove.sh

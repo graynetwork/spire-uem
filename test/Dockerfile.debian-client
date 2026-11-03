@@ -1,0 +1,27 @@
+FROM debian:12-slim
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        dbus \
+        dconf-cli \
+        htop && \
+    rm -rf /var/lib/apt/lists/*
+
+# Mock /etc/machine-id for deterministic hardware UUID fallback in container
+RUN echo "debc1200-1111-2222-3333-444455556666" > /etc/machine-id && \
+    mkdir -p /etc/spire /etc/dconf/profile /etc/dconf/db/local.d/locks && \
+    chmod 0700 /etc/spire
+
+COPY packaging/config.example.yaml /etc/spire/config.yaml
+RUN sed -i 's|http://localhost:8080|http://spire-server:8080|g' /etc/spire/config.yaml
+
+COPY bin/spired /usr/local/bin/spired
+RUN chmod 0755 /usr/local/bin/spired
+
+ENV SPIRE_SERVER_URL="http://spire-server:8080"
+ENV SPIRE_TOKEN_PATH="/etc/spire/token"
+ENV SPIRE_POLL_INTERVAL="2s"
+ENV SPIRE_CHECKIN_INTERVAL="5s"
+
+ENTRYPOINT ["/usr/local/bin/spired"]

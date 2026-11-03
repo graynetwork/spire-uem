@@ -1,0 +1,263 @@
+{{define "policies_content"}}
+<div class="space-y-8">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-bold text-white">Desired-State Baseline Policies</h1>
+            <p class="text-sm text-slate-400 mt-1">Declarative package, dconf, and systemd policies with tag-based fleet targeting and instant deactivation.</p>
+        </div>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-slate-800">
+                <thead class="bg-slate-900/90">
+                    <tr>
+                        <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Name</th>
+                        <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Type</th>
+                        <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Target Tags</th>
+                        <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Declarative Payload</th>
+                        <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Version</th>
+                        <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                        <th scope="col" class="px-6 py-3.5 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="policies-table-body" class="divide-y divide-slate-800/80 bg-slate-950/40">
+                    {{if .Policies}}
+                        {{range .Policies}}
+                            {{template "policy_row" .}}
+                        {{end}}
+                    {{else}}
+                        <tr>
+                            <td colspan="7" class="px-6 py-12 text-center text-sm text-slate-500">
+                                No active baseline policies configured yet. Use the presets or standalone policy creator below.
+                            </td>
+                        </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+        <div class="mb-5">
+            <h2 class="text-lg font-semibold text-white">Enterprise Presets</h2>
+            <p class="text-xs text-slate-400 mt-0.5">One-click deployment of pre-configured enterprise security and desktop management baselines.</p>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {{range .Templates}}
+            <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-5 flex flex-col justify-between space-y-4 hover:border-indigo-500/40 transition">
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                            {{.PolicyType}}
+                        </span>
+                        <span class="text-xs font-mono text-slate-500">{{.ID}}</span>
+                    </div>
+                    <h3 class="text-sm font-semibold text-white">{{.Name}}</h3>
+                    <p class="text-xs text-slate-400 leading-relaxed">{{.Description}}</p>
+                    <div class="pt-1">
+                        <code class="block text-[11px] font-mono text-slate-300 bg-slate-900 px-2.5 py-1.5 rounded border border-slate-800 break-all">{{printf "%s" .Payload}}</code>
+                    </div>
+                </div>
+                <form action="/admin/policies/from-template" method="POST" class="pt-2 border-t border-slate-900 space-y-2">
+                    <input type="hidden" name="template_id" value="{{.ID}}">
+                    <div>
+                        <input type="text" name="target_tags" placeholder="Optional target tags (e.g. laptop, kiosk)"
+                            class="w-full font-mono rounded-lg bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <button type="submit"
+                        class="w-full inline-flex items-center justify-center px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow transition cursor-pointer">
+                        Deploy Preset
+                    </button>
+                </form>
+            </div>
+            {{end}}
+        </div>
+    </div>
+
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-xl">
+        <div class="mb-5">
+            <h2 class="text-lg font-semibold text-white">Standalone Policy Creator</h2>
+            <p class="text-xs text-slate-400 mt-0.5">Create <code class="text-indigo-400">PACKAGE_PRESENCE</code>, <code class="text-indigo-400">PACKAGE_ABSENCE</code>, or <code class="text-indigo-400">DCONF_SETTING</code> policies with optional tag-based fleet targeting.</p>
+        </div>
+
+        <form action="/admin/policies" method="POST" class="space-y-5">
+            <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">Policy Name</label>
+                    <input type="text" name="name" required placeholder="e.g. Purge htop / Lock Screen Idle"
+                        class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">Policy Type</label>
+                    <select id="policy_type_select" name="policy_type" onchange="togglePolicyFields(this.value)"
+                        class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                        <option value="PACKAGE_ABSENCE">PACKAGE_ABSENCE (Remove Package)</option>
+                        <option value="PACKAGE_PRESENCE">PACKAGE_PRESENCE (Install Package)</option>
+                        <option value="DCONF_SETTING">DCONF_SETTING (Desktop gsettings/dconf)</option>
+                        <option value="SYSTEMD_SERVICE">SYSTEMD_SERVICE (Systemd Unit)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">Target Tags (<code class="text-indigo-400">target_tags</code>)</label>
+                    <input type="text" name="target_tags" placeholder="Blank = all, or e.g. kiosk, laptop"
+                        class="w-full font-mono rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-400 mb-1">Description</label>
+                    <input type="text" name="description" placeholder="Fleet security baseline rule"
+                        class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+            </div>
+
+            <!-- Package Fields (PACKAGE_ABSENCE / PACKAGE_PRESENCE) -->
+            <div id="fields-package" class="p-4 rounded-lg bg-slate-950/70 border border-slate-800/80 grid grid-cols-1 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Debian Package Name (<code class="text-indigo-400">package_name</code>)</label>
+                    <input type="text" name="package_name" placeholder="e.g. htop"
+                        class="w-full font-mono rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+            </div>
+
+            <!-- Dconf Fields (DCONF_SETTING) -->
+            <div id="fields-dconf" class="hidden p-4 rounded-lg bg-slate-950/70 border border-slate-800/80 grid grid-cols-1 sm:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Schema Path (<code class="text-indigo-400">schema_path</code>)</label>
+                    <input type="text" name="schema_path" placeholder="org/gnome/desktop/session"
+                        class="w-full font-mono rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Key (<code class="text-indigo-400">key</code>)</label>
+                    <input type="text" name="dconf_key" placeholder="idle-delay"
+                        class="w-full font-mono rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Value (<code class="text-indigo-400">value</code>)</label>
+                    <input type="text" name="dconf_value" placeholder="uint32 300"
+                        class="w-full font-mono rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div class="flex items-end pb-2">
+                    <label class="inline-flex items-center space-x-2 text-sm text-slate-300 cursor-pointer">
+                        <input type="checkbox" name="dconf_locked" value="true" checked
+                            class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500">
+                        <span>Lock setting (<code class="text-xs text-indigo-400">locked=true</code>)</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Systemd Fields (SYSTEMD_SERVICE) -->
+            <div id="fields-systemd" class="hidden p-4 rounded-lg bg-slate-950/70 border border-slate-800/80 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Service Name (<code class="text-indigo-400">service_name</code>)</label>
+                    <input type="text" name="service_name" placeholder="ssh.service"
+                        class="w-full font-mono rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Desired State</label>
+                    <select name="service_state" class="w-full rounded-lg bg-slate-900 border border-slate-800 px-3 py-2 text-sm text-white">
+                        <option value="started">started</option>
+                        <option value="stopped">stopped</option>
+                    </select>
+                </div>
+                <div class="flex items-end pb-2">
+                    <label class="inline-flex items-center space-x-2 text-sm text-slate-300 cursor-pointer">
+                        <input type="checkbox" name="service_enabled" value="true" checked
+                            class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500">
+                        <span>Enable at boot (<code class="text-xs text-indigo-400">enabled=true</code>)</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Optional Raw JSON Payload Override -->
+            <div>
+                <label class="block text-xs font-medium text-slate-500 mb-1">Raw JSON Payload Override (Optional — leave blank to auto-build from fields above)</label>
+                <input type="text" name="payload" placeholder='Optional raw JSON override, e.g. {"package_name":"htop"}'
+                    class="w-full font-mono rounded-lg bg-slate-950 border border-slate-800/80 px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500">
+            </div>
+
+            <div class="flex justify-end">
+                <button type="submit"
+                    class="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow transition cursor-pointer">
+                    Create Baseline Policy
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function togglePolicyFields(policyType) {
+    const pkg = document.getElementById('fields-package');
+    const dconf = document.getElementById('fields-dconf');
+    const sysd = document.getElementById('fields-systemd');
+    pkg.classList.add('hidden');
+    dconf.classList.add('hidden');
+    sysd.classList.add('hidden');
+
+    if (policyType === 'PACKAGE_ABSENCE' || policyType === 'PACKAGE_PRESENCE') {
+        pkg.classList.remove('hidden');
+    } else if (policyType === 'DCONF_SETTING') {
+        dconf.classList.remove('hidden');
+    } else if (policyType === 'SYSTEMD_SERVICE') {
+        sysd.classList.remove('hidden');
+    }
+}
+</script>
+{{end}}
+
+{{define "policy_row"}}
+<tr id="policy-row-{{.ID}}" class="hover:bg-slate-900/50 transition">
+    <td class="px-6 py-4 whitespace-nowrap">
+        <div class="text-sm font-medium text-white">{{.Name}}</div>
+        {{if .Description}}
+        <div class="text-xs text-slate-400">{{.Description}}</div>
+        {{end}}
+    </td>
+    <td class="px-6 py-4 whitespace-nowrap">
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-mono font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+            {{.PolicyType}}
+        </span>
+    </td>
+    <td class="px-6 py-4 whitespace-nowrap">
+        {{if .TargetTags}}
+            <div class="flex flex-wrap gap-1">
+                {{range .TargetTags}}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-medium bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    #{{.}}
+                </span>
+                {{end}}
+            </div>
+        {{else}}
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono text-slate-400 bg-slate-800/80 border border-slate-700">
+                ALL (Global)
+            </span>
+        {{end}}
+    </td>
+    <td class="px-6 py-4 text-xs font-mono text-slate-300">
+        <code class="bg-slate-900 px-2 py-1 rounded border border-slate-800">{{printf "%s" .Payload}}</code>
+    </td>
+    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-400">
+        v{{.Version}}
+    </td>
+    <td class="px-6 py-4 whitespace-nowrap">
+        {{if .IsActive}}
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            ACTIVE
+        </span>
+        {{else}}
+        <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700">
+            INACTIVE
+        </span>
+        {{end}}
+    </td>
+    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+        <button
+            hx-post="/admin/policies/{{.ID}}/toggle"
+            hx-target="#policy-row-{{.ID}}"
+            hx-swap="outerHTML"
+            class="inline-flex items-center px-3 py-1.5 rounded-md text-xs font-semibold {{if .IsActive}}bg-amber-600/80 hover:bg-amber-600 text-white{{else}}bg-emerald-600 hover:bg-emerald-500 text-white{{end}} shadow-sm transition cursor-pointer">
+            {{if .IsActive}}Deactivate{{else}}Activate{{end}}
+        </button>
+    </td>
+</tr>
+{{end}}

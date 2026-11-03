@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: spire-test-postgres
+    environment:
+      POSTGRES_USER: spire
+      POSTGRES_PASSWORD: spirepassword
+      POSTGRES_DB: spire_uem
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spire -d spire_uem"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks:
+      - spire-test-net
+
+  spire-server:
+    image: debian:12-slim
+    container_name: spire-test-server
+    restart: on-failure
+    working_dir: /app
+    environment:
+      DATABASE_URL: "postgres://spire:spirepassword@postgres:5432/spire_uem?sslmode=disable"
+      SPIRE_LISTEN_ADDR: ":8080"
+      SPIRE_MIGRATIONS_PATH: "/app/migrations/000001_init_schema.up.sql"
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./bin/spire-server:/app/spire-server:ro
+      - ./migrations:/app/migrations:ro
+      - ./packaging:/app/packaging:ro
+      - ./dist:/app/dist:ro
+    command: ["/app/spire-server"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - spire-test-net
+
+  debian-client:
+    build:
+      context: .
+      dockerfile: test/Dockerfile.debian-client
+    container_name: spire-test-debian-client
+    hostname: debian12-sim-01
+    environment:
+      SPIRE_SERVER_URL: "http://spire-server:8080"
+      SPIRE_TOKEN_PATH: "/etc/spire/token"
+      SPIRE_POLL_INTERVAL: "2s"
+      SPIRE_CHECKIN_INTERVAL: "3s"
+    depends_on:
+      - spire-server
+    networks:
+      - spire-test-net
+
+networks:
+  spire-test-net:
+    driver: bridge
