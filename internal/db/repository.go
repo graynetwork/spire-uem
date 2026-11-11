@@ -617,8 +617,6 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 
 	// OS Distribution Breakdown
 	metrics.OSDistribution["Debian 12 bookworm"] = metrics.TotalHosts
-	metrics.OSDistribution["Ubuntu 24.04 LTS"] = 0
-	metrics.OSDistribution["Ubuntu 22.04 LTS"] = 0
 	metrics.OSDistribution["Debian 11 bullseye"] = 0
 
 	// Benchmark Telemetry

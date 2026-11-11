@@ -1,6 +1,6 @@
 # Spire Hub Desktop Client & Field Troubleshooting Guide
 
-This guide covers the operation, user features, and troubleshooting procedures for **Spire Hub** (`org.spire.hub`), the unprivileged GTK4 / Libadwaita client application running on managed corporate Debian and Ubuntu workstations.
+This guide covers the operation, user features, and troubleshooting procedures for **Spire Hub** (`org.spire.hub`), the unprivileged GTK4 / Libadwaita client application running on managed corporate Debian workstations.
 
 ---
 

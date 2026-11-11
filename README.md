@@ -3,10 +3,10 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 [![Go Report Card](https://img.shields.io/badge/go%20report-A%2B-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)]()
-[![Platform](https://img.shields.io/badge/platform-Debian%2012%20%7C%20Ubuntu%2024.04-orange.svg)]()
+[![Platform](https://img.shields.io/badge/platform-Debian%2012-orange.svg)]()
 [![Security](https://img.shields.io/badge/security-TPM%202.0%20%7C%20LUKS2%20%7C%20CIS-blueviolet.svg)]()
 
-**SpireUEM** is an enterprise-grade, zero-trust Unified Endpoint Management (UEM) control plane and client agent engineered specifically for Debian and Ubuntu workstation fleets. It bridges the critical divide between immutable cryptographic hardware integrity, declarative OS baseline enforcement, and user-centric desktop application delivery.
+**SpireUEM** is an enterprise-grade, zero-trust Unified Endpoint Management (UEM) control plane and client agent engineered specifically for Debian workstation fleets. It bridges the critical divide between immutable cryptographic hardware integrity, declarative OS baseline enforcement, and user-centric desktop application delivery.
 
 ---
 
@@ -30,7 +30,7 @@ flowchart TD
         API --> KEK
     end
 
-    subgraph ClientEndpoint["Managed Linux Endpoint (Debian 12 / Ubuntu 24.04)"]
+    subgraph ClientEndpoint["Managed Linux Endpoint (Debian 12)"]
         direction TB
         Spired["Endpoint Daemon (spired) - root"]
         IPCSocket["UNIX Domain Socket (/run/spire/agent.sock) - SO_PEERCRED"]
@@ -88,7 +88,7 @@ flowchart TD
 - **Multi-Distribution Delivery**: Orchestrates native Debian APT repositories, curated Flathub applications, and air-gapped custom `.flatpak` bundle uploads with SHA-256 verification.
 
 ### 5. Continuous CIS Benchmark Compliance
-- **Integrated OpenSCAP Engine**: Performs automated, non-disruptive CIS benchmark evaluations against Debian 12 / Ubuntu 24.04 datastreams.
+- **Integrated OpenSCAP Engine**: Performs automated, non-disruptive CIS benchmark evaluations against Debian 12 datastreams.
 - **One-Click Auto-Remediation**: HTMX-driven administrative interface to transform failed compliance rules into live `SYSCTL_SETTING` policies instantly.
 
 ### 6. Identity & Governance (RBAC & OIDC)
@@ -110,7 +110,7 @@ flowchart TD
 
 ### Prerequisites
 - **Control Plane**: Go 1.22+, Docker & Docker Compose, PostgreSQL 16+
-- **Client Systems**: Debian 12 (Bookworm) or Ubuntu 24.04 LTS (Noble) with Flatpak and OpenSCAP (`libopenscap8`, `ssg-debian12`)
+- **Client Systems**: Debian 12 (Bookworm) with Flatpak and OpenSCAP (`libopenscap8`, `ssg-debian12`)
 
 ### 1. Launch Control Plane via Docker Compose
 Clone the repository and spin up the production test stack:
@@ -134,7 +134,7 @@ curl -s -u admin:changeme -X POST http://localhost:18080/admin/settings/tokens \
 ```
 
 ### 3. Enroll a Linux Endpoint
-On the target Debian/Ubuntu endpoint, run the single-command zero-touch bootstrap:
+On the target Debian endpoint, run the single-command zero-touch bootstrap:
 ```bash
 curl -sSL http://<spire-server>:18080/install.sh | sudo bash -s -- \
   --server http://<spire-server>:18080 \

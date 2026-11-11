@@ -1,7 +1,7 @@
 # SpireUEM Technical Competitive Analysis & Enterprise Positioning
 
 **Document Classification:** Technical Product Architecture & Security Strategy  
-**Target Fleet Profile:** Enterprise Debian/Ubuntu/Linux Engineering, Research, and Regulated Workstations  
+**Target Fleet Profile:** Enterprise Debian Linux Engineering, Research, and Regulated Workstations  
 **Evaluated Platforms:** **SpireUEM**, **FleetDM**, **Microsoft Intune (for Linux)**, and **NinjaOne**
 
 ---
@@ -15,7 +15,7 @@
 Enterprise security and platform engineering teams managing Linux desktops face an acute tooling vacuum:
 
 1. **Microsoft Intune treats Linux as an afterthought:**
-   Intune's Linux footprint is fundamentally a checkbox wrapper around the Microsoft Identity Broker (`microsoft-identity-broker`) and Microsoft Edge to satisfy Entra ID Conditional Access checks. It supports a narrow matrix of Ubuntu LTS and RHEL releases, lacks a native software distribution engine or package repository, provides no native GNOME `dconf` lock management or Flatpak lifecycle orchestration, and relies on arbitrary bash scripts for basic configuration.
+   Intune's Linux footprint is fundamentally a checkbox wrapper around the Microsoft Identity Broker (`microsoft-identity-broker`) and Microsoft Edge to satisfy Entra ID Conditional Access checks. It supports a narrow matrix of enterprise Linux releases, lacks a native software distribution engine or package repository, provides no native GNOME `dconf` lock management or Flatpak lifecycle orchestration, and relies on arbitrary bash scripts for basic configuration.
 2. **FleetDM excels at `osquery` read-telemetry, not native Linux desktop enforcement:**
    FleetDM is architected around `osquery`—an SQL-powered, read-only telemetry sensor designed for cross-platform visibility. While FleetDM has bolted on script execution and basic software installers, it lacks native declarative reconciliation engines for Linux subsystems (`dconf` binary database locks, atomic `/etc/sysctl.d/` and `/etc/apt/apt.conf.d/` state engines), lacks an integrated Deb822 APT repository, lacks pure-Go TPM 2.0 EK/AK quote verification with PCR 7 enforcement, and provides no native GTK4/Libadwaita desktop self-service hub.
 3. **NinjaOne is a legacy Windows RMM repurposed for Linux servers:**
@@ -59,7 +59,7 @@ Enterprise security and platform engineering teams managing Linux desktops face 
 | Signed PCR Quote Verification (PCRs 0, 2, 4, 7) | **Yes** — Cryptographic RSA-PKCS1v15 / RSA-PSS SHA-256 signature verification over TPM2 quote structures | **No** — Read-only `osquery` PCR hashes (unauthenticated, spoofable by root) | **No** | **No** |
 | Secure Boot State Enforcement via PCR 7 | **Yes** — Server-side verification of signed PCR 7 measurements; automatic transition to `POLICY_VIOLATION` if disabled/zeroed | **Partial** — Unauthenticated `osquery` boolean check | **Partial** — Client-reported boolean via custom compliance JSON script | **No** |
 | **3. Disk Encryption & Vaulting** | | | | |
-| Automated LUKS2 Volume Discovery & Key Rotation | **Yes** — Automatic `lsblk`/`cryptsetup` LUKS2 discovery and autonomous enrollment of high-entropy recovery key into LUKS Keyslot 1 (`cryptsetup luksKillSlot` + `luksAddKey`) | **No** — Supports LUKS escrow only on Ubuntu via preliminary script/key-wrapping; no native Keyslot 1 rotation engine | **No** — No native LUKS2 recovery key escrow on Linux (BitLocker/FileVault only) | **No** — Requires custom scripting; stores output in plain RMM custom fields |
+| Automated LUKS2 Volume Discovery & Key Rotation | **Yes** — Automatic `lsblk`/`cryptsetup` LUKS2 discovery and autonomous enrollment of high-entropy recovery key into LUKS Keyslot 1 (`cryptsetup luksKillSlot` + `luksAddKey`) | **No** — Supports LUKS escrow only via preliminary script/key-wrapping; no native Keyslot 1 rotation engine | **No** — No native LUKS2 recovery key escrow on Linux (BitLocker/FileVault only) | **No** — Requires custom scripting; stores output in plain RMM custom fields |
 | Cryptographic Envelope Encryption at Rest | **Yes** — Ephemeral 32-byte AES-256-GCM DEK per volume wrapped by server's RSA-OAEP-4096 (SHA-256) KEK; explicit memory zeroization (`clear(dek)`, `clear(plaintext)`) | **Partial** — Server-side encryption, but lacks dedicated per-volume RSA-OAEP-4096 + AES-256-GCM envelope vaulting on Linux | **N/A** (No Linux LUKS escrow) | **No** |
 | Immutable Break-Glass Reveal Auditing | **Yes** — Mandatory justification ticket, immutable `luks_recovery_audit_log` + RFC 5424 SIEM syslog emission (`LUKS_KEY_REVEAL`) | **Partial** — Standard activity log | **N/A** | **Partial** — Standard technician access log |
 | **4. Security Compliance & Remediation** | | | | |

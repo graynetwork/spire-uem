@@ -1,6 +1,6 @@
 # SpireUEM Administrator Operations Guide
 
-This guide provides step-by-step instructions for IT administrators and security engineers managing Debian and Ubuntu workstation fleets using the SpireUEM control plane (`/admin`).
+This guide provides step-by-step instructions for IT administrators and security engineers managing Debian workstation fleets using the SpireUEM control plane (`/admin`).
 
 ---
 
