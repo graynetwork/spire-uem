@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Spire Hub
+GenericName=SpireUEM Endpoint Security & Software Hub
+Comment=SpireUEM Endpoint Security & Software Hub
+Exec=/usr/bin/spire-hub
+Icon=spire-hub
+Terminal=false
+Categories=System;Settings;PackageManager;
+StartupNotify=true
+StartupWMClass=org.spire.hub

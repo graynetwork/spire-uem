@@ -1,0 +1,272 @@
+{{define "application_modal"}}
+<div id="application-modal-backdrop" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg max-w-xl w-full shadow-2xl overflow-hidden">
+        <!-- Modal Header -->
+        <div class="px-5 py-3.5 border-b border-[#1a2234] flex items-center justify-between bg-[#0a0e17]">
+            <div>
+                <h3 class="text-sm font-semibold text-white">
+                    {{if .IsEdit}}Edit Application Policy{{else}}Stage Enterprise Application{{end}}
+                </h3>
+                <p class="text-[11px] text-slate-500 mt-0.5">
+                    {{if .IsEdit}}Modify assignment mode, auto-install, or target scope.{{else}}Deploy a Debian APT package, Flathub Flatpak, or .flatpak bundle.{{end}}
+                </p>
+            </div>
+            <button type="button"
+                onclick="document.getElementById('application-modal-backdrop').remove()"
+                class="p-1 rounded text-slate-400 hover:text-white hover:bg-[#141b2a] transition">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Modal Form -->
+        <form id="application-stage-form"
+              {{if .IsEdit}}
+              action="/admin/applications/{{.App.ID}}"
+              hx-post="/admin/applications/{{.App.ID}}"
+              {{else if and .App (eq .App.PolicyType "FLATPAK_BUNDLE")}}
+              action="/admin/applications/upload"
+              hx-post="/admin/applications/upload"
+              enctype="multipart/form-data"
+              hx-encoding="multipart/form-data"
+              {{else}}
+              action="/admin/applications"
+              hx-post="/admin/applications"
+              {{end}}
+              method="POST"
+              class="p-5 space-y-4">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <input type="hidden" name="auto_install_present" value="1">
+
+            <!-- Three-Tab / Radio Source Selector -->
+            <div>
+                <label class="block text-[11px] font-medium text-slate-400 mb-1.5">Package Source</label>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <!-- 1. Debian Repository (APT) -->
+                    <label class="flex items-start p-2.5 rounded-md border border-[#1a2234] bg-[#0a0e17] cursor-pointer hover:border-slate-700 transition">
+                        <input type="radio" name="type" value="PACKAGE_PRESENCE"
+                            {{if and .App (eq .App.PolicyType "PACKAGE_PRESENCE")}}checked{{end}}
+                            {{if .IsEdit}}disabled{{end}}
+                            onchange="switchAppSourceMode('PACKAGE_PRESENCE')"
+                            class="mt-0.5 text-blue-600 focus:ring-blue-500 bg-[#0f1420] border-[#1a2234]">
+                        <div class="ml-2">
+                            <div class="text-xs font-medium text-white">Debian APT</div>
+                            <div class="text-[10px] text-slate-500">Official dpkg package</div>
+                        </div>
+                    </label>
+
+                    <!-- 2. Flathub Public (Flatpak Ref) -->
+                    <label class="flex items-start p-2.5 rounded-md border border-[#1a2234] bg-[#0a0e17] cursor-pointer hover:border-slate-700 transition">
+                        <input type="radio" name="type" value="FLATPAK_APP"
+                            {{if or (not .App) (eq .App.PolicyType "FLATPAK_APP")}}checked{{end}}
+                            {{if .IsEdit}}disabled{{end}}
+                            onchange="switchAppSourceMode('FLATPAK_APP')"
+                            class="mt-0.5 text-blue-600 focus:ring-blue-500 bg-[#0f1420] border-[#1a2234]">
+                        <div class="ml-2">
+                            <div class="text-xs font-medium text-white">Flathub Remote</div>
+                            <div class="text-[10px] text-slate-500">Flatpak application ref</div>
+                        </div>
+                    </label>
+
+                    <!-- 3. Custom Flatpak Bundle (.flatpak) -->
+                    <label class="flex items-start p-2.5 rounded-md border border-[#1a2234] bg-[#0a0e17] cursor-pointer hover:border-slate-700 transition">
+                        <input type="radio" name="type" value="FLATPAK_BUNDLE"
+                            {{if and .App (eq .App.PolicyType "FLATPAK_BUNDLE")}}checked{{end}}
+                            {{if .IsEdit}}disabled{{end}}
+                            onchange="switchAppSourceMode('FLATPAK_BUNDLE')"
+                            class="mt-0.5 text-blue-600 focus:ring-blue-500 bg-[#0f1420] border-[#1a2234]">
+                        <div class="ml-2">
+                            <div class="text-xs font-medium text-white">Flatpak Bundle</div>
+                            <div class="text-[10px] text-slate-500">Single .flatpak archive</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Display Name & Package / App ID -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Display Name *</label>
+                    <input type="text" name="name" required
+                        value="{{if .App}}{{.App.Name}}{{end}}"
+                        placeholder="e.g. Wireshark"
+                        class="w-full px-2.5 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded-md text-white placeholder-slate-600 focus:outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label id="app-id-label" class="block text-[11px] font-medium text-slate-400 mb-1">
+                        {{if and .App (eq .App.PolicyType "PACKAGE_PRESENCE")}}APT Package Name *{{else}}Flatpak App ID *{{end}}
+                    </label>
+                    <input type="text" id="app-id-input" name="app_id" required
+                        value="{{if .App}}{{.App.PackageID}}{{end}}"
+                        placeholder="e.g. org.videolan.VLC"
+                        oninput="document.getElementById('package-id-mirror').value = this.value"
+                        class="w-full px-2.5 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded-md text-white placeholder-slate-600 focus:outline-none focus:border-blue-500">
+                    <input type="hidden" id="package-id-mirror" name="package_id" value="{{if .App}}{{.App.PackageID}}{{end}}">
+                </div>
+            </div>
+
+            <!-- Custom Flatpak Bundle (.flatpak) Upload Dropzone -->
+            <div id="custom-bundle-dropzone-section" class="{{if and .App (eq .App.PolicyType "FLATPAK_BUNDLE")}}block{{else}}hidden{{end}}">
+                <label class="block text-[11px] font-medium text-slate-400 mb-1">Bundle File (.flatpak) *</label>
+                <label for="bundle-file-input"
+                       class="flex flex-col items-center justify-center w-full h-24 border border-dashed border-[#25334d] hover:border-blue-500 rounded-md cursor-pointer bg-[#0a0e17] transition px-4 text-center">
+                    <span id="bundle-file-label" class="text-xs text-slate-300">
+                        Choose a <span class="font-mono text-blue-400">.flatpak</span> bundle file
+                    </span>
+                    <span class="text-[10px] text-slate-500 mt-0.5">SHA-256 verified on upload</span>
+                    <input id="bundle-file-input" type="file" name="file" accept=".flatpak" class="hidden"
+                           onchange="if(this.files && this.files[0]) { document.getElementById('bundle-file-label').textContent = 'Selected: ' + this.files[0].name + ' (' + Math.round(this.files[0].size/1024) + ' KB)'; }">
+                </label>
+            </div>
+
+            <!-- Version & Remote (shown for APT / Flathub) -->
+            <div id="version-remote-section" class="grid grid-cols-1 sm:grid-cols-2 gap-3 {{if and .App (eq .App.PolicyType "FLATPAK_BUNDLE")}}hidden{{end}}">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Target Version (Optional)</label>
+                    <input type="text" name="version"
+                        value="{{if .App}}{{.App.Version}}{{end}}"
+                        placeholder="latest"
+                        class="w-full px-2.5 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded-md text-white placeholder-slate-600 focus:outline-none focus:border-blue-500">
+                </div>
+                <div id="flatpak-remote-wrapper">
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Flatpak Remote</label>
+                    <input type="text" name="remote"
+                        value="{{if and .App .App.Remote}}{{.App.Remote}}{{else}}flathub{{end}}"
+                        placeholder="flathub"
+                        class="w-full px-2.5 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded-md text-white placeholder-slate-600 focus:outline-none focus:border-blue-500">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-[11px] font-medium text-slate-400 mb-1">Catalog Description</label>
+                <input type="text" name="description"
+                    value="{{if .App}}{{.App.Description}}{{end}}"
+                    placeholder="Description shown in Spire Hub catalog"
+                    class="w-full px-2.5 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded-md text-white placeholder-slate-600 focus:outline-none focus:border-blue-500">
+            </div>
+
+            <!-- Assignment Mode Selector -->
+            <div>
+                <label class="block text-[11px] font-medium text-slate-400 mb-1.5">Assignment &amp; Compliance Mode</label>
+                <div class="grid grid-cols-2 gap-2">
+                    <label class="flex items-start p-2.5 rounded-md border border-[#1a2234] bg-[#0a0e17] cursor-pointer hover:border-slate-700 transition">
+                        <input type="radio" name="assignment_type" value="REQUIRED"
+                            {{if or (not .App) (ne .App.AssignmentType "AVAILABLE")}}checked{{end}}
+                            class="mt-0.5 text-amber-500 focus:ring-amber-500 bg-[#0f1420] border-[#1a2234]">
+                        <div class="ml-2">
+                            <div class="text-xs font-medium text-amber-400">REQUIRED (Mandatory)</div>
+                            <div class="text-[10px] text-slate-500 mt-0.5">Enforced on targeted hosts.</div>
+                        </div>
+                    </label>
+                    <label class="flex items-start p-2.5 rounded-md border border-[#1a2234] bg-[#0a0e17] cursor-pointer hover:border-slate-700 transition">
+                        <input type="radio" name="assignment_type" value="AVAILABLE"
+                            {{if and .App (eq .App.AssignmentType "AVAILABLE")}}checked{{end}}
+                            class="mt-0.5 text-blue-500 focus:ring-blue-500 bg-[#0f1420] border-[#1a2234]">
+                        <div class="ml-2">
+                            <div class="text-xs font-medium text-blue-400">AVAILABLE (Self-Service)</div>
+                            <div class="text-[10px] text-slate-500 mt-0.5">Optional in Spire Hub.</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Auto-Install Toggle -->
+            <div class="flex items-center justify-between p-2.5 rounded-md bg-[#0a0e17] border border-[#1a2234]">
+                <div>
+                    <div class="text-xs font-medium text-white">Automatic Background Installation</div>
+                    <div class="text-[10px] text-slate-500">Install during daemon sync when assignment is REQUIRED</div>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" name="auto_install" value="true"
+                        {{if or (not .App) .App.AutoInstall}}checked{{end}}
+                        class="sr-only peer">
+                    <div class="w-8 h-4 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[1px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-blue-600"></div>
+                </label>
+            </div>
+
+            <!-- Target Scope: Tags & Deployment Ring -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Target Tags (comma-separated)</label>
+                    <input type="text" name="target_tags"
+                        value="{{if .TagsJoined}}{{.TagsJoined}}{{end}}"
+                        placeholder="e.g. engineering, workstation"
+                        class="w-full px-2.5 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded-md text-white placeholder-slate-600 focus:outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-400 mb-1">Deployment Ring</label>
+                    <select name="target_ring"
+                        class="w-full px-2.5 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded-md text-white focus:outline-none focus:border-blue-500">
+                        <option value="" {{if not .RingString}}selected{{end}}>All Rings (Global)</option>
+                        <option value="CANARY" {{if eq .RingString "CANARY"}}selected{{end}}>CANARY</option>
+                        <option value="PILOT" {{if eq .RingString "PILOT"}}selected{{end}}>PILOT</option>
+                        <option value="PRODUCTION" {{if eq .RingString "PRODUCTION"}}selected{{end}}>PRODUCTION</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Modal Actions -->
+            <div class="pt-3 border-t border-[#1a2234] flex items-center justify-end space-x-2">
+                <button type="button"
+                    onclick="document.getElementById('application-modal-backdrop').remove()"
+                    class="px-3 py-1.5 rounded-md bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 text-xs font-medium border border-[#1a2234] transition">
+                    Cancel
+                </button>
+                <button type="submit"
+                    class="px-3.5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition">
+                    {{if .IsEdit}}Save Changes{{else}}Stage Application{{end}}
+                </button>
+            </div>
+        </form>
+    </div>
+    <script>
+        function switchAppSourceMode(mode) {
+            var form = document.getElementById('application-stage-form');
+            var dropzone = document.getElementById('custom-bundle-dropzone-section');
+            var verRemote = document.getElementById('version-remote-section');
+            var remoteWrap = document.getElementById('flatpak-remote-wrapper');
+            var idLabel = document.getElementById('app-id-label');
+            var idInput = document.getElementById('app-id-input');
+            var fileInput = document.getElementById('bundle-file-input');
+
+            if (mode === 'FLATPAK_BUNDLE') {
+                form.setAttribute('action', '/admin/applications/upload');
+                form.setAttribute('hx-post', '/admin/applications/upload');
+                form.setAttribute('enctype', 'multipart/form-data');
+                form.setAttribute('hx-encoding', 'multipart/form-data');
+                dropzone.classList.remove('hidden');
+                verRemote.classList.add('hidden');
+                idLabel.textContent = 'Bundle App ID *';
+                idInput.setAttribute('placeholder', 'e.g. org.internal.Tool');
+                if (fileInput) fileInput.required = true;
+            } else if (mode === 'PACKAGE_PRESENCE') {
+                form.setAttribute('action', '/admin/applications');
+                form.setAttribute('hx-post', '/admin/applications');
+                form.removeAttribute('enctype');
+                form.removeAttribute('hx-encoding');
+                dropzone.classList.add('hidden');
+                verRemote.classList.remove('hidden');
+                if (remoteWrap) remoteWrap.classList.add('hidden');
+                idLabel.textContent = 'APT Package Name *';
+                idInput.setAttribute('placeholder', 'e.g. wireshark, curl');
+                if (fileInput) fileInput.required = false;
+            } else {
+                form.setAttribute('action', '/admin/applications');
+                form.setAttribute('hx-post', '/admin/applications');
+                form.removeAttribute('enctype');
+                form.removeAttribute('hx-encoding');
+                dropzone.classList.add('hidden');
+                verRemote.classList.remove('hidden');
+                if (remoteWrap) remoteWrap.classList.remove('hidden');
+                idLabel.textContent = 'Flathub App ID *';
+                idInput.setAttribute('placeholder', 'e.g. org.videolan.VLC');
+                if (fileInput) fileInput.required = false;
+            }
+            if (window.htmx) {
+                htmx.process(form);
+            }
+        }
+    </script>
+</div>
+{{end}}

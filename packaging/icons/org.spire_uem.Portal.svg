@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="spireBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1c71d8"/>
+      <stop offset="100%" stop-color="#1a5fb4"/>
+    </linearGradient>
+    <linearGradient id="spireShield" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#deddda"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="104" height="104" rx="24" fill="url(#spireBg)"/>
+  <path d="M64 26 L94 38 V62 C94 82 81 96 64 102 C47 96 34 82 34 62 V38 Z" fill="url(#spireShield)"/>
+  <path d="M56 64 L62 70 L75 53" fill="none" stroke="#1a5fb4" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

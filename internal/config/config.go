@@ -9,11 +9,16 @@ import (
 
 // ServerConfig holds configuration for spire-server.
 type ServerConfig struct {
-	ListenAddr     string
-	DatabaseURL    string
-	MigrationsPath string
-	AdminUsername  string
-	AdminPassword  string
+	ListenAddr       string
+	DatabaseURL      string
+	MigrationsPath   string
+	AdminUsername    string
+	AdminPassword    string
+	SIEMSyslogAddr   string
+	KEKPath          string
+	AptRepoDir       string
+	BundleStorageDir string
+	EnforceHTTPS     bool
 }
 
 // AgentConfig holds configuration for the spired client daemon.
@@ -34,11 +39,15 @@ type Config struct {
 func Load(configPath string) *Config {
 	cfg := &Config{
 		Server: ServerConfig{
-			ListenAddr:     ":8080",
-			DatabaseURL:    "postgres://spire:spirepassword@localhost:5432/spire_uem?sslmode=disable",
-			MigrationsPath: "migrations/000001_init_schema.up.sql",
-			AdminUsername:  "admin",
-			AdminPassword:  "changeme",
+			ListenAddr:       ":8080",
+			DatabaseURL:      "postgres://spire:spirepassword@localhost:5432/spire_uem?sslmode=disable",
+			MigrationsPath:   "migrations/000001_init_schema.up.sql",
+			AdminUsername:    "admin",
+			AdminPassword:    "changeme",
+			KEKPath:          "internal/crypto/kek.pem",
+			AptRepoDir:       "/var/www/apt/spire",
+			BundleStorageDir: "/var/lib/spire/storage/bundles",
+			EnforceHTTPS:     false,
 		},
 		Agent: AgentConfig{
 			ServerURL:       "http://localhost:8080",
@@ -73,6 +82,21 @@ func Load(configPath string) *Config {
 	}
 	if v := os.Getenv("SPIRE_ADMIN_PASSWORD"); v != "" {
 		cfg.Server.AdminPassword = v
+	}
+	if v := os.Getenv("SPIRE_SIEM_SYSLOG_ADDR"); v != "" {
+		cfg.Server.SIEMSyslogAddr = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("SPIRE_KEK_PATH"); v != "" {
+		cfg.Server.KEKPath = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("SPIRE_APT_REPO_DIR"); v != "" {
+		cfg.Server.AptRepoDir = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("SPIRE_BUNDLE_STORAGE_DIR"); v != "" {
+		cfg.Server.BundleStorageDir = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("SPIRE_ENFORCE_HTTPS"); v != "" {
+		cfg.Server.EnforceHTTPS = strings.EqualFold(v, "true") || v == "1"
 	}
 	if v := os.Getenv("SPIRE_SERVER_URL"); v != "" {
 		cfg.Agent.ServerURL = strings.TrimRight(v, "/")
@@ -147,6 +171,16 @@ func parseSimpleYAML(path string, cfg *Config) {
 				if val != "" {
 					cfg.Server.AdminPassword = val
 				}
+			case "kek_path":
+				if val != "" {
+					cfg.Server.KEKPath = val
+				}
+			case "bundle_storage_dir":
+				if val != "" {
+					cfg.Server.BundleStorageDir = val
+				}
+			case "enforce_https":
+				cfg.Server.EnforceHTTPS = strings.EqualFold(val, "true") || val == "1"
 			}
 		case "agent":
 			switch key {

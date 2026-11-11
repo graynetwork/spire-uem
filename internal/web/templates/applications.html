@@ -1,0 +1,201 @@
+{{define "applications_content"}}
+<div id="applications-content-wrapper" class="space-y-5">
+    <!-- Page Header + Add Application Button -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+            <h1 class="text-lg font-semibold tracking-tight text-white">Enterprise Application Catalog</h1>
+            <p class="text-xs text-slate-400 mt-0.5">
+                Manage Flatpak and Debian APT packages independently from security baselines.
+            </p>
+        </div>
+        <div class="flex items-center space-x-2">
+            <button type="button"
+                hx-get="/admin/applications/new"
+                hx-target="#application-modal-container"
+                hx-swap="innerHTML"
+                class="inline-flex items-center px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition">
+                <svg class="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                </svg>
+                Add Application
+            </button>
+        </div>
+    </div>
+
+    <!-- Top Stat Ribbon -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <!-- Total Applications -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3.5">
+            <div class="text-[11px] font-medium text-slate-400">Total Applications</div>
+            <div class="text-xl font-semibold font-mono text-white mt-1 tabular-nums">{{if .Stats}}{{.Stats.TotalApplications}}{{else}}0{{end}}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">Cataloged packages</div>
+        </div>
+
+        <!-- Mandatory (Required) -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3.5">
+            <div class="text-[11px] font-medium text-slate-400">Mandatory (Required)</div>
+            <div class="text-xl font-semibold font-mono text-amber-400 mt-1 tabular-nums">{{if .Stats}}{{.Stats.MandatoryCount}}{{else}}0{{end}}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">Compliance-enforced</div>
+        </div>
+
+        <!-- Self-Service (Available) -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3.5">
+            <div class="text-[11px] font-medium text-slate-400">Self-Service (Available)</div>
+            <div class="text-xl font-semibold font-mono text-blue-400 mt-1 tabular-nums">{{if .Stats}}{{.Stats.AvailableCount}}{{else}}0{{end}}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">Optional in Spire Hub</div>
+        </div>
+
+        <!-- Fleet Adoption % -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3.5">
+            <div class="text-[11px] font-medium text-slate-400">Fleet Adoption</div>
+            <div class="text-xl font-semibold font-mono text-emerald-400 mt-1 tabular-nums">{{if .Stats}}{{.Stats.FleetAdoptionPercent}}%{{else}}0%{{end}}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">Across target scopes</div>
+        </div>
+    </div>
+
+    <!-- Applications Table Card -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg overflow-hidden">
+        <div class="px-4 py-3 border-b border-[#1a2234] flex items-center justify-between">
+            <div>
+                <h2 class="text-xs font-semibold text-white">Software Packages</h2>
+                <p class="text-[11px] text-slate-500 mt-0.5">Flatpak remotes &amp; Debian APT packages staged across rings</p>
+            </div>
+            <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-[#0a0e17] border border-[#1a2234] text-slate-400">
+                {{len .Applications}} packages
+            </span>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-[#1a2234] text-left">
+                <thead class="bg-[#0f1420]">
+                    <tr class="text-[11px] font-medium text-slate-400">
+                        <th class="px-4 py-2.5 font-normal">Application</th>
+                        <th class="px-4 py-2.5 font-normal">Type</th>
+                        <th class="px-4 py-2.5 font-normal">Assignment</th>
+                        <th class="px-4 py-2.5 font-normal">Target Scope</th>
+                        <th class="px-4 py-2.5 font-normal">Fleet Adoption</th>
+                        <th class="px-4 py-2.5 font-normal text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-[#1a2234] bg-[#0a0e17] text-xs">
+                    {{range .Applications}}
+                    <tr class="hover:bg-[#141b2a]/40 transition">
+                        <!-- Application Name & Package ID -->
+                        <td class="px-4 py-3">
+                            <div class="font-medium text-slate-200">{{.Name}}</div>
+                            <div class="flex items-center space-x-2 mt-0.5">
+                                <span class="text-[11px] font-mono text-slate-400">{{.PackageID}}</span>
+                                {{if .Version}}
+                                <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-[#141b2a] text-slate-400">v{{.Version}}</span>
+                                {{end}}
+                            </div>
+                            {{if .Description}}
+                            <div class="text-[11px] text-slate-500 mt-0.5 line-clamp-1">{{.Description}}</div>
+                            {{end}}
+                        </td>
+
+                        <!-- Type Badge -->
+                        <td class="px-4 py-3 whitespace-nowrap">
+                            {{if eq .PolicyType "FLATPAK_BUNDLE"}}
+                            <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-[#141b2a] text-purple-400 border border-[#1a2234]">
+                                BUNDLE
+                                {{if .BundleName}}<span class="ml-1 text-slate-500">({{.BundleName}})</span>{{end}}
+                            </span>
+                            {{else if eq .PolicyType "FLATPAK_APP"}}
+                            <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-[#141b2a] text-blue-400 border border-[#1a2234]">
+                                FLATPAK
+                                {{if .Remote}}<span class="ml-1 text-slate-500">({{.Remote}})</span>{{end}}
+                            </span>
+                            {{else}}
+                            <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-[#141b2a] text-emerald-400 border border-[#1a2234]">
+                                APT
+                            </span>
+                            {{end}}
+                        </td>
+
+                        <!-- Assignment Badge -->
+                        <td class="px-4 py-3 whitespace-nowrap">
+                            {{if eq .AssignmentType "AVAILABLE"}}
+                            <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                AVAILABLE
+                            </span>
+                            <div class="text-[10px] text-slate-500 mt-0.5 font-mono">Self-Service</div>
+                            {{else}}
+                            <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                REQUIRED
+                            </span>
+                            <div class="text-[10px] text-slate-500 mt-0.5 font-mono">
+                                {{if .AutoInstall}}Auto-Install{{else}}Gated{{end}}
+                            </div>
+                            {{end}}
+                        </td>
+
+                        <!-- Target Scope -->
+                        <td class="px-4 py-3">
+                            <div class="flex flex-wrap items-center gap-1 font-mono text-[10px]">
+                                {{if .TargetRing}}
+                                <span class="px-1.5 py-0.2 rounded bg-[#141b2a] text-slate-300 border border-[#1a2234]">
+                                    Ring: {{.TargetRing}}
+                                </span>
+                                {{end}}
+                                {{if .TargetTags}}
+                                    {{range .TargetTags}}
+                                    <span class="px-1.5 py-0.2 rounded bg-[#0f1420] text-slate-400 border border-[#1a2234]">
+                                        #{{.}}
+                                    </span>
+                                    {{end}}
+                                {{end}}
+                                {{if and (not .TargetRing) (eq (len .TargetTags) 0)}}
+                                <span class="text-slate-500">
+                                    All Endpoints
+                                </span>
+                                {{end}}
+                            </div>
+                        </td>
+
+                        <!-- Fleet Adoption Bar -->
+                        <td class="px-4 py-3 whitespace-nowrap min-w-[160px]">
+                            <div class="flex items-center justify-between text-[11px] mb-1 font-mono">
+                                <span class="text-slate-300">{{.InstalledCount}} / {{.TargetCount}}</span>
+                                <span class="text-slate-500">{{.AdoptionPercent}}%</span>
+                            </div>
+                            <div class="w-full h-1.5 bg-[#141b2a] rounded overflow-hidden border border-[#1a2234]">
+                                <div class="h-full {{if ge .AdoptionPercent 80}}bg-emerald-500{{else if ge .AdoptionPercent 40}}bg-blue-500{{else}}bg-amber-500{{end}}"
+                                     style="width: {{.AdoptionPercent}}%"></div>
+                            </div>
+                        </td>
+
+                        <!-- Actions -->
+                        <td class="px-4 py-3 whitespace-nowrap text-right space-x-1">
+                            <button type="button"
+                                hx-get="/admin/applications/{{.ID}}/edit"
+                                hx-target="#application-modal-container"
+                                hx-swap="innerHTML"
+                                class="px-2 py-1 rounded bg-[#141b2a] hover:bg-[#1a2234] text-slate-200 border border-[#1a2234] text-xs font-medium transition">
+                                Edit
+                            </button>
+                            <button type="button"
+                                hx-delete="/admin/applications/{{.ID}}"
+                                hx-confirm="Revoke {{.Name}} ({{.PackageID}}) and schedule uninstallation across targeted hosts?"
+                                class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-medium transition">
+                                Revoke
+                            </button>
+                        </td>
+                    </tr>
+                    {{else}}
+                    <tr>
+                        <td colspan="6" class="px-4 py-8 text-center text-slate-600">
+                            <div class="text-xs font-medium text-slate-400">No applications staged in the catalog</div>
+                            <p class="text-[11px] text-slate-500 mt-0.5">Click "Add Application" to stage a Flatpak or APT package.</p>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- HTMX Modal Container -->
+    <div id="application-modal-container"></div>
+</div>
+{{end}}

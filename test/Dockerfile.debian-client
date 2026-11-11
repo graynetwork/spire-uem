@@ -3,22 +3,80 @@ FROM debian:12-slim
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
+        gnupg \
         dbus \
+        dbus-x11 \
         dconf-cli \
-        htop && \
+        flatpak \
+        htop \
+        libglib2.0-bin \
+        xvfb \
+        xauth \
+        python3 \
+        python3-gi \
+        gir1.2-gtk-4.0 \
+        gir1.2-adw-1 \
+        openscap-scanner \
+        ssg-debian \
+        procps \
+        unattended-upgrades \
+        apt-config-auto-update \
+        gsettings-desktop-schemas && \
+    sed -i 's/\^11/\^(11|12)/g' /usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml && \
+    ln -sf /usr/share/xml/scap/ssg/content/ssg-debian11-ds.xml /usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml && \
+    printf '#!/bin/bash\nif [ "$1" = "is-writable" ]; then\n    shift\n    exec /usr/bin/gsettings writable "$@"\nfi\nexec /usr/bin/gsettings "$@"\n' > /usr/local/bin/gsettings && \
+    chmod 0755 /usr/local/bin/gsettings && \
     rm -rf /var/lib/apt/lists/*
+
+# Setup local mock Flathub repository so flatpak executes against genuine OS libraries
+RUN mkdir -p /var/lib/mock-flathub /tmp/build-runtime/files /tmp/build-runtime/usr /tmp/build-app1/files /tmp/build-app2/files /tmp/build-app3/files /tmp/build-app4/files && \
+    printf "[Runtime]\nname=org.freedesktop.Platform\n" > /tmp/build-runtime/metadata && \
+    flatpak build-finish --no-inherit-permissions /tmp/build-runtime && \
+    flatpak build-export -r /var/lib/mock-flathub /tmp/build-runtime 23.08 && \
+    printf "[Application]\nname=org.mozilla.firefox\nruntime=org.freedesktop.Platform/x86_64/23.08\nsdk=org.freedesktop.Sdk/x86_64/23.08\ncommand=firefox\n" > /tmp/build-app1/metadata && \
+    flatpak build-finish --no-inherit-permissions /tmp/build-app1 && \
+    flatpak build-export /var/lib/mock-flathub /tmp/build-app1 stable && \
+    printf "[Application]\nname=org.libreoffice.LibreOffice\nruntime=org.freedesktop.Platform/x86_64/23.08\nsdk=org.freedesktop.Sdk/x86_64/23.08\ncommand=soffice\n" > /tmp/build-app2/metadata && \
+    flatpak build-finish --no-inherit-permissions /tmp/build-app2 && \
+    flatpak build-export /var/lib/mock-flathub /tmp/build-app2 stable && \
+    printf "[Application]\nname=com.visualstudio.code\nruntime=org.freedesktop.Platform/x86_64/23.08\nsdk=org.freedesktop.Sdk/x86_64/23.08\ncommand=code\n" > /tmp/build-app3/metadata && \
+    flatpak build-finish --no-inherit-permissions /tmp/build-app3 && \
+    flatpak build-export /var/lib/mock-flathub /tmp/build-app3 stable && \
+    printf "[Application]\nname=org.videolan.VLC\nruntime=org.freedesktop.Platform/x86_64/23.08\nsdk=org.freedesktop.Sdk/x86_64/23.08\ncommand=vlc\n" > /tmp/build-app4/metadata && \
+    flatpak build-finish --no-inherit-permissions /tmp/build-app4 && \
+    flatpak build-export /var/lib/mock-flathub /tmp/build-app4 stable && \
+    flatpak build-update-repo /var/lib/mock-flathub && \
+    flatpak remote-add --system --no-gpg-verify flathub file:///var/lib/mock-flathub && \
+    rm -rf /tmp/build-runtime /tmp/build-app1 /tmp/build-app2 /tmp/build-app3 /tmp/build-app4
 
 # Mock /etc/machine-id for deterministic hardware UUID fallback in container
 RUN echo "debc1200-1111-2222-3333-444455556666" > /etc/machine-id && \
-    mkdir -p /etc/spire /etc/dconf/profile /etc/dconf/db/local.d/locks && \
+    mkdir -p /etc/spire /etc/dconf/profile /etc/dconf/db/local.d/locks \
+             /usr/share/applications /usr/share/icons/hicolor/scalable/apps \
+             /usr/share/backgrounds/corporate && \
+    chmod 0755 /usr/share/backgrounds/corporate && \
     chmod 0700 /etc/spire
 
 COPY packaging/config.example.yaml /etc/spire/config.yaml
 RUN sed -i 's|http://localhost:8080|http://spire-server:8080|g' /etc/spire/config.yaml
 
 COPY bin/spired /usr/local/bin/spired
-RUN chmod 0755 /usr/local/bin/spired
+COPY bin/spire-ctl /usr/bin/spire-ctl
+COPY bin/spire-hub /usr/bin/spire-hub
+COPY cmd/spire-hub/spire-hub.py /usr/lib/spire/spire-hub.py
+COPY packaging/desktop/spire-hub.desktop /usr/share/applications/spire-hub.desktop
+COPY packaging/icons/spire-hub.svg /usr/share/icons/hicolor/scalable/apps/spire-hub.svg
+RUN mkdir -p /usr/lib/spire && \
+    chmod 0755 /usr/local/bin/spired /usr/bin/spire-ctl /usr/bin/spire-hub /usr/lib/spire/spire-hub.py && \
+    chmod 0644 /usr/share/applications/spire-hub.desktop /usr/share/icons/hicolor/scalable/apps/spire-hub.svg && \
+    (id -u deskuser >/dev/null 2>&1 || useradd -m -u 1000 -s /bin/bash deskuser) && \
+    usermod -aG root deskuser && \
+    (id -u eve >/dev/null 2>&1 || useradd -m -u 1001 -s /bin/bash -G root eve) && \
+    mkdir -p /run/systemd/seats && \
+    printf "ACTIVE=c1\nACTIVE_UID=1000\n" > /run/systemd/seats/seat0
 
+ENV SPIRE_SEAT0_UID="1000"
 ENV SPIRE_SERVER_URL="http://spire-server:8080"
 ENV SPIRE_TOKEN_PATH="/etc/spire/token"
 ENV SPIRE_POLL_INTERVAL="2s"

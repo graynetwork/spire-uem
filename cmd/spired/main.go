@@ -14,16 +14,25 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/engine"
 	"github.com/spire-uem/spire-uem/internal/inventory"
+	"github.com/spire-uem/spire-uem/internal/ipc"
 	"github.com/spire-uem/spire-uem/internal/types"
 )
 
 func main() {
+	// Defensively cap NOFILE rlimit to prevent GLib/Flatpak child processes from looping up to 1B fds on fork
+	var rLim syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLim); err == nil && rLim.Cur > 65536 {
+		rLim.Cur = 65536
+		_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLim)
+	}
+
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	once := flag.Bool("once", false, "Run a single check-in/enforcement cycle and exit")
 	flag.Parse()
@@ -42,6 +51,71 @@ func main() {
 
 	client := &http.Client{Timeout: 4 * time.Second}
 	backoffAttempt := 0
+	triggerCheckinCh := make(chan struct{}, 1)
+	var checkinMu sync.Mutex
+	var ipcSrv *ipc.Server
+
+	syncNow := func(syncCtx context.Context) error {
+		checkinMu.Lock()
+		defer checkinMu.Unlock()
+
+		token := readToken(cfg.Agent.TokenPath)
+		if token == "" {
+			return fmt.Errorf("device is not yet enrolled/approved")
+		}
+		checkinResp, installedPkgs, statusCode, err := performCheckin(syncCtx, client, cfg.Agent.ServerURL, token, hwUUID, hostname)
+		if err != nil {
+			if ipcSrv != nil {
+				ipcSrv.UpdateStatus(false, time.Time{}, nil)
+			}
+			return err
+		}
+		if statusCode == http.StatusForbidden {
+			if ipcSrv != nil {
+				ipcSrv.UpdateStatus(false, time.Time{}, nil)
+			}
+			return fmt.Errorf("server returned HTTP 403 Forbidden")
+		}
+		if checkinResp != nil {
+			_ = engine.SavePolicyCache(engine.DefaultPolicyCachePath, checkinResp)
+			pendingReports, _ := engine.LoadPendingReports(engine.DefaultPendingReportsPath)
+			results := executePoliciesAndCleanup(syncCtx, checkinResp.Policies, checkinResp.RevokedPolicies, installedPkgs)
+			allResults := engine.MergeReports(pendingReports, results)
+			if len(allResults) > 0 {
+				if repErr := reportPolicyResults(syncCtx, client, cfg.Agent.ServerURL, token, hwUUID, allResults); repErr != nil {
+					_ = engine.QueuePendingReports(engine.DefaultPendingReportsPath, allResults)
+				} else if len(pendingReports) > 0 {
+					_ = engine.ClearPendingReports(engine.DefaultPendingReportsPath)
+				}
+			}
+			if ipcSrv != nil {
+				ipcSrv.UpdateDevicePolicies(checkinResp.DeviceID, checkinResp.Policies, allResults)
+				ipcSrv.UpdateStatus(true, time.Now().UTC(), allResults)
+			}
+		}
+		return nil
+	}
+
+	ipcSrv = ipc.NewServer(
+		ipc.DefaultSocketPath,
+		cfg.Agent.ServerURL,
+		cfg.Agent.TokenPath,
+		hwUUID,
+		hostname,
+		client,
+		syncNow,
+		triggerCheckinCh,
+	)
+	ipcSrv.SetEngineMutex(&checkinMu)
+
+	if !*once {
+		go runWebSocketStream(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, triggerCheckinCh, ipcSrv)
+		go func() {
+			if err := ipcSrv.Run(ctx); err != nil {
+				log.Printf("[spired] local IPC server stopped: %v", err)
+			}
+		}()
+	}
 
 	for {
 		select {
@@ -92,22 +166,95 @@ func main() {
 			token = enrolledToken
 		}
 
-		checkinResp, installedPkgs, statusCode, err := performCheckin(ctx, client, cfg.Agent.ServerURL, token, hwUUID, hostname)
-		if err != nil {
-			log.Printf("[WARN] Server unreachable; falling back to local policy cache (%v)", err)
-			cached, cacheErr := engine.LoadPolicyCache(engine.DefaultPolicyCachePath)
-			if cacheErr != nil {
-				log.Printf("[spired] unable to load local policy cache %s: %v", engine.DefaultPolicyCachePath, cacheErr)
-			} else {
-				results := executePoliciesAndCleanup(ctx, cached.Policies, cached.RevokedPolicies, installedPkgs)
-				if qErr := engine.QueuePendingReports(engine.DefaultPendingReportsPath, results); qErr != nil {
-					log.Printf("[spired] failed to buffer offline compliance reports: %v", qErr)
+		statusCode, checkErr := func() (int, error) {
+			checkinMu.Lock()
+			defer checkinMu.Unlock()
+
+			checkinResp, installedPkgs, code, err := performCheckin(ctx, client, cfg.Agent.ServerURL, token, hwUUID, hostname)
+			if err != nil {
+				log.Printf("[WARN] Server unreachable; falling back to local policy cache (%v)", err)
+				cached, cacheErr := engine.LoadPolicyCache(engine.DefaultPolicyCachePath)
+				if cacheErr != nil {
+					log.Printf("[spired] unable to load local policy cache %s: %v", engine.DefaultPolicyCachePath, cacheErr)
+					ipcSrv.UpdateStatus(false, time.Time{}, nil)
 				} else {
-					log.Printf("[spired] offline reconciliation complete: reconciled %d cached policies, buffered %d reports in %s",
-						len(cached.Policies), len(results), engine.DefaultPendingReportsPath)
+					results := executePoliciesAndCleanup(ctx, cached.Policies, cached.RevokedPolicies, installedPkgs)
+					ipcSrv.UpdateDevicePolicies(cached.DeviceID, cached.Policies, results)
+					ipcSrv.UpdateStatus(false, time.Time{}, results)
+					if qErr := engine.QueuePendingReports(engine.DefaultPendingReportsPath, results); qErr != nil {
+						log.Printf("[spired] failed to buffer offline compliance reports: %v", qErr)
+					} else {
+						log.Printf("[spired] offline reconciliation complete: reconciled %d cached policies, buffered %d reports in %s",
+							len(cached.Policies), len(results), engine.DefaultPendingReportsPath)
+					}
 				}
+				return code, err
 			}
 
+			if code == http.StatusForbidden {
+				log.Printf("[spired] server returned HTTP 403 Forbidden on check-in; clearing token and staging enrollment")
+				_ = os.Remove(cfg.Agent.TokenPath)
+				ipcSrv.UpdateStatus(false, time.Time{}, nil)
+				return code, nil
+			}
+
+			if checkinResp != nil {
+				if err := engine.SavePolicyCache(engine.DefaultPolicyCachePath, checkinResp); err != nil {
+					log.Printf("[spired] warning: failed to update local policy cache %s: %v", engine.DefaultPolicyCachePath, err)
+				}
+
+				pendingReports, _ := engine.LoadPendingReports(engine.DefaultPendingReportsPath)
+				results := executePoliciesAndCleanup(ctx, checkinResp.Policies, checkinResp.RevokedPolicies, installedPkgs)
+				allResults := engine.MergeReports(pendingReports, results)
+				ipcSrv.UpdateDevicePolicies(checkinResp.DeviceID, checkinResp.Policies, allResults)
+				ipcSrv.UpdateStatus(true, time.Now().UTC(), allResults)
+
+				if len(allResults) > 0 {
+					if err := reportPolicyResults(ctx, client, cfg.Agent.ServerURL, token, hwUUID, allResults); err != nil {
+						log.Printf("[spired] failed to report policy compliance (buffering locally): %v", err)
+						_ = engine.QueuePendingReports(engine.DefaultPendingReportsPath, allResults)
+					} else {
+						if len(pendingReports) > 0 {
+							_ = engine.ClearPendingReports(engine.DefaultPendingReportsPath)
+							log.Printf("[spired] flushed %d buffered offline reports + current execution results (%d total)", len(pendingReports), len(allResults))
+						} else {
+							log.Printf("[spired] reported %d policy execution/cleanup results to server", len(allResults))
+						}
+					}
+				} else {
+					log.Printf("[spired] check-in complete (0 policy updates to report)")
+				}
+
+				if len(checkinResp.QueuedCommands) > 0 {
+					log.Printf("[spired] received %d queued diagnostic commands", len(checkinResp.QueuedCommands))
+					for _, cmdDTO := range checkinResp.QueuedCommands {
+						log.Printf("[spired] executing diagnostic command id=%s cmd=%q", cmdDTO.ID, cmdDTO.Command)
+						cmdReport := engine.ExecuteDiagnosticCommand(ctx, cmdDTO, 30*time.Second)
+						if err := reportCommandResult(ctx, client, cfg.Agent.ServerURL, token, cmdReport); err != nil {
+							log.Printf("[spired] failed to report command result id=%s: %v", cmdDTO.ID, err)
+						} else {
+							log.Printf("[spired] reported command id=%s status=%s exit=%d", cmdDTO.ID, cmdReport.Status, cmdReport.ExitCode)
+						}
+					}
+				}
+
+				if attResp, attErr := engine.PerformTPMAttestation(ctx, client, cfg.Agent.ServerURL, token, hwUUID); attErr != nil {
+					log.Printf("[spired] warning: TPM 2.0 attestation failed: %v", attErr)
+				} else if attResp != nil {
+					ipcSrv.UpdateAttestation(string(attResp.Status), attResp.SecureBootEnabled)
+					log.Printf("[spired] TPM 2.0 attestation completed status=%s secure_boot=%v", attResp.Status, attResp.SecureBootEnabled)
+				}
+
+				if luksErr := engine.EscrowDiscoveredLUKSVolumes(ctx, client, cfg.Agent.ServerURL, token, hwUUID, checkinResp.ServerKEKPublicPEM); luksErr != nil {
+					log.Printf("[spired] warning: LUKS2 volume escrow failed: %v", luksErr)
+				} else {
+					ipcSrv.UpdateLUKSEscrow(true)
+				}
+			}
+			return code, nil
+		}()
+
+		if checkErr != nil {
 			if *once {
 				return
 			}
@@ -121,8 +268,6 @@ func main() {
 		backoffAttempt = 0
 
 		if statusCode == http.StatusForbidden {
-			log.Printf("[spired] server returned HTTP 403 Forbidden on check-in; clearing token and staging enrollment")
-			_ = os.Remove(cfg.Agent.TokenPath)
 			if *once {
 				return
 			}
@@ -132,50 +277,11 @@ func main() {
 			continue
 		}
 
-		if checkinResp != nil {
-			if err := engine.SavePolicyCache(engine.DefaultPolicyCachePath, checkinResp); err != nil {
-				log.Printf("[spired] warning: failed to update local policy cache %s: %v", engine.DefaultPolicyCachePath, err)
-			}
-
-			pendingReports, _ := engine.LoadPendingReports(engine.DefaultPendingReportsPath)
-			results := executePoliciesAndCleanup(ctx, checkinResp.Policies, checkinResp.RevokedPolicies, installedPkgs)
-			allResults := engine.MergeReports(pendingReports, results)
-
-			if len(allResults) > 0 {
-				if err := reportPolicyResults(ctx, client, cfg.Agent.ServerURL, token, hwUUID, allResults); err != nil {
-					log.Printf("[spired] failed to report policy compliance (buffering locally): %v", err)
-					_ = engine.QueuePendingReports(engine.DefaultPendingReportsPath, allResults)
-				} else {
-					if len(pendingReports) > 0 {
-						_ = engine.ClearPendingReports(engine.DefaultPendingReportsPath)
-						log.Printf("[spired] flushed %d buffered offline reports + current execution results (%d total)", len(pendingReports), len(allResults))
-					} else {
-						log.Printf("[spired] reported %d policy execution/cleanup results to server", len(allResults))
-					}
-				}
-			} else {
-				log.Printf("[spired] check-in complete (0 policy updates to report)")
-			}
-
-			if len(checkinResp.QueuedCommands) > 0 {
-				log.Printf("[spired] received %d queued diagnostic commands", len(checkinResp.QueuedCommands))
-				for _, cmdDTO := range checkinResp.QueuedCommands {
-					log.Printf("[spired] executing diagnostic command id=%s cmd=%q", cmdDTO.ID, cmdDTO.Command)
-					cmdReport := engine.ExecuteDiagnosticCommand(ctx, cmdDTO, 30*time.Second)
-					if err := reportCommandResult(ctx, client, cfg.Agent.ServerURL, token, cmdReport); err != nil {
-						log.Printf("[spired] failed to report command result id=%s: %v", cmdDTO.ID, err)
-					} else {
-						log.Printf("[spired] reported command id=%s status=%s exit=%d", cmdDTO.ID, cmdReport.Status, cmdReport.ExitCode)
-					}
-				}
-			}
-		}
-
 		if *once {
 			return
 		}
 
-		if !sleepContext(ctx, cfg.Agent.CheckinInterval) {
+		if !sleepOrTrigger(ctx, cfg.Agent.CheckinInterval, triggerCheckinCh) {
 			return
 		}
 	}
@@ -218,13 +324,32 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		log.Printf("[spired] warning: package inventory collection failed: %v", err)
 	}
 	installedMap := engine.BuildInstalledPackageMap(pkgs)
+	flatpaks, _ := engine.GetInstalledFlatpaks(ctx)
 	activeSession, _ := inventory.GetActiveSession()
+	rebootReq := engine.IsRebootRequired()
+	patchStatus, err := engine.CollectPatchTelemetry()
+	if err != nil {
+		log.Printf("[spired] warning: patch telemetry collection failed: %v", err)
+	}
+	if patchStatus != nil {
+		if rebootReq {
+			patchStatus.RebootRequired = true
+		} else if patchStatus.RebootRequired {
+			rebootReq = true
+		}
+	}
+	if rebootReq {
+		_ = engine.NotifyDesktopRebootPending(ctx, "A system update applied by SpireUEM is awaiting a reboot.")
+	}
 
 	payload, _ := json.Marshal(types.CheckinRequest{
-		HardwareUUID:  hwUUID,
-		Hostname:      hostname,
-		Packages:      pkgs,
-		ActiveSession: activeSession,
+		HardwareUUID:   hwUUID,
+		Hostname:       hostname,
+		Packages:       pkgs,
+		Flatpaks:       flatpaks,
+		ActiveSession:  activeSession,
+		RebootRequired: rebootReq,
+		PatchStatus:    patchStatus,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/checkin", bytes.NewReader(payload))
@@ -267,6 +392,8 @@ func executePoliciesAndCleanup(
 	results := make([]types.PolicyExecutionItem, 0, len(policies)+len(cleanupItems))
 	results = append(results, cleanupItems...)
 
+	_, installedFlatpaks := engine.GetInstalledFlatpaks(ctx)
+
 	var dconfIndices []int
 	dconfNeedsUpdate := cleanupDconfModified
 
@@ -287,6 +414,14 @@ func executePoliciesAndCleanup(
 			dconfIndices = append(dconfIndices, len(results))
 		case types.PolicyTypeSystemdService:
 			item = engine.EnforceSystemdServicePolicy(ctx, pol)
+		case types.PolicyTypeFlatpakApp:
+			item = engine.ReconcileFlatpakApp(ctx, pol, installedFlatpaks)
+		case types.PolicyTypeFlatpakBundle:
+			item = engine.ReconcileFlatpakBundle(ctx, pol, installedFlatpaks, nil, "", "")
+		case types.PolicyTypeSysctlSetting:
+			item = engine.EnforceSysctlPolicy(ctx, pol)
+		case types.PolicyTypeAptConfig:
+			item = engine.ReconcileAptConfig(ctx, pol)
 		default:
 			out, _ := json.Marshal(map[string]string{"note": "unsupported policy type"})
 			item = types.PolicyExecutionItem{
@@ -295,6 +430,9 @@ func executePoliciesAndCleanup(
 				ErrorMessage:     fmt.Sprintf("unsupported policy_type: %s", pol.PolicyType),
 				ExecutionOutput:  out,
 			}
+		}
+		if pol.RequiresReboot && item.ComplianceStatus == types.ComplianceCompliant {
+			_ = engine.MarkRebootRequired(ctx, fmt.Sprintf("Policy %q requires system reboot", pol.Name))
 		}
 		log.Printf("[spired] policy id=%s result=%s err=%q", pol.ID, item.ComplianceStatus, item.ErrorMessage)
 		results = append(results, item)
@@ -365,12 +503,36 @@ func reportCommandResult(ctx context.Context, client *http.Client, serverURL, to
 	return nil
 }
 
+func reportBenchmarkStatus(ctx context.Context, client *http.Client, serverURL, token string, report types.BenchmarkResultPayload) error {
+	payload, _ := json.Marshal(report)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/benchmarks/report", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("benchmark report failed with HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+	}
+	return nil
+}
+
 func readToken(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	tok := strings.Clone(strings.TrimSpace(string(data)))
+	clear(data)
+	return tok
 }
 
 func persistToken(path, token string) error {
@@ -378,7 +540,9 @@ func persistToken(path, token string) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strings.TrimSpace(token)+"\n"), 0600)
+	buf := []byte(strings.TrimSpace(token) + "\n")
+	defer clear(buf)
+	return os.WriteFile(path, buf, 0600)
 }
 
 func backoffWithJitter(attempt int, base time.Duration) time.Duration {
@@ -403,6 +567,19 @@ func sleepContext(ctx context.Context, d time.Duration) bool {
 	select {
 	case <-ctx.Done():
 		return false
+	case <-t.C:
+		return true
+	}
+}
+
+func sleepOrTrigger(ctx context.Context, d time.Duration, trigger <-chan struct{}) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-trigger:
+		return true
 	case <-t.C:
 		return true
 	}

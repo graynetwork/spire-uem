@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -13,7 +14,12 @@ import (
 	"github.com/spire-uem/spire-uem/internal/types"
 )
 
-var validPkgNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9+._-]*$`)
+var (
+	validPkgNameRe       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9+._-]*$`)
+	aptConfDir           = "/etc/apt/apt.conf.d"
+	validAptFileNameRe   = regexp.MustCompile(`^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*$`)
+	dangerousAptConfigRe = regexp.MustCompile(`(?i)\b(pre-invoke|post-invoke|invoke|proxy-auto-detect)\b`)
+)
 
 // BuildInstalledPackageMap converts dpkg-query lines ("pkg\tversion") into a lookup map of package names.
 func BuildInstalledPackageMap(dpkgLines []string) map[string]bool {
@@ -172,6 +178,35 @@ func ReconcilePackagePresence(ctx context.Context, policy types.AssignedPolicy, 
 		}
 	}
 
+	if payload.AutoInstall != nil && !*payload.AutoInstall {
+		assignType := ResolveAssignmentType(policy.AssignmentType, policy.Payload)
+		if assignType == types.AssignmentAvailable {
+			execMeta, _ := json.Marshal(map[string]any{
+				"package_name":    pkgName,
+				"assignment_type": "AVAILABLE",
+				"installed":       false,
+				"checked_at":      time.Now().UTC().Format(time.RFC3339),
+			})
+			return types.PolicyExecutionItem{
+				PolicyID:         policy.ID,
+				ComplianceStatus: types.ComplianceCompliant,
+				ExecutionOutput:  execMeta,
+			}
+		}
+		execMeta, _ := json.Marshal(map[string]any{
+			"package_name":    pkgName,
+			"assignment_type": "REQUIRED",
+			"installed":       false,
+			"checked_at":      time.Now().UTC().Format(time.RFC3339),
+		})
+		return types.PolicyExecutionItem{
+			PolicyID:         policy.ID,
+			ComplianceStatus: types.ComplianceNonCompliant,
+			ErrorMessage:     "Action Required: Install",
+			ExecutionOutput:  execMeta,
+		}
+	}
+
 	return EnforcePackagePresencePolicy(ctx, policy)
 }
 
@@ -211,4 +246,100 @@ func EnforcePackagePresencePolicy(ctx context.Context, policy types.AssignedPoli
 		ComplianceStatus: types.ComplianceCompliant,
 		ExecutionOutput:  execMeta,
 	}
+}
+
+// ReconcileAptConfig ensures an APT configuration file in /etc/apt/apt.conf.d matches the policy specification.
+func ReconcileAptConfig(ctx context.Context, policy types.AssignedPolicy) types.PolicyExecutionItem {
+	_ = ctx
+	var payload types.AptConfigPayload
+	if err := json.Unmarshal(policy.Payload, &payload); err != nil {
+		return types.PolicyExecutionItem{
+			PolicyID:         policy.ID,
+			ComplianceStatus: types.ComplianceFailed,
+			ErrorMessage:     fmt.Sprintf("invalid APT_CONFIG payload: %v", err),
+		}
+	}
+
+	fileName := strings.TrimSpace(payload.FileName)
+	if fileName == "" || !validAptFileNameRe.MatchString(fileName) || strings.Contains(fileName, "..") || strings.Contains(fileName, "/") {
+		return types.PolicyExecutionItem{
+			PolicyID:         policy.ID,
+			ComplianceStatus: types.ComplianceFailed,
+			ErrorMessage:     fmt.Sprintf("invalid apt conf file_name: %q", fileName),
+		}
+	}
+
+	if err := os.MkdirAll(aptConfDir, 0755); err != nil {
+		return types.PolicyExecutionItem{
+			PolicyID:         policy.ID,
+			ComplianceStatus: types.ComplianceFailed,
+			ErrorMessage:     fmt.Sprintf("mkdir %s: %v", aptConfDir, err),
+		}
+	}
+
+	targetPath := filepath.Join(aptConfDir, fileName)
+	content := strings.TrimSpace(payload.Content)
+	if dangerousAptConfigRe.MatchString(content) || strings.ContainsRune(content, 0) {
+		return types.PolicyExecutionItem{
+			PolicyID:         policy.ID,
+			ComplianceStatus: types.ComplianceFailed,
+			ErrorMessage:     "APT_CONFIG content contains disallowed hook/exec directives or null bytes",
+		}
+	}
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+
+	existing, err := os.ReadFile(targetPath)
+	if err == nil && string(existing) == content {
+		execMeta, _ := json.Marshal(map[string]any{
+			"file":       targetPath,
+			"drifted":    false,
+			"action":     "verified_content",
+			"checked_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		return types.PolicyExecutionItem{
+			PolicyID:         policy.ID,
+			ComplianceStatus: types.ComplianceCompliant,
+			ExecutionOutput:  execMeta,
+		}
+	}
+
+	if err := atomicWriteFile(targetPath, []byte(content), 0644); err != nil {
+		return types.PolicyExecutionItem{
+			PolicyID:         policy.ID,
+			ComplianceStatus: types.ComplianceFailed,
+			ErrorMessage:     fmt.Sprintf("atomic write apt conf %s: %v", targetPath, err),
+		}
+	}
+
+	execMeta, _ := json.Marshal(map[string]any{
+		"file":        targetPath,
+		"drifted":     true,
+		"reasserted":  true,
+		"enforced_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	return types.PolicyExecutionItem{
+		PolicyID:         policy.ID,
+		ComplianceStatus: types.ComplianceCompliant,
+		ExecutionOutput:  execMeta,
+	}
+}
+
+// RemoveAptConfig removes an APT configuration file when the policy is revoked.
+func RemoveAptConfig(ctx context.Context, policy types.AssignedPolicy) error {
+	_ = ctx
+	var payload types.AptConfigPayload
+	if err := json.Unmarshal(policy.Payload, &payload); err != nil {
+		return fmt.Errorf("unmarshal APT_CONFIG payload: %w", err)
+	}
+	fileName := strings.TrimSpace(payload.FileName)
+	if fileName == "" || !validAptFileNameRe.MatchString(fileName) {
+		return fmt.Errorf("invalid apt conf file_name: %q", fileName)
+	}
+	targetPath := filepath.Join(aptConfDir, fileName)
+	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove apt conf %s: %w", targetPath, err)
+	}
+	return nil
 }

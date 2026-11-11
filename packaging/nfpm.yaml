@@ -11,11 +11,52 @@ vendor: "SpireUEM"
 homepage: "https://github.com/spire-uem/spire-uem"
 license: "Apache-2.0"
 
+depends:
+  - python3
+  - python3-gi
+  - gir1.2-gtk-4.0
+  - gir1.2-adw-1
+
 contents:
   - src: ./bin/spired
     dst: /usr/local/bin/spired
     file_info:
       mode: 0755
+      owner: root
+      group: root
+
+  - src: ./bin/spire-ctl
+    dst: /usr/bin/spire-ctl
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: ./bin/spire-hub
+    dst: /usr/bin/spire-hub
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: ./cmd/spire-hub/spire-hub.py
+    dst: /usr/lib/spire/spire-hub.py
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: ./packaging/desktop/spire-hub.desktop
+    dst: /usr/share/applications/spire-hub.desktop
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  - src: ./packaging/icons/spire-hub.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/spire-hub.svg
+    file_info:
+      mode: 0644
       owner: root
       group: root
 

@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS enrollment_tokens CASCADE;
+DROP TABLE IF EXISTS system_settings CASCADE;

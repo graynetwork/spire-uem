@@ -1,0 +1,84 @@
+{{define "login.html"}}
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In - SpireUEM</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0a0e17;
+        }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex items-center justify-center font-sans antialiased p-4 selection:bg-blue-600/30">
+    <div class="max-w-sm w-full bg-[#0f1420] border border-[#1a2234] rounded-lg p-7 shadow-xl">
+        <div class="flex items-center space-x-2.5 mb-6 justify-center">
+            <div class="h-8 w-8 rounded-md bg-blue-600 flex items-center justify-center font-bold text-white text-sm">
+                <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+            </div>
+            <div>
+                <span class="text-lg font-semibold tracking-tight text-white">Spire<span class="text-blue-400">UEM</span></span>
+            </div>
+        </div>
+
+        <h1 class="text-center text-sm font-medium text-slate-200 mb-1">Administrative Sign In</h1>
+        <p class="text-center text-xs text-slate-500 mb-5">Enterprise Unified Endpoint Management</p>
+
+        {{if .Error}}
+        <div class="mb-4 p-2.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs text-center font-mono">
+            {{.Error}}
+        </div>
+        {{end}}
+
+        {{if and .SSO .SSO.OIDCEnabled}}
+        <div class="mb-4">
+            <a href="/auth/oidc/login" class="w-full flex items-center justify-center space-x-2 py-2 px-3 bg-[#162238] hover:bg-[#1d2d4a] border border-blue-500/30 text-white font-medium text-xs rounded-md transition shadow-sm">
+                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.39-2.823 1.07-4"/></svg>
+                <span>Sign in with Corporate SSO</span>
+            </a>
+        </div>
+        {{if or (not .SSO) .SSO.AllowLocalLogin}}
+        <div class="relative flex py-2 items-center mb-4">
+            <div class="flex-grow border-t border-[#1a2234]"></div>
+            <span class="flex-shrink mx-3 text-[11px] text-slate-500 font-mono">or local credentials</span>
+            <div class="flex-grow border-t border-[#1a2234]"></div>
+        </div>
+        {{end}}
+        {{end}}
+
+        {{if or (not .SSO) .SSO.AllowLocalLogin (not .SSO.OIDCEnabled)}}
+        <form action="/login" method="POST" class="space-y-3.5">
+            <div>
+                <label for="username" class="block text-xs font-medium text-slate-400 mb-1">Username</label>
+                <input type="text" id="username" name="username" required autofocus autocomplete="username"
+                       class="w-full px-3 py-1.5 bg-[#0a0e17] border border-[#1a2234] rounded-md text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition">
+            </div>
+
+            <div>
+                <label for="password" class="block text-xs font-medium text-slate-400 mb-1">Password</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password"
+                       class="w-full px-3 py-1.5 bg-[#0a0e17] border border-[#1a2234] rounded-md text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition">
+            </div>
+
+            <button type="submit"
+                    class="w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-md transition focus:outline-none focus:ring-1 focus:ring-blue-500 mt-2 shadow-sm">
+                Sign In to Console
+            </button>
+        </form>
+        {{else}}
+        <div class="p-3 bg-[#141b2a] border border-[#1a2234] rounded-md text-center text-xs text-slate-400">
+            Local credentials login is disabled. Please authenticate via your enterprise OpenID Connect identity provider above.
+        </div>
+        {{end}}
+
+        <div class="mt-6 text-center text-[11px] font-mono text-slate-500 border-t border-[#1a2234] pt-4">
+            Debian 12 Endpoint Fleet Control
+        </div>
+    </div>
+</body>
+</html>
+{{end}}

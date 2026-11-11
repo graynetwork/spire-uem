@@ -19,7 +19,10 @@ services:
       - spire-test-net
 
   spire-server:
-    image: debian:12-slim
+    build:
+      context: .
+      dockerfile: test/Dockerfile.server
+    image: spire-test-server:latest
     container_name: spire-test-server
     restart: on-failure
     working_dir: /app
@@ -27,6 +30,9 @@ services:
       DATABASE_URL: "postgres://spire:spirepassword@postgres:5432/spire_uem?sslmode=disable"
       SPIRE_LISTEN_ADDR: ":8080"
       SPIRE_MIGRATIONS_PATH: "/app/migrations/000001_init_schema.up.sql"
+      SPIRE_SIMULATE_TPM2: "1"
+      SPIRE_SESSION_SECRET: "spire-e2e-session-secret-key-32b-fixed"
+      SPIRE_APT_REPO_DIR: "/var/www/apt/spire"
     ports:
       - "18080:8080"
     volumes:
@@ -34,6 +40,8 @@ services:
       - ./migrations:/app/migrations:ro
       - ./packaging:/app/packaging:ro
       - ./dist:/app/dist:ro
+      - ./internal/crypto:/app/internal/crypto
+      - apt-repo-data:/var/www/apt/spire
     command: ["/app/spire-server"]
     depends_on:
       postgres:
@@ -42,6 +50,7 @@ services:
       - spire-test-net
 
   debian-client:
+    privileged: true
     build:
       context: .
       dockerfile: test/Dockerfile.debian-client
@@ -52,6 +61,11 @@ services:
       SPIRE_TOKEN_PATH: "/etc/spire/token"
       SPIRE_POLL_INTERVAL: "2s"
       SPIRE_CHECKIN_INTERVAL: "3s"
+      SPIRE_SIMULATE_TPM2: "1"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     depends_on:
       - spire-server
     networks:
@@ -60,3 +74,6 @@ services:
 networks:
   spire-test-net:
     driver: bridge
+
+volumes:
+  apt-repo-data:

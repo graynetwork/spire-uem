@@ -13,8 +13,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/spire-uem/spire-uem/internal/api"
+	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/db"
+	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/web"
 )
 
@@ -38,25 +40,36 @@ func main() {
 	}
 	log.Printf("[spire-server] connected to PostgreSQL and verified schema migrations")
 
-	repo := db.NewRepository(pool)
+	repo := db.NewRepositoryWithKEK(pool, cfg.Server.KEKPath)
+	hub := gateway.NewGatewayHub(repo)
+	auditor := audit.NewForwarder(repo, cfg.Server.SIEMSyslogAddr)
 
 	r := chi.NewRouter()
-	r.Use(middleware.RealIP)
+	r.Use(web.TrustedProxyRealIPMiddleware)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(web.SecureHeadersMiddleware)
+	if cfg.Server.EnforceHTTPS {
+		r.Use(web.EnforceHTTPSMiddleware(true))
+	}
 
-	api.RegisterRoutes(r, repo)
+	api.RegisterRoutesWithStorage(r, repo, hub, cfg.Server.BundleStorageDir)
 
-	webHandler, err := web.NewHandler(repo)
+	webHandler, err := web.NewHandler(repo, hub, auditor)
 	if err != nil {
 		log.Fatalf("[spire-server] failed to initialize web UI templates: %v", err)
 	}
+	webHandler.SetEnforceHTTPS(cfg.Server.EnforceHTTPS)
+	webHandler.SetAptRepoDir(cfg.Server.AptRepoDir)
+	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

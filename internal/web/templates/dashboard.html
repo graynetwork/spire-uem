@@ -1,0 +1,567 @@
+{{define "dashboard_content"}}
+<div class="space-y-6">
+    <!-- Top Welcome Banner -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+        <div>
+            <h1 class="text-lg font-semibold tracking-tight text-white">Fleet Operations Overview</h1>
+            <p class="text-xs text-slate-400 mt-0.5">Desired-state compliance, live patch telemetry, and CIS benchmark audit.</p>
+        </div>
+        <div class="flex items-center space-x-2.5">
+            <button hx-get="/admin/dashboard/metrics" hx-target="#metric-cards" hx-swap="outerHTML" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 border border-[#1a2234] transition">
+                <svg class="w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                <span>Refresh Metrics</span>
+            </button>
+            <a href="/admin/devices" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                <span>Fleet Inventory</span>
+            </a>
+        </div>
+    </div>
+
+    <!-- 6-Metric Stat Ribbon -->
+    {{template "dashboard_metrics_partial" .}}
+
+    <!-- Middle Visualization Row (3 Cards) -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <!-- 1. Update Status Donut Chart -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between">
+            <div>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xs font-semibold text-white">Update Status Distribution</h3>
+                    <span class="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-[#141b2a] border border-[#1a2234]">Live</span>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-0.5">Fleet patch compliance distribution</p>
+            </div>
+            
+            <div class="relative my-3 flex items-center justify-center h-48">
+                <canvas id="updateStatusChart"
+                    data-uptodate="{{.Metrics.UpToDateHosts}}"
+                    data-needsupdates="{{.Metrics.NeedsUpdates}}"
+                    data-errored="{{.Metrics.CriticalHosts}}"></canvas>
+            </div>
+
+            <!-- Legend Row -->
+            <div class="grid grid-cols-3 gap-2 pt-3 border-t border-[#1a2234] text-center">
+                <div class="p-1.5 rounded bg-[#141b2a]">
+                    <div class="flex items-center justify-center space-x-1.5">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                        <span class="text-[11px] text-slate-300">Up to date</span>
+                    </div>
+                    <div class="text-xs font-mono font-semibold text-emerald-400 mt-0.5 tabular-nums">{{.Metrics.UpToDateHosts}}</div>
+                </div>
+                <div class="p-1.5 rounded bg-[#141b2a]">
+                    <div class="flex items-center justify-center space-x-1.5">
+                        <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+                        <span class="text-[11px] text-slate-300">Needs update</span>
+                    </div>
+                    <div class="text-xs font-mono font-semibold text-amber-400 mt-0.5 tabular-nums">{{.Metrics.NeedsUpdates}}</div>
+                </div>
+                <div class="p-1.5 rounded bg-[#141b2a]">
+                    <div class="flex items-center justify-center space-x-1.5">
+                        <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                        <span class="text-[11px] text-slate-300">Errored</span>
+                    </div>
+                    <div class="text-xs font-mono font-semibold text-rose-400 mt-0.5 tabular-nums">{{.Metrics.CriticalHosts}}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. OS Distribution Horizontal Bar Chart -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between">
+            <div>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xs font-semibold text-white">OS Distribution</h3>
+                    <span class="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-[#141b2a] border border-[#1a2234]">Linux</span>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-0.5">Operating system breakdown across endpoints</p>
+            </div>
+
+            <div class="relative my-3 flex items-center justify-center h-48">
+                <canvas id="osDistChart" data-total="{{.Metrics.TotalHosts}}"></canvas>
+            </div>
+
+            <div class="pt-3 border-t border-[#1a2234] flex items-center justify-between text-[11px] text-slate-400 px-1">
+                <span>Baseline: <span class="text-blue-400 font-mono">Debian 12 Bookworm</span></span>
+                <span>Kernel: <span class="text-slate-300 font-mono">6.1.0-lts</span></span>
+            </div>
+        </div>
+
+        <!-- 3. Package Trends Over Time Line Chart -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between">
+            <div>
+                <div class="flex items-center justify-between gap-2">
+                    <h3 class="text-xs font-semibold text-white">Security Update Trajectory</h3>
+                    <span class="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-[#141b2a] border border-[#1a2234]">30d Window</span>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-0.5">Pending security update trajectory over time</p>
+            </div>
+
+            <div class="relative my-3 flex items-center justify-center h-48">
+                <canvas id="packageTrendsChart"></canvas>
+            </div>
+
+            <div class="pt-3 border-t border-[#1a2234] flex items-center justify-between text-[11px] text-slate-400 px-1">
+                <span class="flex items-center space-x-1.5">
+                    <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+                    <span>CVE Resolution Rate</span>
+                </span>
+                <span class="text-emerald-400 font-mono font-medium">92.8% Resolved</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Detailed Cards Row (4 equal columns) -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+        <!-- 1. Host Compliance Status 2x2 Grid -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between">
+            <div>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xs font-semibold text-white">Host Compliance Status</h3>
+                    <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-0.5">Hardware &amp; desired-state posture</p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 my-3">
+                <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                    <div class="text-[11px] font-medium text-emerald-400">Compliant</div>
+                    <div class="text-xl font-semibold font-mono text-white mt-1 tabular-nums">{{.Metrics.CompliantHosts}}</div>
+                </div>
+                <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                    <div class="text-[11px] font-medium text-amber-400">Warning</div>
+                    <div class="text-xl font-semibold font-mono text-white mt-1 tabular-nums">{{.Metrics.WarningHosts}}</div>
+                </div>
+                <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                    <div class="text-[11px] font-medium text-rose-400">Critical</div>
+                    <div class="text-xl font-semibold font-mono text-white mt-1 tabular-nums">{{.Metrics.CriticalHosts}}</div>
+                </div>
+                <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                    <div class="text-[11px] font-medium text-slate-400">Unattested</div>
+                    <div class="text-xl font-semibold font-mono text-white mt-1 tabular-nums">{{.Metrics.UnattestedHosts}}</div>
+                </div>
+            </div>
+
+            <div class="pt-3 border-t border-[#1a2234] flex items-center justify-between text-[11px] text-slate-400">
+                <span>Hardware Attested</span>
+                <span class="text-emerald-400 font-mono font-medium">{{.Metrics.AttestedHosts}} / {{.Metrics.TotalHosts}}</span>
+            </div>
+        </div>
+
+        <!-- 2. Active Benchmark Scans Card -->
+        {{template "benchmark_card_partial" .}}
+
+        <!-- 3. Recent Collection Table -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between">
+            <div>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xs font-semibold text-white">Recent Collection</h3>
+                    <a href="/admin/devices" class="text-[11px] text-blue-400 hover:text-blue-300">View all</a>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-0.5">Latest endpoint check-in timestamps</p>
+            </div>
+
+            <div class="my-3 overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="text-[11px] font-medium text-slate-500 border-b border-[#1a2234]">
+                            <th class="pb-1.5 font-normal">Host</th>
+                            <th class="pb-1.5 text-right font-normal">Last Check-in</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-[#1a2234]/60">
+                        {{if .Metrics.RecentHosts}}
+                            {{range .Metrics.RecentHosts}}
+                            <tr class="hover:bg-[#141b2a]/50 transition">
+                                <td class="py-2 font-mono text-xs font-medium truncate max-w-[130px]" title="{{.Hostname}}">
+                                    <a href="/admin/policies?device_id={{.DeviceID}}" class="text-blue-400 hover:underline">
+                                        {{.Hostname}}
+                                    </a>
+                                </td>
+                                <td class="py-2 text-right text-xs font-mono text-slate-400 whitespace-nowrap">
+                                    {{.LastSeen}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        {{else}}
+                            <tr>
+                                <td colspan="2" class="py-4 text-center text-xs text-slate-600">
+                                    No host telemetry reported yet
+                                </td>
+                            </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="pt-3 border-t border-[#1a2234] flex items-center justify-between text-[11px] text-slate-400">
+                <span>Polling Interval</span>
+                <span class="text-slate-300 font-mono">10s telemetry</span>
+            </div>
+        </div>
+
+        <!-- 4. Recent Users Logged In Table -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between">
+            <div>
+                <div class="flex items-center justify-between">
+                    <h3 class="text-xs font-semibold text-white">Recent Users Logged In</h3>
+                    <svg class="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-0.5">Operator access audit log</p>
+            </div>
+
+            <div class="my-3 overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="text-[11px] font-medium text-slate-500 border-b border-[#1a2234]">
+                            <th class="pb-1.5 font-normal">Operator</th>
+                            <th class="pb-1.5 text-right font-normal">Last Login</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-[#1a2234]/60">
+                        {{if .Metrics.RecentUsers}}
+                            {{range .Metrics.RecentUsers}}
+                            <tr class="hover:bg-[#141b2a]/50 transition">
+                                <td class="py-2 text-xs text-slate-200 font-medium flex items-center space-x-2">
+                                    <span class="w-4 h-4 rounded bg-[#141b2a] border border-[#1a2234] flex items-center justify-center text-[10px] text-blue-400 font-mono">
+                                        {{slice .Username 0 1}}
+                                    </span>
+                                    <span class="truncate max-w-[120px]">{{.Username}}</span>
+                                </td>
+                                <td class="py-2 text-right text-xs font-mono text-slate-400 whitespace-nowrap">
+                                    {{.LastLogin}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        {{else}}
+                            <tr class="hover:bg-[#141b2a]/50 transition">
+                                <td class="py-2 text-xs text-slate-200 font-medium flex items-center space-x-2">
+                                    <span class="w-4 h-4 rounded bg-[#141b2a] border border-[#1a2234] flex items-center justify-center text-[10px] text-blue-400 font-mono">A</span>
+                                    <span>Super Admin</span>
+                                </td>
+                                <td class="py-2 text-right text-xs text-emerald-400 font-medium">Active now</td>
+                            </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="pt-3 border-t border-[#1a2234] flex items-center justify-between text-[11px] text-slate-400">
+                <span>Auth Handshake</span>
+                <span class="text-slate-300 font-mono">HMAC-SHA256</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Chart.js Visualization Scripts -->
+<script>
+(function() {
+    let updateChart = null;
+    let osChart = null;
+    let trendChart = null;
+
+    function renderCharts() {
+        if (typeof Chart === 'undefined') {
+            setTimeout(renderCharts, 100);
+            return;
+        }
+
+        // 1. Update Status Donut Chart
+        const elUpdate = document.getElementById('updateStatusChart');
+        if (elUpdate) {
+            if (updateChart) updateChart.destroy();
+            const upToDate = Number(elUpdate.dataset.uptodate || 0);
+            const needsUpdates = Number(elUpdate.dataset.needsupdates || 0);
+            const errored = Number(elUpdate.dataset.errored || 0);
+            const hasData = (upToDate + needsUpdates + errored) > 0;
+
+            updateChart = new Chart(elUpdate, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Up to date', 'Needs updates', 'Errored'],
+                    datasets: [{
+                        data: hasData ? [upToDate, needsUpdates, errored] : [1, 0, 0],
+                        backgroundColor: hasData ? ['#10b981', '#f59e0b', '#f43f5e'] : ['#1a2234', '#141b2a', '#0a0e17'],
+                        borderColor: '#0f1420',
+                        borderWidth: 2,
+                        hoverOffset: 3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '76%',
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#141b2a',
+                            borderColor: '#1a2234',
+                            borderWidth: 1,
+                            titleColor: '#f1f5f9',
+                            bodyColor: '#94a3b8',
+                            bodyFont: { family: 'monospace' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // 2. OS Distribution Horizontal Bar Chart
+        const elOS = document.getElementById('osDistChart');
+        if (elOS) {
+            if (osChart) osChart.destroy();
+            const total = Number(elOS.dataset.total || 0);
+
+            osChart = new Chart(elOS, {
+                type: 'bar',
+                data: {
+                    labels: ['Debian 12 Bookworm', 'Debian 11 Bullseye', 'Other Linux'],
+                    datasets: [{
+                        label: 'Endpoints',
+                        data: total > 0 ? [total, 0, 0] : [0, 0, 0],
+                        backgroundColor: ['#2563eb', '#3b82f6', '#64748b'],
+                        borderRadius: 3,
+                        barThickness: 16
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#141b2a',
+                            borderColor: '#1a2234',
+                            borderWidth: 1,
+                            titleColor: '#f1f5f9',
+                            bodyColor: '#94a3b8',
+                            bodyFont: { family: 'monospace' }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(26, 34, 52, 0.6)' },
+                            ticks: { color: '#64748b', font: { size: 10, family: 'monospace' }, precision: 0 },
+                            beginAtZero: true
+                        },
+                        y: {
+                            grid: { display: false },
+                            ticks: { color: '#94a3b8', font: { size: 11 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        // 3. Package Trends Over Time Line Chart
+        const elTrend = document.getElementById('packageTrendsChart');
+        if (elTrend) {
+            if (trendChart) trendChart.destroy();
+            trendChart = new Chart(elTrend, {
+                type: 'line',
+                data: {
+                    labels: ['Day 1', 'Day 5', 'Day 10', 'Day 15', 'Day 20', 'Day 25', 'Day 30'],
+                    datasets: [{
+                        label: 'Security Updates',
+                        data: [12, 10, 8, 9, 5, 3, 1],
+                        borderColor: '#2563eb',
+                        backgroundColor: 'transparent',
+                        tension: 0.2,
+                        borderWidth: 1.5,
+                        pointBackgroundColor: '#2563eb',
+                        pointBorderColor: '#0a0e17',
+                        pointBorderWidth: 1.5,
+                        pointRadius: 3,
+                        pointHoverRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#141b2a',
+                            borderColor: '#1a2234',
+                            borderWidth: 1,
+                            titleColor: '#f1f5f9',
+                            bodyColor: '#94a3b8',
+                            bodyFont: { family: 'monospace' }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(26, 34, 52, 0.6)' },
+                            ticks: { color: '#64748b', font: { size: 10, family: 'monospace' } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(26, 34, 52, 0.6)' },
+                            ticks: { color: '#64748b', font: { size: 10, family: 'monospace' }, precision: 0 },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', renderCharts);
+    } else {
+        renderCharts();
+    }
+})();
+</script>
+{{end}}
+
+{{define "dashboard_metrics_partial"}}
+<div id="metric-cards" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+    <!-- 1. Total Hosts -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
+        <div class="text-[11px] font-medium text-slate-400">Total Hosts</div>
+        <div class="text-xl font-semibold font-mono text-white mt-1.5 tabular-nums">{{.Metrics.TotalHosts}}</div>
+        <div class="text-[10px] text-slate-500 mt-1">Enrolled fleet</div>
+    </div>
+
+    <!-- 2. Up to Date -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
+        <div class="text-[11px] font-medium text-slate-400">Up to Date</div>
+        <div class="text-xl font-semibold font-mono text-emerald-400 mt-1.5 tabular-nums">{{.Metrics.UpToDateHosts}}</div>
+        <div class="text-[10px] text-slate-500 mt-1">Zero pending drift</div>
+    </div>
+
+    <!-- 3. Needs Updates -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
+        <div class="text-[11px] font-medium text-slate-400">Needs Updates</div>
+        <div class="text-xl font-semibold font-mono text-amber-400 mt-1.5 tabular-nums">{{.Metrics.NeedsUpdates}}</div>
+        <div class="text-[10px] text-slate-500 mt-1">Pending sync cycle</div>
+    </div>
+
+    <!-- 4. Needs Reboots -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
+        <div class="text-[11px] font-medium text-slate-400">Needs Reboots</div>
+        <div class="text-xl font-semibold font-mono text-orange-400 mt-1.5 tabular-nums">{{.Metrics.NeedsReboot}}</div>
+        <div class="text-[10px] text-slate-500 mt-1">Kernel / OS update</div>
+    </div>
+
+    <!-- 5. Outdated Packages -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
+        <div class="text-[11px] font-medium text-slate-400">Outdated Packages</div>
+        <div class="text-xl font-semibold font-mono text-slate-200 mt-1.5 tabular-nums">{{.Metrics.OutdatedPackages}}</div>
+        <div class="text-[10px] text-slate-500 mt-1">APT upstream delta</div>
+    </div>
+
+    <!-- 6. Security Updates -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
+        <div class="text-[11px] font-medium text-slate-400">Security Updates</div>
+        <div class="text-xl font-semibold font-mono text-rose-400 mt-1.5 tabular-nums">{{.Metrics.SecurityUpdates}}</div>
+        <div class="text-[10px] text-slate-500 mt-1">Pending CVE patches</div>
+    </div>
+</div>
+{{end}}
+
+{{define "benchmark_card_partial"}}
+<div id="active-benchmark-card" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between"
+     {{if and .Metrics.ActiveScans (gt (len .Metrics.ActiveScans) 0)}}hx-get="/admin/dashboard/benchmark-card" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+    <div>
+        <div class="flex items-center justify-between">
+            <h3 class="text-xs font-semibold text-white">CIS Benchmark Scans</h3>
+            {{if and .Metrics.ActiveScans (gt (len .Metrics.ActiveScans) 0)}}
+            <div class="flex items-center space-x-1.5">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span class="text-[10px] font-mono text-emerald-400">Evaluating</span>
+            </div>
+            {{else}}
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
+            {{end}}
+        </div>
+        <p class="text-[11px] text-slate-500 mt-0.5">Automated Debian 12 security audit</p>
+    </div>
+
+    {{if and .Metrics.ActiveScans (gt (len .Metrics.ActiveScans) 0)}}
+    <!-- Running Scans State -->
+    <div class="my-3 space-y-2">
+        {{range .Metrics.ActiveScans}}
+        <div class="p-2.5 bg-[#141b2a] border border-[#1a2234] rounded-md">
+            <div class="flex items-center justify-between">
+                <span class="font-mono text-xs font-medium text-blue-400 truncate max-w-[140px]" title="{{.Hostname}}">{{if .Hostname}}{{.Hostname}}{{else}}Device {{slice .DeviceID 0 8}}{{end}}</span>
+                <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Active</span>
+            </div>
+            <div class="text-[11px] text-slate-400 truncate mt-1" title="{{.Profile}}">
+                {{.Profile}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else if and .Metrics.BenchmarkSummary (gt .Metrics.BenchmarkSummary.TotalScans 0)}}
+    <!-- Latest CIS Benchmark Score & Tally -->
+    <div class="my-3">
+        <div class="flex items-baseline justify-between mb-1.5">
+            <span class="text-[11px] text-slate-400">Fleet CIS Score</span>
+            <span class="text-xl font-mono font-semibold {{if ge .Metrics.BenchmarkSummary.LatestScore 80.0}}text-emerald-400{{else if ge .Metrics.BenchmarkSummary.LatestScore 60.0}}text-amber-400{{else}}text-rose-400{{end}}">
+                {{printf "%.1f" .Metrics.BenchmarkSummary.LatestScore}}%
+            </span>
+        </div>
+        <!-- Progress bar -->
+        <div class="w-full bg-[#141b2a] rounded-sm h-1.5 mb-2.5 overflow-hidden border border-[#1a2234]">
+            <div class="h-1.5 {{if ge .Metrics.BenchmarkSummary.LatestScore 80.0}}bg-emerald-500{{else if ge .Metrics.BenchmarkSummary.LatestScore 60.0}}bg-amber-500{{else}}bg-rose-500{{end}}"
+                 style="width: {{printf "%.1f" .Metrics.BenchmarkSummary.LatestScore}}%"></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2 text-center text-[11px] pt-1">
+            <div class="p-1.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                <div class="text-emerald-400 font-mono font-semibold text-xs tabular-nums">{{.Metrics.BenchmarkSummary.RulesPassed}}</div>
+                <div class="text-slate-500 text-[10px]">Rules Passed</div>
+            </div>
+            <div class="p-1.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                <div class="text-rose-400 font-mono font-semibold text-xs tabular-nums">{{.Metrics.BenchmarkSummary.RulesFailed}}</div>
+                <div class="text-slate-500 text-[10px]">Rules Failed</div>
+            </div>
+        </div>
+        {{if and .Metrics.BenchmarkSummary.LatestFailedRules (gt (len .Metrics.BenchmarkSummary.LatestFailedRules) 0)}}
+        <div class="mt-2.5 pt-2.5 border-t border-[#1a2234] space-y-1.5">
+            <div class="text-[10px] font-medium text-slate-400">Failed Rules</div>
+            <div class="space-y-1 max-h-32 overflow-y-auto pr-1">
+                {{range .Metrics.BenchmarkSummary.LatestFailedRules}}
+                <div id="rule-remediate-{{.RuleID}}" class="flex items-center justify-between p-1.5 rounded bg-[#141b2a] border border-[#1a2234] text-[11px]">
+                    <div class="truncate max-w-[150px]" title="{{.RuleID}}">
+                        <span class="text-rose-400 font-mono text-[10px]">{{.RuleID}}</span>
+                    </div>
+                    {{if canRemediateRule .RuleID}}
+                    <button hx-post="/admin/benchmarks/remediate-rule"
+                            hx-vals='{"rule_id": "{{.RuleID}}", "device_id": "{{$.Metrics.BenchmarkSummary.LatestDeviceID}}"}'
+                            hx-target="#rule-remediate-{{.RuleID}}"
+                            hx-swap="outerHTML"
+                            hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                            class="px-1.5 py-0.5 text-[10px] font-mono text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded transition">
+                        Remediate
+                    </button>
+                    {{else}}
+                    <span class="text-[10px] text-slate-600 font-mono">Manual</span>
+                    {{end}}
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <!-- Empty state -->
+    <div class="my-4 flex flex-col items-center justify-center text-center px-2">
+        <h4 class="text-xs font-medium text-slate-400">No scans executed yet</h4>
+        <p class="text-[10px] text-slate-600 mt-0.5">Audit CIS Debian 12 baseline across fleet.</p>
+    </div>
+    {{end}}
+
+    <div class="pt-2.5 border-t border-[#1a2234]">
+        <button hx-post="/admin/benchmarks/scan-all"
+                hx-target="#active-benchmark-card"
+                hx-swap="outerHTML"
+                hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'
+                class="w-full py-1.5 px-2.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-500 rounded-md transition flex items-center justify-center space-x-1.5">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span>Run Fleet Benchmark</span>
+        </button>
+    </div>
+</div>
+{{end}}

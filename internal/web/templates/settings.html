@@ -1,0 +1,844 @@
+{{define "settings_content"}}
+<div class="space-y-6 max-w-6xl mx-auto">
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+        <div>
+            <h1 class="text-lg font-semibold text-white tracking-tight">System Settings</h1>
+            <p class="text-xs text-slate-400 mt-0.5">Global administrative parameters, RBAC user directory, OIDC Single Sign-On, and cryptographic baselines</p>
+        </div>
+        <div class="flex items-center space-x-2">
+            <span class="px-2.5 py-1 text-[11px] font-mono rounded bg-[#141b2a] border border-[#1a2234] text-slate-300">
+                Spire Control Plane v2.4
+            </span>
+        </div>
+    </div>
+
+    <!-- Flash Notification Toast -->
+    {{if .FlashMessage}}
+    <div id="flash-banner" class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-xs text-emerald-400 font-mono flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+            <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+            <span>{{.FlashMessage}}</span>
+        </div>
+        <button type="button" onclick="document.getElementById('flash-banner').remove()" class="text-emerald-400 hover:text-emerald-200">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+    </div>
+    {{end}}
+
+    <!-- Tab Navigation -->
+    <div class="border-b border-[#1a2234]">
+        <nav class="flex space-x-1 sm:space-x-4 overflow-x-auto" id="settings-tabs">
+            <button type="button" onclick="switchSettingsTab('general')" id="tab-btn-general"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if or (eq .ActiveTab "general") (not .ActiveTab)}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                General
+            </button>
+            <button type="button" onclick="switchSettingsTab('users')" id="tab-btn-users"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "users"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                Users &amp; Roles
+            </button>
+            <button type="button" onclick="switchSettingsTab('sso')" id="tab-btn-sso"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "sso"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                Single Sign-On (OIDC)
+            </button>
+            <button type="button" onclick="switchSettingsTab('storage')" id="tab-btn-storage"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "storage"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                APT &amp; Storage
+            </button>
+            <button type="button" onclick="switchSettingsTab('crypto')" id="tab-btn-crypto"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "crypto"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                Hardware &amp; Security
+            </button>
+            <button type="button" onclick="switchSettingsTab('compliance')" id="tab-btn-compliance"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "compliance"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                Compliance
+            </button>
+            <button type="button" onclick="switchSettingsTab('siem')" id="tab-btn-siem"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "siem"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                SIEM &amp; Logging
+            </button>
+            <button type="button" onclick="switchSettingsTab('tokens')" id="tab-btn-tokens"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "tokens"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                Enrollment Tokens
+            </button>
+        </nav>
+    </div>
+
+    <!-- TAB 1: General Settings -->
+    <div id="tab-pane-general" class="settings-pane {{if and .ActiveTab (ne .ActiveTab "general")}}hidden{{end}}">
+        <form hx-post="/admin/settings/general" hx-target="#general-toast" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div id="general-toast"></div>
+
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Server Base URL</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">The canonical public HTTPS/HTTP URL endpoints use for sync, bundle downloads, and WebSocket connections.</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <input type="text" name="server_base_url" value="{{.General.ServerBaseURL}}" required
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Agent Sync Interval</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Polling and heartbeating interval in seconds for endpoint background agents (default: 300s).</p>
+                    </div>
+                    <div class="w-full sm:w-72 flex items-center space-x-2">
+                        <input type="number" name="agent_sync_interval" value="{{.General.AgentSyncInterval}}" min="10" max="86400" required
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                        <span class="text-xs text-slate-500">sec</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
+                    Save General Settings
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- TAB 2: Users & Roles (RBAC) -->
+    <div id="tab-pane-users" class="settings-pane {{if ne .ActiveTab "users"}}hidden{{end}} space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-[#0f1420] border border-[#1a2234] rounded-lg p-4">
+            <div>
+                <h2 class="text-sm font-semibold text-white">Administrative Users &amp; Role-Based Access Control</h2>
+                <p class="text-xs text-slate-400 mt-0.5">Manage local administrators, assigned privileges (Super Admin, Security Admin, Operator, Auditor), and federated OIDC users.</p>
+            </div>
+            <button type="button" onclick="document.getElementById('create-user-modal').classList.remove('hidden')"
+                class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition flex items-center space-x-1.5 self-start sm:self-auto">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                <span>Add Local User</span>
+            </button>
+        </div>
+
+        <div id="users-container">
+            {{template "users_table" .}}
+        </div>
+    </div>
+
+    <!-- TAB 3: Single Sign-On (OIDC) -->
+    <div id="tab-pane-sso" class="settings-pane {{if ne .ActiveTab "sso"}}hidden{{end}} space-y-6">
+        <form hx-post="/admin/settings/sso" hx-target="#sso-toast" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div id="sso-toast"></div>
+
+            <div class="flex items-center justify-between pb-4 border-b border-[#1a2234]">
+                <div>
+                    <h2 class="text-sm font-semibold text-white">OpenID Connect (OIDC) Configuration</h2>
+                    <p class="text-xs text-slate-400 mt-0.5">Integrate SpireUEM with Google Workspace, Okta, Microsoft Entra ID, or Keycloak for federated Single Sign-On.</p>
+                </div>
+                <div>
+                    {{if and .SSO .SSO.OIDCEnabled (ne .SSO.IssuerURL "")}}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
+                        OIDC Active
+                    </span>
+                    {{else}}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 text-slate-400 border border-slate-700">
+                        Not Configured
+                    </span>
+                    {{end}}
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Enable OIDC Single Sign-On</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Activate OpenID Connect discovery and authorization redirection on the console login screen.</p>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" name="oidc_enabled" value="true" {{if and .SSO .SSO.OIDCEnabled}}checked{{end}} class="sr-only peer">
+                            <div class="w-9 h-5 bg-[#141b2a] border border-[#1a2234] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 peer-checked:after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <span class="ml-3 text-xs text-slate-300 font-mono">Enabled</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Allow Local Password Login</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Permit local administrative accounts to authenticate alongside SSO (recommended for emergency break-glass).</p>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" name="allow_local_login" value="true" {{if or (not .SSO) .SSO.AllowLocalLogin}}checked{{end}} class="sr-only peer">
+                            <div class="w-9 h-5 bg-[#141b2a] border border-[#1a2234] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 peer-checked:after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <span class="ml-3 text-xs text-slate-300 font-mono">Permitted</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Issuer Discovery URL</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Identity Provider base URL serving <code>/.well-known/openid-configuration</code>.</p>
+                    </div>
+                    <div class="w-full sm:w-80">
+                        <input type="url" name="issuer_url" value="{{if .SSO}}{{.SSO.IssuerURL}}{{end}}" placeholder="https://accounts.google.com"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">OAuth2 Client ID</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">The application Client ID provisioned in your IdP admin console.</p>
+                    </div>
+                    <div class="w-full sm:w-80">
+                        <input type="text" name="client_id" value="{{if .SSO}}{{.SSO.ClientID}}{{end}}" placeholder="spire-uem-control-plane"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">OAuth2 Client Secret</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">The confidential Client Secret used for token exchange (masked).</p>
+                    </div>
+                    <div class="w-full sm:w-80">
+                        <input type="password" name="client_secret" value="{{if .SSO}}{{.SSO.ClientSecret}}{{end}}" placeholder="Leave blank to keep unchanged"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pb-4 border-b border-[#1a2234]">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-200">OAuth2 Scopes</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5 mb-1.5">Space- or comma-delimited scopes.</p>
+                        <input type="text" name="scopes" value="{{if and .SSO .SSO.Scopes}}{{.SSO.Scopes}}{{else}}openid,profile,email,groups{{end}}"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-slate-200">Groups Claim Name</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5 mb-1.5">JWT token claim holding user group strings.</p>
+                        <input type="text" name="groups_claim" value="{{if and .SSO .SSO.GroupsClaim}}{{.SSO.GroupsClaim}}{{else}}groups{{end}}"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
+                    Save OIDC Settings
+                </button>
+            </div>
+        </form>
+
+        <!-- Sub-section: IdP Group to Role Mappings -->
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-4">
+            <div>
+                <h3 class="text-sm font-semibold text-white">IdP Group to Role Mappings</h3>
+                <p class="text-xs text-slate-400 mt-0.5">Map corporate directory groups (e.g. Okta or Entra ID groups) to SpireUEM roles during Just-In-Time user provisioning.</p>
+            </div>
+
+            <!-- Add Mapping Form -->
+            <form hx-post="/admin/settings/oidc/mappings" hx-target="#group-mappings-container"
+                  hx-on::after-request="this.reset()"
+                  class="flex flex-col sm:flex-row gap-3 pt-2 pb-4 border-b border-[#1a2234]">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <div class="flex-1">
+                    <input type="text" name="idp_group_name" placeholder="IdP Group Name (e.g. Spire-Security-Admins)" required
+                        class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                </div>
+                <div class="w-full sm:w-48">
+                    <select name="mapped_role" required
+                        class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                        <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                        <option value="SECURITY_ADMIN">SECURITY_ADMIN</option>
+                        <option value="OPERATOR" selected>OPERATOR</option>
+                        <option value="AUDITOR">AUDITOR</option>
+                    </select>
+                </div>
+                <button type="submit"
+                    class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition whitespace-nowrap">
+                    Add Mapping
+                </button>
+            </form>
+
+            <div id="group-mappings-container">
+                {{template "group_mappings_table" .}}
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB 4: APT & Storage Settings -->
+    <div id="tab-pane-storage" class="settings-pane {{if ne .ActiveTab "storage"}}hidden{{end}}">
+        <form hx-post="/admin/settings/storage" hx-target="#storage-toast" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div id="storage-toast"></div>
+
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Max Custom Flatpak Bundle Size</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Maximum allowed single-file <code>.flatpak</code> bundle upload limit in megabytes (default: 500 MB).</p>
+                    </div>
+                    <div class="w-full sm:w-72 flex items-center space-x-2">
+                        <input type="number" name="max_bundle_size_mb" value="{{.Storage.MaxBundleSizeMB}}" min="50" max="5000" required
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                        <span class="text-xs text-slate-500">MB</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
+                    Save Storage Settings
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- TAB 5: Hardware & Security Settings -->
+    <div id="tab-pane-crypto" class="settings-pane {{if ne .ActiveTab "crypto"}}hidden{{end}}">
+        <form hx-post="/admin/settings/crypto" hx-target="#crypto-toast" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div id="crypto-toast"></div>
+
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">TPM 2.0 Secure Boot Attestation</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Enforce strict UEFI Secure Boot and PCR 7 validation before allowing endpoint key unsealing or mTLS cert renewal.</p>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" name="tpm_enforce_secure_boot" value="true" {{if .Crypto.TPMEnforceSecureBoot}}checked{{end}} class="sr-only peer">
+                            <div class="w-9 h-5 bg-[#141b2a] border border-[#1a2234] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 peer-checked:after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <span class="ml-3 text-xs text-slate-300 font-mono">Enforce</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">LUKS Escrow Ticket Requirement</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Require an authorized IT support ticket reference and business justification before exposing disk recovery keys.</p>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" name="luks_require_ticket" value="true" {{if .Crypto.LUKSRequireTicket}}checked{{end}} class="sr-only peer">
+                            <div class="w-9 h-5 bg-[#141b2a] border border-[#1a2234] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 peer-checked:after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <span class="ml-3 text-xs text-slate-300 font-mono">Mandatory</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
+                    Save Security Settings
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- TAB 6: Compliance Settings -->
+    <div id="tab-pane-compliance" class="settings-pane {{if ne .ActiveTab "compliance"}}hidden{{end}}">
+        <form hx-post="/admin/settings/compliance" hx-target="#compliance-toast" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div id="compliance-toast"></div>
+
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Auto-Remediate Desired-State Drift</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Automatically trigger configuration remediation commands when a host reports non-compliant CIS benchmark or sysctl findings.</p>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" name="auto_remediate_drift" value="true" {{if .Compliance.AutoRemediateDrift}}checked{{end}} class="sr-only peer">
+                            <div class="w-9 h-5 bg-[#141b2a] border border-[#1a2234] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 peer-checked:after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <span class="ml-3 text-xs text-slate-300 font-mono">Auto-Fix</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
+                    Save Compliance Settings
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- TAB 7: SIEM & Logging Settings -->
+    <div id="tab-pane-siem" class="settings-pane {{if ne .ActiveTab "siem"}}hidden{{end}}">
+        <form hx-post="/admin/settings/siem" hx-target="#siem-toast" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div id="siem-toast"></div>
+
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">RFC 5424 Syslog Forwarding</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Forward all security audit logs, LUKS escrows, and administrative actions in RFC 5424 structured format to an external SIEM.</p>
+                    </div>
+                    <div class="flex items-center">
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" name="syslog_enabled" value="true" {{if .SIEM.SyslogEnabled}}checked{{end}} class="sr-only peer">
+                            <div class="w-9 h-5 bg-[#141b2a] border border-[#1a2234] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-400 peer-checked:after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                            <span class="ml-3 text-xs text-slate-300 font-mono">Enabled</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Syslog Receiver Address</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Hostname or IP address and port of your SIEM syslog collector (e.g. <code>10.0.1.50:514</code>).</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <input type="text" name="syslog_server" value="{{.SIEM.SyslogServer}}" placeholder="e.g. 10.0.1.50:514"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Transport Protocol</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Network protocol used to forward syslog packets.</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <select name="syslog_proto" class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                            <option value="udp" {{if eq .SIEM.SyslogProto "udp"}}selected{{end}}>UDP (RFC 5426)</option>
+                            <option value="tcp" {{if eq .SIEM.SyslogProto "tcp"}}selected{{end}}>TCP (RFC 6587)</option>
+                            <option value="tls" {{if eq .SIEM.SyslogProto "tls"}}selected{{end}}>TLS (RFC 5425)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Audit Log Retention</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Number of days to preserve internal security events in PostgreSQL before automatic pruning.</p>
+                    </div>
+                    <div class="w-full sm:w-72 flex items-center space-x-2">
+                        <input type="number" name="retention_days" value="{{.SIEM.RetentionDays}}" min="7" max="3650" required
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                        <span class="text-xs text-slate-500">days</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+                <button type="button" hx-post="/admin/settings/siem/test" hx-target="#siem-toast"
+                    class="px-3 py-1.5 bg-[#141b2a] hover:bg-[#1a2234] border border-[#25334d] text-slate-300 hover:text-white text-xs font-medium rounded-md transition flex items-center space-x-2">
+                    <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    <span>Send RFC 5424 Test Event</span>
+                </button>
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
+                    Save SIEM Settings
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- TAB 8: Dynamic Enrollment Tokens -->
+    <div id="tab-pane-tokens" class="settings-pane {{if ne .ActiveTab "tokens"}}hidden{{end}} space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-[#0f1420] border border-[#1a2234] rounded-lg p-4">
+            <div>
+                <h2 class="text-sm font-semibold text-white">Dynamic Enrollment Tokens</h2>
+                <p class="text-xs text-slate-400 mt-0.5">Generate pre-shared registration tokens to onboard Debian endpoints into specific deployment rings and tags without manual approval.</p>
+            </div>
+            <button type="button" onclick="document.getElementById('generate-token-modal').classList.remove('hidden')"
+                class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition flex items-center space-x-1.5 self-start sm:self-auto">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                <span>Generate Token</span>
+            </button>
+        </div>
+
+        <div id="tokens-container">
+            {{template "tokens_table" .}}
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Create Local User -->
+<div id="create-user-modal" class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm hidden flex items-center justify-center p-4">
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg max-w-lg w-full p-6 space-y-5 shadow-2xl">
+        <div class="flex items-center justify-between pb-3 border-b border-[#1a2234]">
+            <h3 class="text-sm font-semibold text-white">Create Administrative User</h3>
+            <button type="button" onclick="document.getElementById('create-user-modal').classList.add('hidden')" class="text-slate-400 hover:text-white">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <form hx-post="/admin/users" hx-target="#users-container"
+              hx-on::after-request="document.getElementById('create-user-modal').classList.add('hidden')"
+              class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Username</label>
+                    <input type="text" name="username" placeholder="e.g. operator1" required
+                        class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Email</label>
+                    <input type="email" name="email" placeholder="e.g. op1@corp.local" required
+                        class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Display Name</label>
+                <input type="text" name="display_name" placeholder="e.g. John Operator"
+                    class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Role</label>
+                    <select name="role" class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                        <option value="OPERATOR" selected>OPERATOR</option>
+                        <option value="SECURITY_ADMIN">SECURITY_ADMIN</option>
+                        <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                        <option value="AUDITOR">AUDITOR</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Password</label>
+                    <input type="password" name="password" required
+                        class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                </div>
+            </div>
+
+            <div class="flex justify-end space-x-2 pt-3 border-t border-[#1a2234]">
+                <button type="button" onclick="document.getElementById('create-user-modal').classList.add('hidden')"
+                    class="px-3 py-1.5 bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 text-xs font-medium rounded-md transition">
+                    Cancel
+                </button>
+                <button type="submit"
+                    class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition">
+                    Create User
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Modal: Generate Enrollment Token -->
+<div id="generate-token-modal" class="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm hidden flex items-center justify-center p-4">
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg max-w-lg w-full p-6 space-y-5 shadow-2xl">
+        <div class="flex items-center justify-between pb-3 border-b border-[#1a2234]">
+            <h3 class="text-sm font-semibold text-white">Generate Enrollment Token</h3>
+            <button type="button" onclick="document.getElementById('generate-token-modal').classList.add('hidden')" class="text-slate-400 hover:text-white">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+
+        <form hx-post="/admin/settings/tokens" hx-target="#tokens-container"
+              hx-on::after-request="document.getElementById('generate-token-modal').classList.add('hidden')"
+              class="space-y-4">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+            <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Description</label>
+                <input type="text" name="description" placeholder="e.g. Engineering Lab Workstations" required
+                    class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+            </div>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Target Ring</label>
+                    <select name="target_ring" class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                        <option value="CANARY">CANARY</option>
+                        <option value="BETA">BETA</option>
+                        <option value="PRODUCTION" selected>PRODUCTION</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Max Uses (0 = unlimited)</label>
+                    <input type="number" name="max_uses" value="0" min="0"
+                        class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Target Tags (comma-separated)</label>
+                <input type="text" name="target_tags" placeholder="e.g. debian12, lab, workstation"
+                    class="w-full px-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+            </div>
+
+            <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Expires In Hours (0 = never)</label>
+                <input type="number" name="expires_in_hours" value="720" min="0"
+                    class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+            </div>
+
+            <div class="flex justify-end space-x-2 pt-3 border-t border-[#1a2234]">
+                <button type="button" onclick="document.getElementById('generate-token-modal').classList.add('hidden')"
+                    class="px-3 py-1.5 bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 text-xs font-medium rounded-md transition">
+                    Cancel
+                </button>
+                <button type="submit"
+                    class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition">
+                    Create Token
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function switchSettingsTab(tab) {
+    document.querySelectorAll('.settings-pane').forEach(el => el.classList.add('hidden'));
+    document.querySelectorAll('.settings-tab-btn').forEach(btn => {
+        btn.classList.remove('border-blue-500', 'text-white', 'font-semibold');
+        btn.classList.add('border-transparent', 'text-slate-400');
+    });
+
+    const pane = document.getElementById('tab-pane-' + tab);
+    const btn = document.getElementById('tab-btn-' + tab);
+    if (pane) pane.classList.remove('hidden');
+    if (btn) {
+        btn.classList.remove('border-transparent', 'text-slate-400');
+        btn.classList.add('border-blue-500', 'text-white', 'font-semibold');
+    }
+}
+function copyToClipboard(text, elemId) {
+    navigator.clipboard.writeText(text).then(() => {
+        const el = document.getElementById(elemId);
+        if (el) {
+            const original = el.innerText;
+            el.innerText = 'Copied!';
+            setTimeout(() => el.innerText = original, 2000);
+        }
+    });
+}
+</script>
+{{end}}
+
+{{define "tokens_table"}}
+{{if .NewToken}}
+<div class="mb-4 p-4 bg-emerald-950/40 border border-emerald-500/40 rounded-lg space-y-2">
+    <div class="flex items-center space-x-2 text-xs font-semibold text-emerald-400">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <span>Enrollment Token Generated Successfully</span>
+    </div>
+    <p class="text-xs text-slate-300">Copy this token now. For security purposes, it will never be displayed in plaintext again.</p>
+    <div class="flex items-center space-x-2">
+        <input type="text" readonly value="{{.NewToken}}" id="raw-token-box"
+            class="flex-1 px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-emerald-500/50 rounded text-emerald-300 select-all focus:outline-none">
+        <button type="button" id="copy-token-btn" onclick="copyToClipboard('{{.NewToken}}', 'copy-token-btn')"
+            class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded transition">
+            Copy Token
+        </button>
+    </div>
+</div>
+{{end}}
+
+<div class="bg-[#0f1420] border border-[#1a2234] rounded-lg overflow-hidden">
+    <table class="w-full text-left text-xs">
+        <thead class="bg-[#141b2a] text-slate-400 border-b border-[#1a2234]">
+            <tr>
+                <th class="px-4 py-2.5 font-medium">Token Prefix</th>
+                <th class="px-4 py-2.5 font-medium">Description</th>
+                <th class="px-4 py-2.5 font-medium">Target Ring</th>
+                <th class="px-4 py-2.5 font-medium">Target Tags</th>
+                <th class="px-4 py-2.5 font-medium">Usage</th>
+                <th class="px-4 py-2.5 font-medium">Expires</th>
+                <th class="px-4 py-2.5 font-medium">Status</th>
+                <th class="px-4 py-2.5 font-medium text-right">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-[#1a2234]">
+            {{range .Tokens}}
+            <tr class="hover:bg-[#141b2a]/40 transition">
+                <td class="px-4 py-3 font-mono text-slate-200">
+                    <span class="px-1.5 py-0.5 rounded bg-[#162035] border border-[#1a2234]">{{.TokenPrefix}}</span>
+                </td>
+                <td class="px-4 py-3 text-slate-200">{{.Description}}</td>
+                <td class="px-4 py-3">
+                    <span class="px-2 py-0.5 text-[10px] font-mono rounded font-semibold
+                        {{if eq .TargetRing "CANARY"}}bg-amber-500/10 text-amber-400 border border-amber-500/30
+                        {{else if eq .TargetRing "BETA"}}bg-blue-500/10 text-blue-400 border border-blue-500/30
+                        {{else}}bg-emerald-500/10 text-emerald-400 border border-emerald-500/30{{end}}">
+                        {{.TargetRing}}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-slate-400 font-mono">
+                    {{if .TargetTags}}
+                        {{joinTags .TargetTags}}
+                    {{else}}
+                        <span class="text-slate-600">—</span>
+                    {{end}}
+                </td>
+                <td class="px-4 py-3 text-slate-300 font-mono">
+                    {{.UsesCount}} / {{if eq .MaxUses 0}}&infin;{{else}}{{.MaxUses}}{{end}}
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                    {{if .ExpiresAt}}
+                        {{timeAgo .ExpiresAt}}
+                    {{else}}
+                        <span class="text-slate-500 font-mono">Never</span>
+                    {{end}}
+                </td>
+                <td class="px-4 py-3">
+                    {{if .IsRevoked}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-rose-500/10 text-rose-400 border border-rose-500/30 font-semibold">Revoked</span>
+                    {{else}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">Active</span>
+                    {{end}}
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {{if not .IsRevoked}}
+                    <button type="button"
+                        hx-delete="/admin/settings/tokens/{{.ID}}"
+                        hx-target="#tokens-container"
+                        hx-confirm="Are you sure you want to revoke this enrollment token? Endpoints using it will no longer be able to register."
+                        class="px-2 py-1 text-[11px] rounded bg-rose-950/30 hover:bg-rose-900/50 border border-rose-800/40 text-rose-400 transition">
+                        Revoke
+                    </button>
+                    {{else}}
+                    <span class="text-slate-600 text-[11px] font-mono">—</span>
+                    {{end}}
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="8" class="px-4 py-8 text-center text-slate-500">
+                    No enrollment tokens generated yet. Click "Generate Token" above to create one.
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+{{define "users_table"}}
+<div class="bg-[#0f1420] border border-[#1a2234] rounded-lg overflow-hidden">
+    <table class="w-full text-left text-xs">
+        <thead class="bg-[#141b2a] text-slate-400 border-b border-[#1a2234]">
+            <tr>
+                <th class="px-4 py-2.5 font-medium">Username</th>
+                <th class="px-4 py-2.5 font-medium">Display Name &amp; Email</th>
+                <th class="px-4 py-2.5 font-medium">Role</th>
+                <th class="px-4 py-2.5 font-medium">Auth Provider</th>
+                <th class="px-4 py-2.5 font-medium">Status</th>
+                <th class="px-4 py-2.5 font-medium">Last Login</th>
+                <th class="px-4 py-2.5 font-medium text-right">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-[#1a2234]">
+            {{range .Users}}
+            <tr class="hover:bg-[#141b2a]/40 transition">
+                <td class="px-4 py-3 font-mono font-medium text-white">{{.Username}}</td>
+                <td class="px-4 py-3">
+                    <div class="text-slate-200 font-medium">{{.DisplayName}}</div>
+                    <div class="text-[11px] text-slate-500 font-mono">{{.Email}}</div>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="px-2 py-0.5 text-[10px] font-mono rounded font-semibold
+                        {{if eq .Role "SUPER_ADMIN"}}bg-rose-500/10 text-rose-400 border border-rose-500/30
+                        {{else if eq .Role "SECURITY_ADMIN"}}bg-amber-500/10 text-amber-400 border border-amber-500/30
+                        {{else if eq .Role "OPERATOR"}}bg-blue-500/10 text-blue-400 border border-blue-500/30
+                        {{else}}bg-slate-500/10 text-slate-400 border border-slate-500/30{{end}}">
+                        {{.Role}}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-[#162035] border border-[#1a2234] text-slate-300">
+                        {{.AuthProvider}}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    {{if .IsActive}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">Active</span>
+                    {{else}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-rose-500/10 text-rose-400 border border-rose-500/30 font-semibold">Disabled</span>
+                    {{end}}
+                </td>
+                <td class="px-4 py-3 text-slate-400">
+                    {{if .LastLoginAt}}
+                        {{timeAgo .LastLoginAt}}
+                    {{else}}
+                        <span class="text-slate-600 font-mono">Never</span>
+                    {{end}}
+                </td>
+                <td class="px-4 py-3 text-right">
+                    {{if ne .Username "admin"}}
+                    <div class="inline-flex items-center space-x-2">
+                        <form hx-post="/admin/users/{{.ID}}" hx-target="#users-container" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <input type="hidden" name="is_active" value="{{if .IsActive}}false{{else}}true{{end}}">
+                            <button type="submit" class="px-2 py-1 text-[11px] rounded transition {{if .IsActive}}bg-rose-950/30 hover:bg-rose-900/50 border border-rose-800/40 text-rose-400{{else}}bg-emerald-950/30 hover:bg-emerald-900/50 border border-emerald-800/40 text-emerald-400{{end}}">
+                                {{if .IsActive}}Deactivate{{else}}Activate{{end}}
+                            </button>
+                        </form>
+                    </div>
+                    {{else}}
+                    <span class="text-slate-600 text-[11px] font-mono">Protected</span>
+                    {{end}}
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="7" class="px-4 py-8 text-center text-slate-500">
+                    No users found.
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+{{define "group_mappings_table"}}
+<div class="bg-[#0f1420] border border-[#1a2234] rounded-lg overflow-hidden">
+    <table class="w-full text-left text-xs">
+        <thead class="bg-[#141b2a] text-slate-400 border-b border-[#1a2234]">
+            <tr>
+                <th class="px-4 py-2.5 font-medium">Identity Provider Group</th>
+                <th class="px-4 py-2.5 font-medium">Mapped Control Plane Role</th>
+                <th class="px-4 py-2.5 font-medium">Created</th>
+                <th class="px-4 py-2.5 font-medium text-right">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-[#1a2234]">
+            {{range .GroupMappings}}
+            <tr class="hover:bg-[#141b2a]/40 transition">
+                <td class="px-4 py-3 font-mono text-white font-medium">{{.IDPGroupName}}</td>
+                <td class="px-4 py-3">
+                    <span class="px-2 py-0.5 text-[10px] font-mono rounded font-semibold
+                        {{if eq .MappedRole "SUPER_ADMIN"}}bg-rose-500/10 text-rose-400 border border-rose-500/30
+                        {{else if eq .MappedRole "SECURITY_ADMIN"}}bg-amber-500/10 text-amber-400 border border-amber-500/30
+                        {{else if eq .MappedRole "OPERATOR"}}bg-blue-500/10 text-blue-400 border border-blue-500/30
+                        {{else}}bg-slate-500/10 text-slate-400 border border-slate-500/30{{end}}">
+                        {{.MappedRole}}
+                    </span>
+                </td>
+                <td class="px-4 py-3 text-slate-400">{{timeAgoVal .CreatedAt}}</td>
+                <td class="px-4 py-3 text-right">
+                    <button type="button"
+                        hx-delete="/admin/settings/oidc/mappings/{{.ID}}"
+                        hx-target="#group-mappings-container"
+                        hx-confirm="Remove this group mapping rule?"
+                        class="px-2 py-1 text-[11px] rounded bg-rose-950/30 hover:bg-rose-900/50 border border-rose-800/40 text-rose-400 transition">
+                        Remove
+                    </button>
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="4" class="px-4 py-6 text-center text-slate-500">
+                    No IdP group mappings configured. Incoming OIDC users will default to the AUDITOR role.
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}

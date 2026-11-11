@@ -1,28 +1,69 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/db"
+	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
+)
+
+var (
+	validBundleSHA256Re  = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	validWallpaperFileRe = regexp.MustCompile(`^[a-f0-9]{64}\.(png|jpg|jpeg|webp|svg)$`)
 )
 
 // Handler serves the REST ingress endpoints (/api/v1/desktop/*).
 type Handler struct {
-	repo *db.Repository
+	repo             *db.Repository
+	hub              *gateway.GatewayHub
+	bundleStorageDir string
 }
 
 // NewHandler creates a new API Handler.
 func NewHandler(repo *db.Repository) *Handler {
-	return &Handler{repo: repo}
+	return &Handler{
+		repo:             repo,
+		bundleStorageDir: "/var/lib/spire/storage/bundles",
+	}
 }
+
+// NewHandlerWithHub creates a new API Handler wired to the GatewayHub.
+func NewHandlerWithHub(repo *db.Repository, hub *gateway.GatewayHub) *Handler {
+	return &Handler{
+		repo:             repo,
+		hub:              hub,
+		bundleStorageDir: "/var/lib/spire/storage/bundles",
+	}
+}
+
+// SetBundleStorageDir configures the filesystem directory where custom .flatpak bundles are stored.
+func (h *Handler) SetBundleStorageDir(dir string) {
+	if trimmed := strings.TrimSpace(dir); trimmed != "" {
+		h.bundleStorageDir = trimmed
+	}
+}
+
+const (
+	maxSmallBodyBytes = 64 << 10   // 64 KiB for enrollment & self-service requests
+	maxAuthBodyBytes  = 512 << 10  // 512 KiB for attestation & LUKS escrow payloads
+	maxLargeBodyBytes = 10 << 20   // 10 MiB for check-in, compliance, and benchmark reports
+)
 
 // Enroll handles POST /api/v1/desktop/enroll.
 func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 	var req types.EnrollRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -45,6 +86,14 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 	if dev.Status == types.StatusApproved {
 		token, err := h.repo.ClaimApprovedToken(r.Context(), dev)
 		if err != nil {
+			if errors.Is(err, db.ErrTokenAlreadyClaimed) {
+				log.Printf("[api] HTTP 409 token re-claim rejected for approved device id=%s hw=%s", dev.ID, dev.HardwareUUID)
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error":  "enrollment token already claimed; explicit admin re-approval required",
+					"status": string(dev.Status),
+				})
+				return
+			}
 			log.Printf("[api] token claim error for %s: %v", dev.ID, err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to provision token"})
 			return
@@ -74,6 +123,7 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 
 // Checkin handles POST /api/v1/desktop/checkin.
 func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxLargeBodyBytes)
 	var req types.CheckinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -105,14 +155,26 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reported := types.ReportedState{
-		Packages:      req.Packages,
-		ActiveSession: req.ActiveSession,
-		CheckedInAt:   time.Now().UTC(),
+		Packages:       req.Packages,
+		Flatpaks:       req.Flatpaks,
+		ActiveSession:  req.ActiveSession,
+		RebootRequired: req.RebootRequired,
+		CheckedInAt:    time.Now().UTC(),
 	}
 	if err := h.repo.RecordCheckin(r.Context(), hwUUID, reported); err != nil {
 		log.Printf("[api] failed to record check-in for %s: %v", hwUUID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record check-in"})
 		return
+	}
+
+	if req.PatchStatus != nil {
+		req.PatchStatus.DeviceID = dev.ID
+		if req.RebootRequired {
+			req.PatchStatus.RebootRequired = true
+		}
+		if err := h.repo.UpsertDevicePatchStatus(r.Context(), nil, req.PatchStatus); err != nil {
+			log.Printf("[api] warning: failed to upsert device patch status for %s: %v", dev.ID, err)
+		}
 	}
 
 	policies, err := h.repo.GetActivePoliciesForDevice(r.Context(), dev.ID)
@@ -132,15 +194,81 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] warning: failed to claim queued commands for %s: %v", dev.ID, err)
 	}
 
-	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s policies=%d revoked=%d commands=%d",
-		dev.ID, dev.Hostname, len(policies), len(revokedPolicies), len(queuedCommands))
+	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d",
+		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands))
 	writeJSON(w, http.StatusOK, types.CheckinResponse{
-		DeviceID:        dev.ID,
-		Status:          dev.Status,
-		Policies:        policies,
-		RevokedPolicies: revokedPolicies,
-		QueuedCommands:  queuedCommands,
+		DeviceID:                dev.ID,
+		Status:                  dev.Status,
+		PatchRing:               dev.PatchRing,
+		MaintenanceWindowActive: true,
+		Policies:                policies,
+		RevokedPolicies:         revokedPolicies,
+		QueuedCommands:          queuedCommands,
+		ServerKEKPublicPEM:      h.repo.KEKPublicPEM(),
 	})
+}
+
+// GetDeviceStatus handles GET /api/v1/desktop/status, returning the partitioned DeviceStatusResponse.
+func (h *Handler) GetDeviceStatus(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	statusResp, err := h.repo.GetDeviceStatusResponse(r.Context(), dev.ID)
+	if err != nil {
+		log.Printf("[api] get device status error for %s: %v", dev.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to evaluate device status"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, statusResp)
+}
+
+// DesktopSync handles POST /api/v1/desktop/sync, optionally updating reported inventory and returning the partitioned DeviceStatusResponse.
+func (h *Handler) DesktopSync(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxLargeBodyBytes)
+		var req types.CheckinRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && (len(req.Packages) > 0 || len(req.Flatpaks) > 0 || req.HardwareUUID != "" || req.PatchStatus != nil) {
+			hwUUID := dev.HardwareUUID
+			if req.HardwareUUID != "" {
+				hwUUID = req.HardwareUUID
+			}
+			reported := types.ReportedState{
+				Packages:       req.Packages,
+				Flatpaks:       req.Flatpaks,
+				ActiveSession:  req.ActiveSession,
+				RebootRequired: req.RebootRequired,
+				CheckedInAt:    time.Now().UTC(),
+			}
+			_ = h.repo.RecordCheckin(r.Context(), hwUUID, reported)
+			if req.PatchStatus != nil {
+				req.PatchStatus.DeviceID = dev.ID
+				if req.RebootRequired {
+					req.PatchStatus.RebootRequired = true
+				}
+				_ = h.repo.UpsertDevicePatchStatus(r.Context(), nil, req.PatchStatus)
+			}
+		}
+	}
+
+	_, _ = h.repo.GetActivePoliciesForDevice(r.Context(), dev.ID)
+	statusResp, err := h.repo.GetDeviceStatusResponse(r.Context(), dev.ID)
+	if err != nil {
+		log.Printf("[api] desktop sync error for %s: %v", dev.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to evaluate device sync status"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, statusResp)
 }
 
 // Report handles POST /api/v1/desktop/report.
@@ -152,30 +280,17 @@ func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxLargeBodyBytes)
 	var req types.PolicyReportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report payload"})
 		return
 	}
 
-	for _, item := range req.Results {
-		var errMsgPtr *string
-		if strings.TrimSpace(item.ErrorMessage) != "" {
-			msg := item.ErrorMessage
-			errMsgPtr = &msg
-		}
-		if err := h.repo.UpdatePolicyCompliance(
-			r.Context(),
-			dev.ID,
-			item.PolicyID,
-			item.ComplianceStatus,
-			errMsgPtr,
-			item.ExecutionOutput,
-		); err != nil {
-			log.Printf("[api] failed to update policy compliance device=%s policy=%s: %v", dev.ID, item.PolicyID, err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record policy report"})
-			return
-		}
+	if err := h.repo.RecordComplianceReports(r.Context(), dev.ID, req.Results); err != nil {
+		log.Printf("[api] failed to record compliance reports for device id=%s: %v", dev.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record policy report"})
+		return
 	}
 
 	log.Printf("[api] HTTP 200 compliance report processed for device id=%s items=%d", dev.ID, len(req.Results))
@@ -194,6 +309,7 @@ func (h *Handler) ReportCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxLargeBodyBytes)
 	var req types.CommandReportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid command report payload"})
@@ -231,6 +347,524 @@ func (h *Handler) ReportCommand(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ReportBenchmarkResults handles POST /api/v1/desktop/benchmarks/report.
+func (h *Handler) ReportBenchmarkResults(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		log.Printf("[api] HTTP 403 benchmark report rejected: unauthorized or unapproved device")
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxLargeBodyBytes)
+	var req types.BenchmarkResultPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid benchmark report payload"})
+		return
+	}
+
+	req.ScanID = strings.TrimSpace(req.ScanID)
+	if req.ScanID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scan_id is required"})
+		return
+	}
+
+	status := strings.ToUpper(strings.TrimSpace(req.Status))
+	if status == "RUNNING" {
+		if err := h.repo.UpdateBenchmarkScanStatusForDevice(r.Context(), dev.ID, req.ScanID, "RUNNING", nil); err != nil {
+			log.Printf("[api] failed to update scan %s to RUNNING: %v", req.ScanID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update scan status"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+		return
+	}
+
+	if status == "FAILED" {
+		errMsg := req.ErrorMessage
+		if errMsg == "" {
+			errMsg = "scan execution failed"
+		}
+		if err := h.repo.UpdateBenchmarkScanStatusForDevice(r.Context(), dev.ID, req.ScanID, "FAILED", &errMsg); err != nil {
+			log.Printf("[api] failed to update scan %s to FAILED: %v", req.ScanID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update scan status"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "failed"})
+		return
+	}
+
+	// COMPLETED (or default)
+	req.Status = "COMPLETED"
+	if err := h.repo.RecordBenchmarkResultsForDevice(r.Context(), dev.ID, req.ScanID, req); err != nil {
+		log.Printf("[api] failed to record benchmark results for scan %s: %v", req.ScanID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record benchmark results"})
+		return
+	}
+
+	log.Printf("[api] recorded benchmark scan %s for device %s: score=%.2f passed=%d failed=%d other=%d",
+		req.ScanID, dev.ID, req.Score, req.RulesPassed, req.RulesFailed, req.RulesOther)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// GetServerKEK handles GET /api/v1/desktop/kek, returning the server's RSA-OAEP-4096 public KEK in PEM format.
+func (h *Handler) GetServerKEK(w http.ResponseWriter, r *http.Request) {
+	_ = r
+	writeJSON(w, http.StatusOK, map[string]string{
+		"server_kek_public_pem": h.repo.KEKPublicPEM(),
+	})
+}
+
+// AttestChallenge handles POST /api/v1/desktop/attest/challenge.
+// Issues an encrypted challenge nonce targeting the client's TPM 2.0 Endorsement Key (EK).
+func (h *Handler) AttestChallenge(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodyBytes)
+	var req types.AttestationChallengeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid attestation challenge payload"})
+		return
+	}
+
+	nonce, _, err := db.GenerateToken()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate challenge nonce"})
+		return
+	}
+
+	var encryptedNonce []byte
+	if strings.TrimSpace(req.EKPublicPEM) != "" {
+		if enc, encErr := db.EncryptChallengeForEK(req.EKPublicPEM, nonce); encErr == nil {
+			encryptedNonce = enc
+		} else {
+			encryptedNonce = []byte(nonce)
+		}
+	} else {
+		encryptedNonce = []byte(nonce)
+	}
+
+	if err := h.repo.StageTPMAttestationChallenge(r.Context(), dev.ID, req.EKPublicPEM, req.AKPublicPEM, nonce); err != nil {
+		log.Printf("[api] stage TPM challenge error for device=%s: %v", dev.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to stage attestation challenge"})
+		return
+	}
+
+	log.Printf("[api] HTTP 200 issued TPM 2.0 challenge nonce for device id=%s hostname=%s", dev.ID, dev.Hostname)
+	writeJSON(w, http.StatusOK, types.AttestationChallengeResponse{
+		EncryptedNonce: encryptedNonce,
+		ServerKEKPEM:   h.repo.KEKPublicPEM(),
+	})
+}
+
+// AttestVerify handles POST /api/v1/desktop/attest/verify.
+// Validates signed PCR quotes, EK certificate integrity, checks PCR 7 for Secure Boot, and updates device attestation status.
+func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodyBytes)
+	var req types.AttestationVerifyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid attestation verify payload"})
+		return
+	}
+
+	staged, _ := h.repo.GetTPMAttestation(r.Context(), dev.ID)
+	status := types.AttestationAttested
+
+	// If client explicitly reported absent TPM or empty nonce
+	if req.Nonce == "absent-tpm" || req.Nonce == "unattested-no-tpm" {
+		log.Printf("[api] client device=%s reported missing hardware TPM 2.0 device", dev.ID)
+		status = types.AttestationFailed
+	}
+
+	if staged != nil && staged.ChallengeNonce != "" && req.Nonce != "" && req.Nonce != staged.ChallengeNonce {
+		log.Printf("[api] TPM challenge nonce mismatch for device=%s", dev.ID)
+		status = types.AttestationFailed
+	}
+
+	// Finding C2: Hardware EK Certificate Verification
+	if req.EKCertificatePEM != "" {
+		if _, certErr := crypto.VerifyEKCertificate([]byte(req.EKCertificatePEM), req.EKPublicPEM); certErr != nil {
+			log.Printf("[api] TPM EK certificate validation failed for device=%s: %v", dev.ID, certErr)
+			status = types.AttestationFailed
+		}
+	} else if req.Nonce != "absent-tpm" {
+		// EK cert is missing: check whether unverified/simulated devices are permitted
+		allowUnattested := os.Getenv("SPIRE_ALLOW_UNATTESTED_DEVICES") == "true" ||
+			os.Getenv("SPIRE_SIMULATE_TPM2") == "1" ||
+			os.Getenv("SPIRE_ALLOW_SIMULATED_TPM") == "1"
+		if !allowUnattested {
+			log.Printf("[api] rejecting unverified TPM attestation lacking EK certificate for device=%s", dev.ID)
+			status = types.AttestationFailed
+		}
+	}
+
+	signingPubPEM := strings.TrimSpace(req.AKPublicPEM)
+	if signingPubPEM == "" {
+		signingPubPEM = strings.TrimSpace(req.EKPublicPEM)
+	}
+	if signingPubPEM != "" && len(req.QuoteAttest) > 0 && len(req.QuoteSignature) > 0 {
+		if err := db.VerifyQuoteSignature(signingPubPEM, req.QuoteAttest, req.QuoteSignature); err != nil {
+			log.Printf("[api] TPM quote signature verification failed for device=%s: %v", dev.ID, err)
+			status = types.AttestationFailed
+		}
+	} else if status == types.AttestationAttested {
+		log.Printf("[api] TPM quote signature or payload missing for device=%s", dev.ID)
+		status = types.AttestationFailed
+	}
+
+	pcr7 := strings.TrimSpace(req.PCRValues["7"])
+	if pcr7 == "" {
+		pcr7 = strings.TrimSpace(req.PCRValues["pcr7"])
+	}
+	secureBoot := req.SecureBootEnabled
+	if pcr7 != "" {
+		trimmedZeros := strings.Trim(strings.ToLower(pcr7), "0")
+		if trimmedZeros == "" {
+			secureBoot = false
+			if status == types.AttestationAttested {
+				status = types.AttestationPolicyViolation
+			}
+		} else {
+			secureBoot = true
+		}
+	} else if !secureBoot && status == types.AttestationAttested {
+		status = types.AttestationPolicyViolation
+	}
+
+	ekPEM := req.EKPublicPEM
+	if ekPEM == "" && staged != nil {
+		ekPEM = staged.EKPublicPEM
+	}
+	akPEM := req.AKPublicPEM
+	if akPEM == "" && staged != nil {
+		akPEM = staged.AKPublicPEM
+	}
+
+	att := &types.DeviceTPMAttestation{
+		DeviceID:          dev.ID,
+		EKPublicPEM:       ekPEM,
+		AKPublicPEM:       akPEM,
+		PCRValues:         req.PCRValues,
+		QuoteSignature:    req.QuoteSignature,
+		AttestationStatus: status,
+		SecureBootEnabled: secureBoot,
+	}
+	if err := h.repo.UpsertTPMAttestation(r.Context(), att); err != nil {
+		log.Printf("[api] failed to upsert TPM attestation for device=%s: %v", dev.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist attestation status"})
+		return
+	}
+
+	log.Printf("[api] HTTP 200 TPM 2.0 attestation verified device=%s status=%s secure_boot=%v", dev.ID, status, secureBoot)
+	writeJSON(w, http.StatusOK, types.AttestationVerifyResponse{
+		Status:            status,
+		SecureBootEnabled: secureBoot,
+		VerifiedAt:        time.Now().UTC(),
+	})
+}
+
+// EscrowLUKS handles POST /api/v1/desktop/escrow/luks.
+// Stores an envelope-encrypted (RSA-OAEP-4096 + AES-256-GCM) LUKS2 recovery key in device_luks_escrow.
+func (h *Handler) EscrowLUKS(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthBodyBytes)
+	var req types.LUKSEscrowPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid LUKS escrow payload"})
+		return
+	}
+
+	req.VolumeUUID = strings.TrimSpace(req.VolumeUUID)
+	if req.VolumeUUID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "volume_uuid is required"})
+		return
+	}
+	if strings.TrimSpace(req.MountPoint) == "" {
+		req.MountPoint = "/"
+	}
+	if req.KeySlot <= 0 {
+		req.KeySlot = 1
+	}
+
+	encDEK := req.EncryptedDEK
+	encRecoveryKey := req.EncryptedRecoveryKey
+	nonce := req.Nonce
+
+	if len(encDEK) == 0 || len(encRecoveryKey) == 0 || len(nonce) == 0 {
+		if strings.TrimSpace(req.RecoveryKey) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "envelope-encrypted fields (encrypted_dek, encrypted_recovery_key, nonce) or recovery_key are required",
+			})
+			return
+		}
+		var err error
+		encDEK, encRecoveryKey, nonce, err = db.EnvelopeEncryptRecoveryKey(
+			&h.repo.KEKPrivateKey().PublicKey,
+			strings.TrimSpace(req.RecoveryKey),
+		)
+		if err != nil {
+			log.Printf("[api] envelope encryption failed for device=%s: %v", dev.ID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to envelope-encrypt recovery key"})
+			return
+		}
+	} else {
+		// Validate that the server's RSA-OAEP-4096 KEK can unwrap the client-encrypted envelope
+		if _, err := db.EnvelopeDecryptRecoveryKey(h.repo.KEKPrivateKey(), encDEK, encRecoveryKey, nonce); err != nil {
+			log.Printf("[api] invalid client envelope ciphertexts for device=%s: %v", dev.ID, err)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid RSA-OAEP-4096 / AES-256-GCM envelope ciphertext"})
+			return
+		}
+	}
+
+	escrow, err := h.repo.UpsertLUKSEscrow(r.Context(), &types.DeviceLUKSEscrow{
+		DeviceID:             dev.ID,
+		VolumeUUID:           req.VolumeUUID,
+		DevicePath:           strings.TrimSpace(req.DevicePath),
+		MountPoint:           strings.TrimSpace(req.MountPoint),
+		EncryptedDEK:         encDEK,
+		EncryptedRecoveryKey: encRecoveryKey,
+		Nonce:                nonce,
+		KeySlot:              req.KeySlot,
+	})
+	if err != nil {
+		log.Printf("[api] upsert LUKS escrow error for device=%s: %v", dev.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to store LUKS escrow record"})
+		return
+	}
+
+	log.Printf("[api] HTTP 200 LUKS2 recovery key escrowed device=%s volume_uuid=%s mount=%s slot=%d",
+		dev.ID, escrow.VolumeUUID, escrow.MountPoint, escrow.KeySlot)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":      "escrowed",
+		"id":          escrow.ID,
+		"device_id":   escrow.DeviceID,
+		"volume_uuid": escrow.VolumeUUID,
+		"mount_point": escrow.MountPoint,
+		"key_slot":    escrow.KeySlot,
+		"escrowed_at": escrow.EscrowedAt,
+	})
+}
+
+// GetSelfServiceCatalog handles GET /api/v1/desktop/self-service/catalog.
+func (h *Handler) GetSelfServiceCatalog(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	catalog, err := h.repo.GetSelfServiceCatalogForDevice(r.Context(), dev.ID)
+	if err != nil {
+		log.Printf("[api] get self-service catalog error for device=%s: %v", dev.ID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load self-service catalog"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"device_id": dev.ID,
+		"catalog":   catalog,
+	})
+}
+
+// InstallSelfServicePolicy handles POST /api/v1/desktop/self-service/install.
+func (h *Handler) InstallSelfServicePolicy(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
+	var req types.SelfServiceInstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid self-service install payload"})
+		return
+	}
+	req.PolicyID = strings.TrimSpace(req.PolicyID)
+	if req.PolicyID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "policy_id is required"})
+		return
+	}
+
+	if err := h.repo.RequestSelfServiceInstall(r.Context(), dev.ID, req.PolicyID); err != nil {
+		log.Printf("[api] self-service install error device=%s policy=%s: %v", dev.ID, req.PolicyID, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if h.hub != nil {
+		_ = h.hub.TriggerCheckin(dev.ID)
+	}
+
+	log.Printf("[api] HTTP 200 self-service application requested device=%s policy=%s", dev.ID, req.PolicyID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":    "installed",
+		"device_id": dev.ID,
+		"policy_id": req.PolicyID,
+	})
+}
+
+// UninstallSelfServicePolicy handles POST /api/v1/desktop/self-service/uninstall.
+func (h *Handler) UninstallSelfServicePolicy(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	if dev == nil || dev.Status != types.StatusApproved {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
+	var req types.SelfServiceUninstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid self-service uninstall payload"})
+		return
+	}
+	req.PolicyID = strings.TrimSpace(req.PolicyID)
+	if req.PolicyID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "policy_id is required"})
+		return
+	}
+
+	if err := h.repo.RemoveSelfServiceInstall(r.Context(), dev.ID, req.PolicyID); err != nil {
+		log.Printf("[api] self-service uninstall error device=%s policy=%s: %v", dev.ID, req.PolicyID, err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	if h.hub != nil {
+		_ = h.hub.TriggerCheckin(dev.ID)
+	}
+
+	log.Printf("[api] HTTP 200 self-service application uninstalled device=%s policy=%s", dev.ID, req.PolicyID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":    "uninstalled",
+		"device_id": dev.ID,
+		"policy_id": req.PolicyID,
+	})
+}
+
+// DownloadBundle handles GET /api/v1/desktop/bundles/{sha256}.
+// Protected via machine enrollment Bearer token or mutual TLS client certificate.
+// Validates sha256 strictly against ^[a-f0-9]{64}$ and streams the bundle via http.ServeContent (supporting HTTP Range requests).
+func (h *Handler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	mTLSAuthorized := r.TLS != nil && len(r.TLS.PeerCertificates) > 0
+	if (dev == nil || dev.Status != types.StatusApproved) && !mTLSAuthorized {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	rawHash := strings.TrimSpace(chi.URLParam(r, "sha256"))
+	rawHash = strings.TrimSuffix(rawHash, ".flatpak")
+	if !validBundleSHA256Re.MatchString(rawHash) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid sha256 digest: must match ^[a-f0-9]{64}$"})
+		return
+	}
+
+	storageDir := h.bundleStorageDir
+	if strings.TrimSpace(storageDir) == "" {
+		storageDir = "/var/lib/spire/storage/bundles"
+	}
+
+	bundlePath := filepath.Join(storageDir, rawHash+".flatpak")
+	downloadName := rawHash + ".flatpak"
+
+	if h.repo != nil {
+		if rec, err := h.repo.GetCustomBundleBySHA256(r.Context(), rawHash); err == nil && rec != nil {
+			if strings.TrimSpace(rec.BundleName) != "" {
+				downloadName = filepath.Base(rec.BundleName)
+			}
+			if _, statErr := os.Stat(bundlePath); os.IsNotExist(statErr) && strings.TrimSpace(rec.StoragePath) != "" {
+				cleanRecPath := filepath.Clean(rec.StoragePath)
+				if strings.HasPrefix(cleanRecPath, filepath.Clean(storageDir)+string(os.PathSeparator)) {
+					bundlePath = cleanRecPath
+				}
+			}
+		}
+	}
+
+	f, err := os.Open(bundlePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "bundle not found"})
+			return
+		}
+		log.Printf("[api] open bundle %s error: %v", bundlePath, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to open bundle"})
+		return
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil || stat.IsDir() {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bundle not available"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/vnd.flatpak")
+	w.Header().Set("X-Content-SHA256", rawHash)
+	http.ServeContent(w, r, downloadName, stat.ModTime(), f)
+}
+
+// DownloadWallpaper handles GET /api/v1/desktop/wallpapers/{filename}.
+// Protected via machine enrollment Bearer token or mutual TLS client certificate.
+func (h *Handler) DownloadWallpaper(w http.ResponseWriter, r *http.Request) {
+	dev := h.authenticateBearer(r)
+	mTLSAuthorized := r.TLS != nil && len(r.TLS.PeerCertificates) > 0
+	if (dev == nil || dev.Status != types.StatusApproved) && !mTLSAuthorized {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
+		return
+	}
+
+	filename := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "filename")))
+	if !validWallpaperFileRe.MatchString(filename) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid wallpaper filename"})
+		return
+	}
+
+	storageDir := h.bundleStorageDir
+	if strings.TrimSpace(storageDir) == "" {
+		storageDir = "/var/lib/spire/storage/bundles"
+	}
+	wallpaperDir := filepath.Join(filepath.Dir(storageDir), "wallpapers")
+	wallpaperPath := filepath.Join(wallpaperDir, filename)
+
+	f, err := os.Open(wallpaperPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "wallpaper not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to open wallpaper"})
+		return
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil || stat.IsDir() {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "wallpaper not available"})
+		return
+	}
+
+	shaPart := strings.SplitN(filename, ".", 2)[0]
+	w.Header().Set("X-Content-SHA256", shaPart)
+	http.ServeContent(w, r, filename, stat.ModTime(), f)
+}
+
 func (h *Handler) authenticateBearer(r *http.Request) *types.Device {
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 	if !strings.HasPrefix(authHeader, "Bearer ") {
@@ -253,3 +887,85 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
 }
+
+// RegisterWithToken handles POST /api/v1/enrollment/register.
+func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
+	var req types.EnrollmentRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	req.HardwareUUID = strings.TrimSpace(req.HardwareUUID)
+	req.Hostname = strings.TrimSpace(req.Hostname)
+	req.Token = strings.TrimSpace(req.Token)
+
+	if req.Token == "" {
+		authHdr := r.Header.Get("Authorization")
+		if strings.HasPrefix(strings.ToLower(authHdr), "bearer ") {
+			req.Token = strings.TrimSpace(authHdr[7:])
+		}
+	}
+
+	if req.Token == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token is required"})
+		return
+	}
+	if req.HardwareUUID == "" || req.Hostname == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hardware_uuid and hostname are required"})
+		return
+	}
+
+	tok, err := h.repo.ValidateAndConsumeEnrollmentToken(r.Context(), req.Token)
+	if err != nil {
+		if errors.Is(err, db.ErrEnrollmentTokenRevoked) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token has been revoked"})
+			return
+		}
+		if errors.Is(err, db.ErrEnrollmentTokenExpired) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token has expired"})
+			return
+		}
+		if errors.Is(err, db.ErrEnrollmentTokenExhausted) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token usage limit exceeded"})
+			return
+		}
+
+		staticTok := os.Getenv("SPIRE_ENROLLMENT_TOKEN")
+		if staticTok != "" && subtle.ConstantTimeCompare([]byte(staticTok), []byte(req.Token)) == 1 {
+			tok = &types.EnrollmentToken{
+				Description: "Static Environment Enrollment Token",
+				TargetRing:  types.RingProduction,
+				TargetTags:  []string{},
+			}
+		} else {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid enrollment token"})
+			return
+		}
+	}
+
+	dev, rawBearerToken, err := h.repo.RegisterDeviceWithToken(r.Context(), tok, req.HardwareUUID, req.Hostname, req.Tags)
+	if err != nil {
+		log.Printf("[api] register device with token error: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register device"})
+		return
+	}
+
+	serverBaseURL := "http://localhost:8080"
+	if s, err := h.repo.GetSetting(r.Context(), "general.server_base_url"); err == nil && s != nil {
+		var u string
+		if err := json.Unmarshal(s.Value, &u); err == nil && u != "" {
+			serverBaseURL = u
+		}
+	}
+
+	log.Printf("[api] HTTP 200 registered device id=%s hw=%s hostname=%s ring=%s via token", dev.ID, dev.HardwareUUID, dev.Hostname, dev.PatchRing)
+	writeJSON(w, http.StatusOK, types.EnrollmentRegisterResponse{
+		DeviceID:      dev.ID,
+		Status:        dev.Status,
+		PatchRing:     dev.PatchRing,
+		AuthToken:     rawBearerToken,
+		ServerBaseURL: serverBaseURL,
+	})
+}
+

@@ -1,2 +1,17 @@
+# Binaries and build artifacts
 bin/
 dist/
+*.deb
+*.rpm
+
+# Cryptographic keys and certificates (generated at runtime / in tests)
+*.pem
+*.key
+*.crt
+*.csr
+
+# Test caches and database transient directories
+internal/db/internal/
+*.log
+.DS_Store
+.env

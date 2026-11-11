@@ -4,44 +4,183 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{.CSRFToken}}">
     <title>{{.Title}} - SpireUEM</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    <style>
+        body {
+            background-color: #0a0e17;
+        }
+        /* Precision scrollbar */
+        ::-webkit-scrollbar {
+            width: 5px;
+            height: 5px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0a0e17;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1a2234;
+            border-radius: 2px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #25334d;
+        }
+    </style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased">
-    <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-10">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-            <div class="flex items-center space-x-3">
-                <div class="h-9 w-9 rounded-lg bg-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">
-                    S
-                </div>
+<body class="text-slate-100 min-h-screen flex antialiased font-sans selection:bg-blue-600/30" hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'>
+    <!-- Left Sidebar (248px fixed) -->
+    <aside id="sidebar" class="w-64 bg-[#0f1420] border-r border-[#1a2234] flex flex-col justify-between flex-shrink-0 z-20 min-h-screen">
+        <div>
+            <!-- Header: Logo -->
+            <div class="h-14 px-5 border-b border-[#1a2234] flex items-center justify-between">
+                <a href="/admin/dashboard" class="flex items-center space-x-2.5 group">
+                    <div class="h-7 w-7 rounded-md bg-blue-600 flex items-center justify-center font-bold text-white text-xs">
+                        <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <span class="text-sm font-semibold tracking-tight text-white">Spire<span class="text-blue-400">UEM</span></span>
+                        <div class="text-[10px] text-slate-500 font-mono leading-none">Console v2.4</div>
+                    </div>
+                </a>
+            </div>
+
+            <!-- Navigation Sections -->
+            <div class="p-3 space-y-5">
+                <!-- Fleet Management -->
                 <div>
-                    <span class="text-xl font-bold tracking-tight text-white">Spire<span class="text-indigo-400">UEM</span></span>
-                    <span class="hidden sm:inline-block ml-2 text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">Debian Fleet MDM</span>
+                    <div class="px-2.5 text-[11px] font-medium text-slate-500 mb-1.5">
+                        Fleet Management
+                    </div>
+                    <nav class="space-y-0.5">
+                        <a href="/admin/dashboard" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "dashboard"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "dashboard"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                            <span>Dashboard</span>
+                        </a>
+                        <a href="/admin/devices" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "devices"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "devices"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                            <span>Endpoints</span>
+                            <span class="ml-auto px-1.5 py-0.5 text-[10px] font-mono rounded bg-[#162035] text-slate-300 border border-[#1a2234]">
+                                {{if .TotalHostsCount}}{{.TotalHostsCount}}{{else if .Metrics}}{{.Metrics.TotalHosts}}{{else if .Summary}}{{.Summary.TotalDevices}}{{else}}0{{end}}
+                            </span>
+                        </a>
+                        <a href="/admin/policies" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "policies"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "policies"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                            <span>Policies &amp; State</span>
+                        </a>
+                        <a href="/admin/applications" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "applications"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "applications"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                            <span>Applications</span>
+                        </a>
+                        <a href="/admin/policies#benchmarks" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "benchmarks"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "benchmarks"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                            <span>CIS Benchmarks</span>
+                        </a>
+                    </nav>
+                </div>
+
+                <!-- Operations & Security -->
+                <div>
+                    <div class="px-2.5 text-[11px] font-medium text-slate-500 mb-1.5">
+                        Operations &amp; Security
+                    </div>
+                    <nav class="space-y-0.5">
+                        <a href="/admin/patch-windows" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "patch-windows"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <span>Patch Windows</span>
+                        </a>
+                        <a href="/admin/security" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "security"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                            <span>TPM &amp; LUKS Escrow</span>
+                        </a>
+                        <a href="/admin/audit" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "audit"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+                            <span>Audit Log</span>
+                        </a>
+                        <a href="/admin/settings" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "settings"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "settings"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            <span>Settings</span>
+                        </a>
+                    </nav>
                 </div>
             </div>
-            <nav class="flex items-center space-x-1 sm:space-x-4">
-                <a href="/admin/devices" class="px-3 py-2 rounded-md text-sm font-medium {{if eq .ActiveNav "devices"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/60{{end}} transition">
-                    Devices
-                </a>
-                <a href="/admin/policies" class="px-3 py-2 rounded-md text-sm font-medium {{if eq .ActiveNav "policies"}}bg-slate-800 text-white{{else}}text-slate-400 hover:text-white hover:bg-slate-800/60{{end}} transition">
-                    Policies
-                </a>
-            </nav>
         </div>
-    </header>
 
-    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {{if eq .ActiveNav "devices"}}
-            {{template "devices_content" .}}
-        {{else if eq .ActiveNav "policies"}}
-            {{template "policies_content" .}}
-        {{end}}
-    </main>
+        <!-- Sidebar Footer -->
+        <div class="p-3 border-t border-[#1a2234]">
+            <div class="flex items-center justify-between p-2 rounded-md bg-[#141b2a] border border-[#1a2234]">
+                <div class="flex items-center space-x-2.5 min-w-0">
+                    <div class="w-7 h-7 rounded-md bg-[#1c263c] border border-[#25334d] flex items-center justify-center font-mono text-xs text-blue-400 flex-shrink-0">
+                        {{if .AdminUser}}{{slice .AdminUser 0 1}}{{else}}A{{end}}
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-xs font-medium text-slate-200 truncate">{{if .AdminUser}}{{.AdminUser}}{{else}}Super Admin{{end}}</div>
+                        <div class="text-[10px] text-slate-500 truncate">Administrator</div>
+                    </div>
+                </div>
+                <form action="/logout" method="POST" class="inline flex-shrink-0">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <button type="submit" title="Sign out" class="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-[#1a2234] transition">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </aside>
 
-    <footer class="border-t border-slate-900 py-4 text-center text-xs text-slate-500">
-        SpireUEM &mdash; Pull-Based Open-Source Debian Endpoint Management
-    </footer>
+    <!-- Main Content Area -->
+    <div class="flex-1 flex flex-col min-w-0 min-h-screen">
+        <!-- Top Bar Header -->
+        <header class="h-14 px-6 bg-[#0f1420] border-b border-[#1a2234] flex items-center justify-between sticky top-0 z-10">
+            <!-- Search bar -->
+            <div class="w-96 max-w-md relative">
+                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg class="h-3.5 w-3.5 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                </div>
+                <input type="text"
+                    placeholder="Search endpoints, tags, packages, CVEs..."
+                    class="w-full pl-9 pr-3 py-1.5 text-xs bg-[#0a0e17] border border-[#1a2234] rounded-md text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition">
+            </div>
+
+            <!-- Right Controls -->
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-2 px-2.5 py-1 rounded-md bg-[#141b2a] border border-[#1a2234] text-xs">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+                    <span class="text-slate-300 font-mono text-[11px]">WSS Gateway Online</span>
+                </div>
+                <div class="h-4 w-px bg-[#1a2234] hidden sm:block"></div>
+                <span class="hidden sm:inline-block text-xs font-mono text-slate-500">mTLS Verified</span>
+                <div class="h-4 w-px bg-[#1a2234] hidden sm:block"></div>
+                <a href="/admin/settings" title="Settings" class="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-[#141b2a] transition {{if eq .ActiveNav "settings"}}text-blue-400 bg-[#141b2a]{{end}}">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                </a>
+            </div>
+        </header>
+
+        <!-- Page Main Canvas -->
+        <main class="flex-1 p-6 overflow-y-auto">
+            {{if eq .ActiveNav "dashboard"}}
+                {{template "dashboard_content" .}}
+            {{else if eq .ActiveNav "devices"}}
+                {{template "devices_content" .}}
+            {{else if eq .ActiveNav "policies"}}
+                {{template "policies_content" .}}
+            {{else if eq .ActiveNav "applications"}}
+                {{template "applications_content" .}}
+            {{else if eq .ActiveNav "device_detail"}}
+                {{template "device_detail_page" .}}
+            {{else if eq .ActiveNav "settings"}}
+                {{template "settings_content" .}}
+            {{end}}
+        </main>
+    </div>
 </body>
 </html>
 {{end}}

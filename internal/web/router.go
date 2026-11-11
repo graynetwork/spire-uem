@@ -1,0 +1,161 @@
+package web
+
+import (
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/spire-uem/spire-uem/internal/types"
+)
+
+// RegisterRoutes mounts the public onboarding endpoints (/install.sh, /dist/*, /apt/*),
+// authentication endpoints (/login, /logout, /auth/oidc/*), and Admin Web UI routes (/admin/*) onto a chi.Router.
+func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/dashboard", http.StatusFound)
+	})
+
+	r.Get("/login", h.LoginPage)
+	r.Post("/login", h.LoginSubmit(adminUser, adminPass))
+	r.Post("/logout", h.Logout)
+
+	// OpenID Connect (OIDC) Single Sign-On Endpoints
+	r.Get("/auth/oidc/login", h.OIDCSignIn)
+	r.Get("/auth/oidc/callback", h.OIDCCallback)
+	r.Post("/auth/oidc/test-callback", h.OIDCTestCallback)
+
+	// Publicly accessible single-command onboarding endpoints (no Basic/Session Auth required)
+	r.Get("/install.sh", h.ServeBootstrapScript)
+	r.Head("/install.sh", h.ServeBootstrapScript)
+	r.Get("/dist/{filename}", h.ServeDebPackage)
+	r.Head("/dist/{filename}", h.ServeDebPackage)
+	r.Get("/apt/*", h.ServeAptRepo)
+	r.Head("/apt/*", h.ServeAptRepo)
+	r.Get("/apt", h.ServeAptRepo)
+	r.Head("/apt", h.ServeAptRepo)
+
+	// Break-glass API endpoint for automated bare-metal & security operations
+	r.Group(func(r chi.Router) {
+		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS))
+		r.Use(RequireRole(types.RoleSuperAdmin, types.RoleSecurityAdmin))
+		r.Use(CSRFMiddleware)
+		r.Post("/api/v1/auth/recovery-key", h.RevealLUKSRawRecoveryKey)
+	})
+
+	r.Route("/admin", func(r chi.Router) {
+		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS))
+		r.Use(CSRFMiddleware)
+
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/dashboard", http.StatusFound)
+		})
+
+		// ------------------------------------------------------------------
+		// Read-Only Views (AUDITOR, OPERATOR, SECURITY_ADMIN, SUPER_ADMIN)
+		// ------------------------------------------------------------------
+		r.Get("/dashboard", h.DashboardPage)
+		r.Get("/dashboard/metrics", h.DashboardMetricsPartial)
+		r.Get("/dashboard/benchmark-card", h.DashboardBenchmarkCardPartial)
+
+		r.Get("/devices", h.ListDevicesPage)
+		r.Get("/devices/{id}", h.DeviceDetail)
+		r.Get("/devices/{id}/commands-table", h.DeviceCommandsFragment)
+		r.Get("/devices/{id}/ws", h.DeviceLiveWS)
+
+		r.Get("/policies", h.ListPoliciesPage)
+		r.Get("/policies/host-compliance", h.HostPoliciesCompliancePartial)
+		r.Get("/policies/wallpapers/{filename}", h.ServeWallpaperPreview)
+
+		r.Get("/applications", h.ListApplications)
+		r.Get("/applications/{id}/edit", h.EditApplicationModal)
+
+		r.Get("/compliance/export", h.ExportComplianceAudit)
+		r.Head("/compliance/export", h.ExportComplianceAudit)
+		r.Get("/audit/events", h.ListSystemAuditEventsJSON)
+
+		r.Get("/patch-windows", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/policies", http.StatusFound)
+		})
+		r.Get("/security", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/devices", http.StatusFound)
+		})
+		r.Get("/audit", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/audit/events", http.StatusFound)
+		})
+
+		// ------------------------------------------------------------------
+		// Operational Endpoint Actions (OPERATOR, SECURITY_ADMIN, SUPER_ADMIN)
+		// ------------------------------------------------------------------
+		r.Group(func(r chi.Router) {
+			r.Use(RequireRole(types.RoleSuperAdmin, types.RoleSecurityAdmin, types.RoleOperator))
+
+			r.Post("/devices/{id}/sync", h.TriggerDeviceCheckin)
+			r.Post("/devices/{id}/checkin", h.TriggerDeviceCheckin)
+			r.Post("/devices/{id}/reboot", h.RebootDevice)
+			r.Post("/devices/{id}/commands", h.CreateDeviceCommand)
+			r.Post("/devices/{id}/patch-now", h.PatchDeviceNow)
+			r.Post("/devices/{id}/scans", h.TriggerDeviceScan)
+			r.Get("/devices/{id}/terminal", h.DeviceTerminalWS)
+			r.Post("/devices/{id}/remote-assist", h.RequestRemoteAssist)
+		})
+
+		// ------------------------------------------------------------------
+		// Security, Desired State & Catalog (SECURITY_ADMIN, SUPER_ADMIN)
+		// ------------------------------------------------------------------
+		r.Group(func(r chi.Router) {
+			r.Use(RequireRole(types.RoleSuperAdmin, types.RoleSecurityAdmin))
+
+			r.Post("/benchmarks/scan-all", h.TriggerFleetScan)
+			r.Post("/benchmarks/remediate-rule", h.RemediateBenchmarkRule)
+
+			r.Post("/devices/{id}/approve", h.ApproveDevice)
+			r.Post("/devices/{id}/revoke", h.RevokeDevice)
+			r.Post("/devices/{id}/tags", h.UpdateDeviceTags)
+			r.Post("/devices/{id}/ring", h.UpdateDeviceRing)
+			r.Post("/devices/{id}/luks/reveal", h.RevealLUKSRawRecoveryKey)
+
+			r.Post("/policies", h.CreatePolicy)
+			r.Post("/policies/from-template", h.CreatePolicyFromTemplate)
+			r.Post("/policies/{id}/toggle", h.TogglePolicy)
+			r.Post("/policies/{id}/self-service", h.TogglePolicySelfService)
+			r.Post("/policies/upload-wallpaper", h.UploadWallpaperAsset)
+
+			r.Get("/applications/new", h.NewApplicationModal)
+			r.Post("/applications", h.CreateApplication)
+			r.Post("/applications/upload", h.UploadCustomBundle)
+			r.Post("/applications/{id}", h.UpdateApplicationAssignment)
+			r.Delete("/applications/{id}", h.DeleteApplication)
+			r.Post("/applications/{id}/delete", h.DeleteApplication)
+
+			r.Post("/patch-windows", h.CreatePatchWindow)
+		})
+
+		// ------------------------------------------------------------------
+		// Global Settings & User Administration (SUPER_ADMIN ONLY)
+		// ------------------------------------------------------------------
+		r.Group(func(r chi.Router) {
+			r.Use(RequireRole(types.RoleSuperAdmin))
+
+			r.Get("/settings", h.SettingsPage)
+			r.Post("/settings/{category}", h.SaveSettingsCategory)
+
+			r.Get("/settings/tokens", h.ListTokensFragment)
+			r.Post("/settings/tokens", h.CreateToken)
+			r.Delete("/settings/tokens/{id}", h.RevokeToken)
+			r.Post("/settings/tokens/{id}/delete", h.RevokeToken)
+			r.Post("/settings/siem/test", h.TestSIEMSyslog)
+
+			// OIDC Group Mappings
+			r.Get("/settings/oidc/mappings", h.ListOIDCGroupMappings)
+			r.Post("/settings/oidc/mappings", h.CreateOIDCGroupMapping)
+			r.Delete("/settings/oidc/mappings/{id}", h.DeleteOIDCGroupMapping)
+			r.Post("/settings/oidc/mappings/{id}/delete", h.DeleteOIDCGroupMapping)
+
+			// User Management
+			r.Get("/users", h.ListUsersPage)
+			r.Post("/users", h.CreateUser)
+			r.Post("/users/{id}", h.UpdateUser)
+			r.Delete("/users/{id}", h.DeleteUser)
+			r.Post("/users/{id}/delete", h.DeleteUser)
+		})
+	})
+}

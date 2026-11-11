@@ -1,12 +1,12 @@
 {{define "devices_content"}}
-<div class="space-y-6">
+<div class="space-y-5">
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-            <h1 class="text-2xl font-bold text-white">Managed Debian Endpoints</h1>
-            <p class="text-sm text-slate-400 mt-1">Outbound-only HTTPS pull fleet inventory, tag-based grouping, compliance analytics, and diagnostic shell.</p>
+            <h1 class="text-lg font-semibold tracking-tight text-white">Managed Debian Endpoints</h1>
+            <p class="text-xs text-slate-400 mt-0.5">Fleet inventory, desired-state compliance, live patch telemetry, and diagnostic shell.</p>
         </div>
-        <div class="flex items-center space-x-3">
-            <a href="/admin/devices" class="inline-flex items-center px-3.5 py-2 rounded-lg text-sm font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
+        <div class="flex items-center space-x-2">
+            <a href="/admin/devices" class="inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 border border-[#1a2234] transition">
                 Refresh Fleet
             </a>
         </div>
@@ -14,41 +14,41 @@
 
     <!-- Fleet Compliance Analytics Header -->
     {{if .Summary}}
-    <div id="fleet-analytics-bar" class="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
+    <div id="fleet-analytics-bar" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4">
         <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
             <div class="flex items-center space-x-6">
                 <div>
-                    <div class="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Enrolled Devices</div>
-                    <div class="text-3xl font-bold text-white mt-0.5">{{.Summary.TotalDevices}}</div>
+                    <div class="text-[11px] font-medium text-slate-500">Total Enrolled</div>
+                    <div class="text-2xl font-semibold font-mono text-white mt-0.5 tabular-nums">{{.Summary.TotalDevices}}</div>
                 </div>
-                <div class="h-10 w-px bg-slate-800"></div>
+                <div class="h-8 w-px bg-[#1a2234]"></div>
                 <div>
-                    <div class="text-xs font-semibold uppercase tracking-wider text-slate-400">Overall Fleet Compliance</div>
-                    <div class="text-2xl font-bold text-emerald-400 mt-0.5">{{.Summary.CompliancePercent}}% Compliant</div>
+                    <div class="text-[11px] font-medium text-slate-500">Overall Fleet Compliance</div>
+                    <div class="text-2xl font-semibold font-mono text-emerald-400 mt-0.5 tabular-nums">{{.Summary.CompliancePercent}}% Compliant</div>
                 </div>
             </div>
-            <div class="flex flex-wrap items-center gap-2.5">
-                <span class="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="inline-flex items-center px-2 py-1 rounded bg-[#141b2a] border border-[#1a2234] text-xs font-mono text-emerald-400">
                     Approved: {{.Summary.ApprovedDevices}}
                 </span>
-                <span class="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                    Pending Approval: {{.Summary.PendingDevices}}
+                <span class="inline-flex items-center px-2 py-1 rounded bg-[#141b2a] border border-[#1a2234] text-xs font-mono text-amber-400">
+                    Pending: {{.Summary.PendingDevices}}
                 </span>
-                <span class="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-700/60 text-slate-300 border border-slate-600/50">
+                <span class="inline-flex items-center px-2 py-1 rounded bg-[#141b2a] border border-[#1a2234] text-xs font-mono text-slate-400">
                     Revoked: {{.Summary.RevokedDevices}}
                 </span>
-                <span class="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30">
-                    Non-Compliant / Failed: {{.Summary.NonCompliantDevices}}
+                <span class="inline-flex items-center px-2 py-1 rounded bg-[#141b2a] border border-[#1a2234] text-xs font-mono text-rose-400">
+                    Non-Compliant: {{.Summary.NonCompliantDevices}}
                 </span>
-                <div class="inline-flex items-center rounded-lg border border-slate-700 bg-slate-950/80 overflow-hidden ml-1">
-                    <span class="px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400 border-r border-slate-800">Export Audit</span>
+                <div class="inline-flex items-center rounded-md border border-[#1a2234] bg-[#0a0e17] overflow-hidden ml-1">
+                    <span class="px-2 py-1 text-[11px] text-slate-500 border-r border-[#1a2234]">Export</span>
                     <a href="/admin/compliance/export?format=csv"
-                        class="px-3 py-1.5 text-xs font-medium text-indigo-300 hover:bg-indigo-600/20 hover:text-white border-r border-slate-800 transition">
-                        Download CSV
+                        class="px-2.5 py-1 text-xs font-mono text-slate-300 hover:bg-[#141b2a] border-r border-[#1a2234] transition">
+                        CSV
                     </a>
                     <a href="/admin/compliance/export?format=json"
-                        class="px-3 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-600/20 hover:text-white transition">
-                        Download JSON
+                        class="px-2.5 py-1 text-xs font-mono text-slate-300 hover:bg-[#141b2a] transition">
+                        JSON
                     </a>
                 </div>
             </div>
@@ -56,34 +56,48 @@
     </div>
     {{end}}
 
-    <!-- Live Search & Tag Filtering Bar -->
-    <form id="fleet-filter-form" action="/admin/devices" method="GET" class="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-lg grid grid-cols-1 sm:grid-cols-4 gap-3">
+    <!-- Live Search, Tag & Ring Filtering Bar -->
+    <form id="fleet-filter-form" action="/admin/devices" method="GET" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 grid grid-cols-1 sm:grid-cols-5 gap-3">
         <div class="sm:col-span-2">
-            <label class="block text-xs font-medium text-slate-400 mb-1">Search Hostname or Hardware UUID</label>
-            <input type="text" name="search" value="{{.FilterSearch}}" placeholder="Search hostname or UUID..."
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">Search Hostname or UUID</label>
+            <input type="text" name="search" value="{{.FilterSearch}}" placeholder="Filter by hostname or UUID..."
                 hx-get="/admin/devices"
                 hx-trigger="keyup changed delay:300ms, change"
                 hx-target="#devices-table"
                 hx-include="#fleet-filter-form"
-                class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                class="w-full rounded-md bg-[#0a0e17] border border-[#1a2234] px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition">
         </div>
         <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Filter by Tag</label>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">Fleet Tag</label>
             <input type="text" name="tag" value="{{.FilterTag}}" placeholder="e.g. kiosk, laptop"
                 hx-get="/admin/devices"
                 hx-trigger="keyup changed delay:300ms, change"
                 hx-target="#devices-table"
                 hx-include="#fleet-filter-form"
-                class="w-full font-mono rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                class="w-full font-mono rounded-md bg-[#0a0e17] border border-[#1a2234] px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition">
         </div>
         <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Device Status</label>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">Patch Ring</label>
+            <select name="ring"
+                hx-get="/admin/devices"
+                hx-trigger="change"
+                hx-target="#devices-table"
+                hx-include="#fleet-filter-form"
+                class="w-full rounded-md bg-[#0a0e17] border border-[#1a2234] px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-blue-500 transition">
+                <option value="" {{if eq .FilterRing ""}}selected{{end}}>All Rings</option>
+                <option value="CANARY" {{if eq .FilterRing "CANARY"}}selected{{end}}>CANARY</option>
+                <option value="PILOT" {{if eq .FilterRing "PILOT"}}selected{{end}}>PILOT</option>
+                <option value="PRODUCTION" {{if eq .FilterRing "PRODUCTION"}}selected{{end}}>PRODUCTION</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1">Device Status</label>
             <select name="status"
                 hx-get="/admin/devices"
                 hx-trigger="change"
                 hx-target="#devices-table"
                 hx-include="#fleet-filter-form"
-                class="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+                class="w-full rounded-md bg-[#0a0e17] border border-[#1a2234] px-2.5 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-blue-500 transition">
                 <option value="" {{if eq .FilterStatus ""}}selected{{end}}>All Statuses</option>
                 <option value="APPROVED" {{if eq .FilterStatus "APPROVED"}}selected{{end}}>APPROVED</option>
                 <option value="PENDING_APPROVAL" {{if eq .FilterStatus "PENDING_APPROVAL"}}selected{{end}}>PENDING_APPROVAL</option>
@@ -99,31 +113,90 @@
 
     <!-- HTMX Target Container for Device Inspection Drawer -->
     <div id="device-detail-container"></div>
+
+    <!-- Self-Service Portal Section -->
+    <div id="self-service-portal" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-5 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+                <h2 class="text-sm font-semibold text-white">Self-Service Portal Policy Publishing</h2>
+                <p class="text-[11px] text-slate-400 mt-0.5">Toggle which baseline policies are exposed in the endpoint Self-Service catalog (<code class="text-slate-300 font-mono">/api/v1/desktop/self-service/catalog</code>).</p>
+            </div>
+        </div>
+        <div class="bg-[#0a0e17] border border-[#1a2234] rounded-md overflow-hidden">
+            <table class="min-w-full divide-y divide-[#1a2234] text-xs">
+                <thead class="bg-[#0f1420]">
+                    <tr>
+                        <th class="px-4 py-2 text-left font-medium text-slate-400">Policy Name</th>
+                        <th class="px-4 py-2 text-left font-medium text-slate-400">Type</th>
+                        <th class="px-4 py-2 text-left font-medium text-slate-400">Catalog Mode</th>
+                        <th class="px-4 py-2 text-right font-medium text-slate-400">Action</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-[#1a2234]">
+                    {{if .Policies}}
+                        {{range .Policies}}
+                            {{template "self_service_policy_row" .}}
+                        {{end}}
+                    {{else}}
+                        <tr>
+                            <td colspan="4" class="px-4 py-4 text-center text-slate-600">No policies configured.</td>
+                        </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 {{end}}
 
+{{define "self_service_policy_row"}}
+<tr id="self-service-policy-row-{{.ID}}" class="hover:bg-[#141b2a]/50 transition">
+    <td class="px-4 py-2.5 font-medium text-slate-200">{{.Name}}</td>
+    <td class="px-4 py-2.5 font-mono text-xs text-blue-400">{{.PolicyType}}</td>
+    <td class="px-4 py-2.5">
+        {{if .IsSelfService}}
+        <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">SELF-SERVICE</span>
+        {{else}}
+        <span class="px-2 py-0.5 rounded text-[10px] font-mono bg-[#141b2a] text-slate-400 border border-[#1a2234]">MANDATORY</span>
+        {{end}}
+    </td>
+    <td class="px-4 py-2.5 text-right">
+        <button
+            hx-post="/admin/policies/{{.ID}}/self-service"
+            hx-target="#self-service-policy-row-{{.ID}}"
+            hx-swap="outerHTML"
+            class="px-2.5 py-1 rounded text-xs font-medium {{if .IsSelfService}}bg-amber-600/80 hover:bg-amber-600 text-white{{else}}bg-[#141b2a] hover:bg-[#1a2234] text-slate-200 border border-[#1a2234]{{end}} transition">
+            {{if .IsSelfService}}Remove from Catalog{{else}}Publish to Catalog{{end}}
+        </button>
+    </td>
+</tr>
+{{end}}
+
 {{define "devices_table"}}
-<div class="bg-slate-900 border border-slate-800 rounded-xl shadow-xl overflow-hidden">
+<div class="bg-[#0f1420] border border-[#1a2234] rounded-lg overflow-hidden">
     <div class="overflow-x-auto">
-        <table class="min-w-full divide-y divide-slate-800">
-            <thead class="bg-slate-900/90">
-                <tr>
-                    <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Hostname</th>
-                    <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Hardware UUID</th>
-                    <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Fleet Tags</th>
-                    <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
-                    <th scope="col" class="px-6 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Last Check-in</th>
-                    <th scope="col" class="px-6 py-3.5 text-right text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
+        <table class="min-w-full divide-y divide-[#1a2234]">
+            <thead class="bg-[#0f1420]">
+                <tr class="text-[11px] font-medium text-slate-400">
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Hostname</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Hardware UUID</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Patch Ring</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Tags</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">TPM &amp; Secure Boot</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Status</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Patch Status</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Last Check-in</th>
+                    <th scope="col" class="px-4 py-2.5 text-right font-normal">Actions</th>
                 </tr>
             </thead>
-            <tbody class="divide-y divide-slate-800/80 bg-slate-950/40">
+            <tbody class="divide-y divide-[#1a2234] bg-[#0a0e17]">
                 {{if .Devices}}
                     {{range .Devices}}
                         {{template "device_row" .}}
                     {{end}}
                 {{else}}
                     <tr>
-                        <td colspan="6" class="px-6 py-12 text-center text-sm text-slate-500">
+                        <td colspan="9" class="px-4 py-8 text-center text-xs text-slate-600">
                             No matching endpoints found.
                         </td>
                     </tr>
@@ -135,75 +208,158 @@
 {{end}}
 
 {{define "device_row"}}
-<tr id="device-row-{{.ID}}" class="hover:bg-slate-900/50 transition">
-    <td class="px-6 py-4 whitespace-nowrap">
-        <div class="text-sm font-medium text-white">{{.Hostname}}</div>
-        <div class="text-xs text-slate-500 font-mono">ID: {{.ID}}</div>
+<tr id="device-row-{{.ID}}" class="hover:bg-[#141b2a]/40 transition text-xs">
+    <td class="px-4 py-3 whitespace-nowrap">
+        <div class="flex items-center space-x-2">
+            <button
+                hx-get="/admin/devices/{{.ID}}"
+                hx-target="#device-detail-container"
+                hx-swap="innerHTML show:#device-detail-container:top"
+                title="Inspect endpoint telemetry and policies"
+                class="text-left font-medium font-mono text-slate-100 hover:text-blue-400 transition">
+                {{.Hostname}}
+            </button>
+            {{if .WSConnected}}
+            <span class="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                <span>CONNECTED (LIVE)</span>
+            </span>
+            {{else}}
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-[#141b2a] text-slate-500 border border-[#1a2234]">
+                IDLE
+            </span>
+            {{end}}
+            {{if .RebootRequired}}
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                REBOOT REQUIRED
+            </span>
+            {{end}}
+        </div>
+        <div class="text-[10px] text-slate-600 font-mono mt-0.5">{{slice .ID 0 8}}</div>
     </td>
-    <td class="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-300">
-        {{.HardwareUUID}}
+    <td class="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400">
+        {{if .HardwareUUID}}{{slice .HardwareUUID 0 13}}...{{else}}-{{end}}
     </td>
-    <td class="px-6 py-4">
-        <div class="flex flex-wrap gap-1 mb-1.5">
+    <td class="px-4 py-3 whitespace-nowrap">
+        <form hx-post="/admin/devices/{{.ID}}/ring" hx-target="#device-row-{{.ID}}" hx-swap="outerHTML" class="flex items-center space-x-1">
+            <select name="patch_ring" onchange="this.form.requestSubmit()"
+                class="rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-0.5 text-xs font-mono text-slate-300 focus:outline-none focus:border-blue-500">
+                <option value="CANARY" {{if eq (printf "%s" .PatchRing) "CANARY"}}selected{{end}}>CANARY</option>
+                <option value="PILOT" {{if eq (printf "%s" .PatchRing) "PILOT"}}selected{{end}}>PILOT</option>
+                <option value="PRODUCTION" {{if eq (printf "%s" .PatchRing) "PRODUCTION"}}selected{{end}}>PRODUCTION</option>
+            </select>
+        </form>
+    </td>
+    <td class="px-4 py-3">
+        <div class="flex flex-wrap gap-1 mb-1">
             {{if .Tags}}
                 {{range .Tags}}
-                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-mono font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-[#141b2a] text-slate-300 border border-[#1a2234]">
                     #{{.}}
                 </span>
                 {{end}}
             {{else}}
-                <span class="text-xs text-slate-600 italic">untagged</span>
+                <span class="text-[10px] text-slate-600">none</span>
             {{end}}
         </div>
         <form hx-post="/admin/devices/{{.ID}}/tags" hx-target="#device-row-{{.ID}}" hx-swap="outerHTML" class="flex items-center space-x-1">
-            <input type="text" name="tags" value="{{joinTags .Tags}}" placeholder="kiosk, laptop"
-                class="w-32 rounded bg-slate-900 border border-slate-800 px-2 py-1 text-xs text-slate-200 font-mono focus:outline-none focus:border-indigo-500">
+            <input type="text" name="tags" value="{{joinTags .Tags}}" placeholder="tag1, tag2"
+                class="w-24 rounded bg-[#0a0e17] border border-[#1a2234] px-1.5 py-0.5 text-[11px] text-slate-200 font-mono focus:outline-none focus:border-blue-500">
             <button type="submit"
-                class="px-2 py-1 rounded text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer">
+                class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 border border-[#1a2234] transition">
                 Save
             </button>
         </form>
     </td>
-    <td class="px-6 py-4 whitespace-nowrap">
+    <td class="px-4 py-3 whitespace-nowrap">
+        <div class="flex flex-col space-y-0.5 font-mono text-[10px]">
+            <div>
+                {{if eq (printf "%s" .AttestationStatus) "ATTESTED"}}
+                    <span class="text-emerald-400">TPM: Attested</span>
+                {{else if eq (printf "%s" .AttestationStatus) "POLICY_VIOLATION"}}
+                    <span class="text-amber-400">TPM: Violation</span>
+                {{else if eq (printf "%s" .AttestationStatus) "FAILED"}}
+                    <span class="text-rose-400">TPM: Failed</span>
+                {{else}}
+                    <span class="text-slate-500">TPM: Unattested</span>
+                {{end}}
+            </div>
+            <div class="text-slate-500">
+                SecureBoot: {{if .SecureBootEnabled}}<span class="text-slate-300">On</span>{{else}}<span>Off</span>{{end}}
+            </div>
+        </div>
+    </td>
+    <td class="px-4 py-3 whitespace-nowrap">
         {{if eq (printf "%s" .Status) "APPROVED"}}
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 APPROVED
             </span>
         {{else if eq (printf "%s" .Status) "PENDING_APPROVAL"}}
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                PENDING_APPROVAL
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                PENDING
             </span>
         {{else if eq (printf "%s" .Status) "REVOKED"}}
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">
                 REVOKED
             </span>
         {{else}}
-            <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-700 text-slate-300">
+            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-[#141b2a] text-slate-400 border border-[#1a2234]">
                 {{.Status}}
             </span>
         {{end}}
     </td>
-    <td class="px-6 py-4 whitespace-nowrap text-sm text-slate-400">
+    <td class="px-4 py-3 whitespace-nowrap">
+        <div class="flex flex-wrap items-center gap-1 font-mono text-[10px]">
+            {{if and (eq .PendingUpdatesCount 0) (eq .SecurityUpdatesCount 0) (not .RebootRequired)}}
+            <span class="text-emerald-400">Up to date</span>
+            {{end}}
+            {{if gt .SecurityUpdatesCount 0}}
+            <span class="px-1.5 py-0.2 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                {{.SecurityUpdatesCount}} Sec
+            </span>
+            {{end}}
+            {{if gt .PendingUpdatesCount 0}}
+            <span class="px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                {{.PendingUpdatesCount}} Upd
+            </span>
+            {{end}}
+            {{if .RebootRequired}}
+            <span class="px-1.5 py-0.2 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">
+                Reboot
+            </span>
+            {{end}}
+        </div>
+    </td>
+    <td class="px-4 py-3 whitespace-nowrap text-slate-400">
         {{if .LastCheckinAt}}
-            {{.LastCheckinAt.Format "2006-01-02 15:04:05 MST"}}
+            <div class="font-mono text-[11px] text-slate-300">{{timeAgo .LastCheckinAt}}</div>
+            <div class="font-mono text-[10px] text-slate-500">{{.LastCheckinAt.Format "15:04:05 MST"}}</div>
+        {{else if not .UpdatedAt.IsZero}}
+            <div class="font-mono text-[11px] text-amber-400/80">{{timeAgoVal .UpdatedAt}}</div>
+            <div class="font-mono text-[10px] text-slate-500">Unapproved</div>
         {{else}}
-            <span class="text-slate-600 italic">Never</span>
+            <span class="text-slate-600 font-mono text-[10px]">Never</span>
         {{end}}
     </td>
-    <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-1.5">
+    <td class="px-4 py-3 whitespace-nowrap text-right space-x-1">
         <button
             hx-get="/admin/devices/{{.ID}}"
             hx-target="#device-detail-container"
-            hx-swap="innerHTML"
-            class="inline-flex items-center px-3 py-1.5 rounded-md text-xs font-semibold bg-indigo-600/90 hover:bg-indigo-500 text-white shadow-sm transition cursor-pointer">
+            hx-swap="innerHTML show:#device-detail-container:top"
+            class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-200 border border-[#1a2234] transition">
             Inspect
         </button>
+        <a href="/admin/policies?device_id={{.ID}}"
+            class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-blue-400 border border-[#1a2234] transition"
+            title="Inspect applied policies">
+            Policies
+        </a>
         {{if ne (printf "%s" .Status) "APPROVED"}}
         <button
             hx-post="/admin/devices/{{.ID}}/approve"
             hx-target="#device-row-{{.ID}}"
             hx-swap="outerHTML"
-            class="inline-flex items-center px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm transition cursor-pointer">
+            class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition">
             Approve
         </button>
         {{end}}
@@ -212,7 +368,7 @@
             hx-post="/admin/devices/{{.ID}}/revoke"
             hx-target="#device-row-{{.ID}}"
             hx-swap="outerHTML"
-            class="inline-flex items-center px-3 py-1.5 rounded-md text-xs font-semibold bg-rose-600/80 hover:bg-rose-600 text-white shadow-sm transition cursor-pointer">
+            class="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-rose-600/80 hover:bg-rose-600 text-white transition">
             Revoke
         </button>
         {{end}}
@@ -220,115 +376,299 @@
 </tr>
 {{end}}
 
+{{define "device_detail_page"}}
+<div class="space-y-4">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-[#1a2234]">
+        <div class="flex items-center space-x-2 text-xs font-mono text-slate-400">
+            <a href="/admin/devices" class="hover:text-blue-400 flex items-center space-x-1 transition text-slate-400">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                <span>Endpoints</span>
+            </a>
+            <span class="text-slate-600">/</span>
+            <span class="text-white font-medium">{{.Device.Hostname}}</span>
+        </div>
+        <div class="flex items-center space-x-2">
+            <a href="/admin/policies?device_id={{.Device.ID}}" class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-blue-400 border border-[#1a2234] transition">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                <span>Policy Inspector</span>
+            </a>
+        </div>
+    </div>
+    <div id="device-detail-container">
+        {{template "device_detail_drawer" .}}
+    </div>
+</div>
+{{end}}
+
 {{define "device_detail_drawer"}}
-<div id="device-inspection-drawer" class="bg-slate-900 border border-indigo-500/40 rounded-xl shadow-2xl p-6 space-y-6">
-    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-800 pb-4">
+<div id="device-inspection-drawer" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-5 space-y-5">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[#1a2234] pb-4">
         <div>
-            <div class="flex items-center space-x-3">
-                <h2 class="text-xl font-bold text-white">Device Telemetry &amp; Compliance Inspection: <span class="text-indigo-400">{{.Device.Hostname}}</span></h2>
-                <span class="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">{{.Device.Status}}</span>
+            <div class="flex items-center space-x-2.5">
+                <h2 class="text-base font-semibold text-white">Device Telemetry &amp; Compliance Inspection: <span class="font-mono text-blue-400">{{.Device.Hostname}}</span></h2>
+                <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#141b2a] text-slate-300 border border-[#1a2234]">{{.Device.Status}}</span>
+                {{if .Device.WSConnected}}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    CONNECTED (LIVE)
+                </span>
+                {{else}}
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-[#141b2a] text-slate-500 border border-[#1a2234]">
+                    IDLE POLL
+                </span>
+                {{end}}
             </div>
-            <p class="text-xs font-mono text-slate-400 mt-1">
-                Device ID: {{.Device.ID}} &bull; Hardware UUID: {{.Device.HardwareUUID}}
+            <p class="text-[11px] font-mono text-slate-500 mt-1 flex flex-wrap items-center gap-x-2">
+                <span>ID: {{.Device.ID}}</span>
+                <span>&bull;</span>
+                <span>UUID: {{.Device.HardwareUUID}}</span>
+                <span>&bull;</span>
+                {{if .Device.LastCheckinAt}}
+                <span class="text-emerald-400 font-mono">
+                    Check-in: {{.Device.LastCheckinAt.Format "15:04:05 MST"}} ({{timeAgo .Device.LastCheckinAt}})
+                </span>
+                {{else if not .Device.UpdatedAt.IsZero}}
+                <span class="text-amber-400 font-mono">
+                    Poll: {{.Device.UpdatedAt.Format "15:04:05 MST"}} (awaiting approval)
+                </span>
+                {{else}}
+                <span class="text-slate-600">Check-in: Never</span>
+                {{end}}
             </p>
         </div>
         <div class="flex items-center space-x-2">
             <button
+                hx-post="/admin/devices/{{.Device.ID}}/checkin"
+                hx-target="#device-detail-container"
+                hx-swap="innerHTML"
+                class="px-2.5 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-emerald-400 border border-[#1a2234] transition">
+                Check-in Now
+            </button>
+            <button
                 hx-get="/admin/devices/{{.Device.ID}}"
                 hx-target="#device-detail-container"
                 hx-swap="innerHTML"
-                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 cursor-pointer">
-                Refresh Drawer
+                class="px-2.5 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 border border-[#1a2234] transition">
+                Refresh
             </button>
+            {{if eq .ActiveNav "device_detail"}}
+            <a href="/admin/devices"
+                class="inline-flex items-center px-2.5 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-400 border border-[#1a2234] transition">
+                Back to Fleet
+            </a>
+            {{else}}
             <button onclick="document.getElementById('device-detail-container').innerHTML=''"
-                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 cursor-pointer">
-                Close Drawer
+                class="px-2.5 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-400 border border-[#1a2234] transition">
+                Close
             </button>
+            {{end}}
         </div>
     </div>
 
     <!-- Telemetry Summary Cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
-        <div class="p-4 rounded-lg bg-slate-950/80 border border-slate-800">
-            <div class="text-xs font-medium text-slate-400 uppercase">Reported Packages</div>
-            <div class="text-2xl font-bold text-white mt-1">{{.PackageCount}}</div>
-            <div class="text-xs text-slate-500 mt-0.5">dpkg-query inventory</div>
+    <div class="grid grid-cols-1 sm:grid-cols-5 gap-3 text-xs">
+        <div class="p-3 rounded-md bg-[#141b2a] border border-[#1a2234]">
+            <div class="text-[11px] font-medium text-slate-400">Last Check-in</div>
+            {{if .Device.LastCheckinAt}}
+                <div class="text-sm font-mono font-semibold text-emerald-400 mt-1">{{timeAgo .Device.LastCheckinAt}}</div>
+                <div class="text-[10px] font-mono text-slate-500 mt-0.5">{{.Device.LastCheckinAt.Format "2006-01-02 15:04:05"}}</div>
+            {{else if not .Device.UpdatedAt.IsZero}}
+                <div class="text-sm font-mono font-semibold text-amber-400 mt-1">{{timeAgoVal .Device.UpdatedAt}}</div>
+                <div class="text-[10px] font-mono text-slate-500 mt-0.5">Poll: {{.Device.UpdatedAt.Format "15:04:05"}}</div>
+            {{else}}
+                <div class="text-sm font-mono text-slate-500 mt-1">Never</div>
+                <div class="text-[10px] text-slate-600 mt-0.5">No check-in</div>
+            {{end}}
         </div>
-        <div class="p-4 rounded-lg bg-slate-950/80 border border-slate-800">
-            <div class="text-xs font-medium text-slate-400 uppercase">Active Session (seat0)</div>
-            <div class="text-lg font-mono font-semibold text-indigo-300 mt-1 truncate">{{.ActiveSession}}</div>
-            <div class="text-xs text-slate-500 mt-0.5">loginctl seat detector</div>
+        <div class="p-3 rounded-md bg-[#141b2a] border border-[#1a2234]">
+            <div class="text-[11px] font-medium text-slate-400">Reported Packages</div>
+            <div class="text-sm font-mono font-semibold text-white mt-1 tabular-nums">{{.PackageCount}}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">dpkg-query inventory</div>
         </div>
-        <div class="p-4 rounded-lg bg-slate-950/80 border border-slate-800">
-            <div class="text-xs font-medium text-slate-400 uppercase">Assigned Fleet Tags</div>
-            <div class="flex flex-wrap gap-1 mt-1.5">
+        <div class="p-3 rounded-md bg-[#141b2a] border border-[#1a2234]">
+            <div class="text-[11px] font-medium text-slate-400">Active Session (seat0)</div>
+            <div class="text-sm font-mono text-slate-200 mt-1 truncate">{{.ActiveSession}}</div>
+            <div class="text-[10px] text-slate-500 mt-0.5">loginctl detector</div>
+        </div>
+        <div class="p-3 rounded-md bg-[#141b2a] border border-[#1a2234]">
+            <div class="text-[11px] font-medium text-slate-400">Assigned Tags</div>
+            <div class="flex flex-wrap gap-1 mt-1">
                 {{if .Device.Tags}}
                     {{range .Device.Tags}}
-                    <span class="px-2 py-0.5 rounded text-xs font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">#{{.}}</span>
+                    <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-[#0f1420] text-slate-300 border border-[#1a2234]">#{{.}}</span>
                     {{end}}
                 {{else}}
-                    <span class="text-xs text-slate-500 italic">No tags assigned</span>
+                    <span class="text-[10px] text-slate-600 italic">untagged</span>
                 {{end}}
             </div>
         </div>
-        <div class="p-4 rounded-lg bg-slate-950/80 border border-slate-800">
-            <div class="text-xs font-medium text-slate-400 uppercase">Compliance Breakdown</div>
-            <div class="flex items-center space-x-3 mt-1.5 text-xs font-semibold">
-                <span class="text-emerald-400">{{.CompliantCount}} Compliant</span>
-                <span class="text-amber-400">{{.PendingCount}} Pending</span>
-                <span class="text-rose-400">{{.FailedCount}} Failed</span>
+        <div class="p-3 rounded-md bg-[#141b2a] border border-[#1a2234]">
+            <div class="text-[11px] font-medium text-slate-400">Compliance Breakdown</div>
+            <div class="flex items-center space-x-2 mt-1 text-[11px] font-mono">
+                <span class="text-emerald-400">{{.CompliantCount}} C</span>
+                <span class="text-amber-400">{{.PendingCount}} P</span>
+                <span class="text-rose-400">{{.FailedCount}} F</span>
             </div>
-            <div class="text-xs text-slate-500 mt-1">
-                {{if .Device.LastCheckinAt}}Last Check-in: {{.Device.LastCheckinAt.Format "15:04:05 MST"}}{{else}}No check-in recorded{{end}}
+            <div class="text-[10px] text-slate-500 mt-0.5">
+                {{if .Device.LastWSSeenAt}}WS: {{.Device.LastWSSeenAt.Format "15:04:05"}}{{else if .Device.LastCheckinAt}}HTTP: {{.Device.LastCheckinAt.Format "15:04:05"}}{{else}}No telemetry{{end}}
+            </div>
+        </div>
+    </div>
+
+    <!-- System Patching & Updates Section -->
+    <div class="bg-[#0a0e17] border border-[#1a2234] rounded-lg p-4 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+                <h3 class="text-xs font-semibold text-white">System Patching &amp; Updates</h3>
+                <p class="text-[11px] text-slate-500 mt-0.5">Debian APT simulation telemetry, unattended-upgrades state, and kernel reboot triggers.</p>
+            </div>
+            <div class="flex items-center space-x-2">
+                <button
+                    hx-post="/admin/devices/{{.Device.ID}}/patch-now"
+                    hx-target="#device-detail-container"
+                    hx-swap="innerHTML"
+                    class="inline-flex items-center px-2.5 py-1 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition">
+                    <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                    Run Patch Cycle
+                </button>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-2.5 text-xs">
+            <div class="p-2.5 rounded bg-[#0f1420] border border-[#1a2234]">
+                <div class="text-[11px] text-slate-400">Reboot Status</div>
+                <div class="mt-1">
+                    {{if .Device.RebootRequired}}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                            REBOOT REQUIRED
+                        </span>
+                        {{if .Device.RebootRequiredPkgs}}
+                            <div class="mt-1 text-[10px] font-mono text-slate-400">
+                                Triggered by: {{range .Device.RebootRequiredPkgs}}<span class="inline-block bg-[#141b2a] px-1 rounded mr-1 mb-1">{{.}}</span>{{end}}
+                            </div>
+                        {{end}}
+                    {{else}}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            Clear
+                        </span>
+                    {{end}}
+                </div>
+            </div>
+
+            <div class="p-2.5 rounded bg-[#0f1420] border border-[#1a2234]">
+                <div class="text-[11px] text-slate-400">Pending Updates</div>
+                <div class="text-sm font-semibold font-mono mt-1 {{if gt .Device.PendingUpdatesCount 0}}text-amber-400{{else}}text-white{{end}}">
+                    {{.Device.PendingUpdatesCount}} Package{{if ne .Device.PendingUpdatesCount 1}}s{{end}}
+                </div>
+                <div class="text-[10px] text-slate-500 mt-0.5">apt dist-upgrade simulation</div>
+            </div>
+
+            <div class="p-2.5 rounded bg-[#0f1420] border border-[#1a2234]">
+                <div class="text-[11px] text-slate-400">Security Updates</div>
+                <div class="text-sm font-semibold font-mono mt-1 {{if gt .Device.SecurityUpdatesCount 0}}text-rose-400{{else}}text-slate-300{{end}}">
+                    {{.Device.SecurityUpdatesCount}} Critical/Security
+                </div>
+                <div class="text-[10px] text-slate-500 mt-0.5">Debian-Security origin</div>
+            </div>
+
+            <div class="p-2.5 rounded bg-[#0f1420] border border-[#1a2234]">
+                <div class="text-[11px] text-slate-400">Last Patch Run</div>
+                {{if and .PatchStatus .PatchStatus.LastPatchRunAt}}
+                    <div class="text-xs font-mono text-slate-200 mt-1">{{.PatchStatus.LastPatchRunAt.Format "2006-01-02 15:04"}}</div>
+                    <div class="text-[10px] font-mono text-slate-400 mt-0.5">Status: {{.PatchStatus.LastPatchStatus}}</div>
+                {{else}}
+                    <div class="text-xs text-slate-600 mt-1">No recorded run</div>
+                {{end}}
+            </div>
+        </div>
+
+        <div>
+            <div class="text-[11px] font-medium text-slate-400 mb-1.5">Simulated Pending Packages</div>
+            <div class="bg-[#0f1420] border border-[#1a2234] rounded-md overflow-hidden">
+                <table class="min-w-full divide-y divide-[#1a2234] text-xs">
+                    <thead class="bg-[#0f1420]">
+                        <tr class="text-[11px] font-medium text-slate-400">
+                            <th class="px-3 py-1.5 text-left font-normal">Package</th>
+                            <th class="px-3 py-1.5 text-left font-normal">Current</th>
+                            <th class="px-3 py-1.5 text-left font-normal">Target</th>
+                            <th class="px-3 py-1.5 text-left font-normal">Type</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-[#1a2234] font-mono text-[11px]">
+                        {{if and .PatchStatus .PatchStatus.PendingPackages}}
+                            {{range .PatchStatus.PendingPackages}}
+                            <tr class="hover:bg-[#141b2a]/50 transition">
+                                <td class="px-3 py-1.5 font-medium text-white">{{.Name}}</td>
+                                <td class="px-3 py-1.5 text-slate-400">{{if .CurrentVersion}}{{.CurrentVersion}}{{else}}<span class="text-slate-600 italic">new</span>{{end}}</td>
+                                <td class="px-3 py-1.5 text-blue-400">{{.NewVersion}}</td>
+                                <td class="px-3 py-1.5">
+                                    {{if .IsSecurity}}
+                                    <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                                        SECURITY
+                                    </span>
+                                    {{else}}
+                                    <span class="text-slate-500 text-[10px]">Standard</span>
+                                    {{end}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        {{else}}
+                            <tr>
+                                <td colspan="4" class="px-3 py-4 text-center text-slate-600 font-sans">
+                                    All Debian packages are up to date.
+                                </td>
+                            </tr>
+                        {{end}}
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
 
     <!-- Policy Compliance Table -->
     <div>
-        <h3 class="text-sm font-semibold text-slate-200 uppercase tracking-wider mb-3">Policy Compliance Status &amp; Execution Output</h3>
-        <div class="bg-slate-950 border border-slate-800 rounded-lg overflow-hidden">
-            <table class="min-w-full divide-y divide-slate-800">
-                <thead class="bg-slate-900/70">
-                    <tr>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Policy</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Type</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Target Tags</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Status</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Last Enforced</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Execution / Failure Output</th>
+        <h3 class="text-xs font-semibold text-white mb-2">Policy Desired-State &amp; Execution Output</h3>
+        <div class="bg-[#0a0e17] border border-[#1a2234] rounded-md overflow-hidden">
+            <table class="min-w-full divide-y divide-[#1a2234]">
+                <thead class="bg-[#0f1420]">
+                    <tr class="text-[11px] font-medium text-slate-400">
+                        <th class="px-3 py-2 text-left font-normal">Policy</th>
+                        <th class="px-3 py-2 text-left font-normal">Type</th>
+                        <th class="px-3 py-2 text-left font-normal">Tags</th>
+                        <th class="px-3 py-2 text-left font-normal">Status</th>
+                        <th class="px-3 py-2 text-left font-normal">Last Enforced</th>
+                        <th class="px-3 py-2 text-left font-normal">Execution Output</th>
                     </tr>
                 </thead>
-                <tbody class="divide-y divide-slate-800/70 text-xs">
+                <tbody class="divide-y divide-[#1a2234] text-xs">
                     {{if .PolicyDetails}}
                         {{range .PolicyDetails}}
-                        <tr>
-                            <td class="px-4 py-3 font-medium text-white">{{.PolicyName}}</td>
-                            <td class="px-4 py-3 font-mono text-indigo-300">{{.PolicyType}}</td>
-                            <td class="px-4 py-3">
+                        <tr class="hover:bg-[#141b2a]/40 transition">
+                            <td class="px-3 py-2 font-medium text-slate-200">{{.PolicyName}}</td>
+                            <td class="px-3 py-2 font-mono text-[11px] text-blue-400">{{.PolicyType}}</td>
+                            <td class="px-3 py-2">
                                 {{if .TargetTags}}
                                     {{range .TargetTags}}
-                                    <span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono mr-1">#{{.}}</span>
+                                    <span class="px-1.5 py-0.2 rounded bg-[#141b2a] text-slate-300 font-mono text-[10px] mr-1">#{{.}}</span>
                                     {{end}}
                                 {{else}}
-                                    <span class="text-slate-500">ALL</span>
+                                    <span class="text-slate-500 font-mono text-[10px]">ALL</span>
                                 {{end}}
                             </td>
-                            <td class="px-4 py-3">
+                            <td class="px-3 py-2">
                                 {{if eq (printf "%s" .ComplianceStatus) "COMPLIANT"}}
-                                    <span class="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">COMPLIANT</span>
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">COMPLIANT</span>
                                 {{else if eq (printf "%s" .ComplianceStatus) "PENDING"}}
-                                    <span class="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold">PENDING</span>
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">PENDING</span>
                                 {{else if eq (printf "%s" .ComplianceStatus) "REVOKED"}}
-                                    <span class="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 font-semibold">REVOKED</span>
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-[#141b2a] text-slate-400 border border-[#1a2234]">REVOKED</span>
                                 {{else}}
-                                    <span class="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30 font-semibold">{{.ComplianceStatus}}</span>
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">{{.ComplianceStatus}}</span>
                                 {{end}}
                             </td>
-                            <td class="px-4 py-3 text-slate-400">
+                            <td class="px-3 py-2 text-slate-400 font-mono text-[11px]">
                                 {{if .LastEnforcedAt}}{{.LastEnforcedAt.Format "2006-01-02 15:04:05"}}{{else}}-{{end}}
                             </td>
-                            <td class="px-4 py-3 font-mono text-slate-300 max-w-md truncate">
+                            <td class="px-3 py-2 font-mono text-[11px] text-slate-300 max-w-xs truncate">
                                 {{if .ErrorMessage}}
                                     <span class="text-rose-400">{{.ErrorMessage}}</span>
                                 {{else if .ExecutionOutput}}
@@ -341,7 +681,195 @@
                         {{end}}
                     {{else}}
                         <tr>
-                            <td colspan="6" class="px-4 py-6 text-center text-slate-500">No matching policies assigned to this endpoint.</td>
+                            <td colspan="6" class="px-3 py-4 text-center text-slate-600">No policies assigned to this endpoint.</td>
+                        </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- CIS Benchmark Scans Section -->
+    <div class="border-t border-[#1a2234] pt-4 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+                <h3 class="text-xs font-semibold text-white">CIS Security Benchmark Evaluation</h3>
+                <p class="text-[11px] text-slate-500 mt-0.5">XCCDF SSG Debian 12 Standard Profile scan and automated remediation.</p>
+            </div>
+            <div class="flex items-center space-x-2">
+                <button
+                    hx-post="/admin/devices/{{.Device.ID}}/scans"
+                    hx-target="#device-detail-container"
+                    hx-swap="innerHTML"
+                    class="inline-flex items-center space-x-1 px-2.5 py-1 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                    <span>Run CIS Benchmark Scan</span>
+                </button>
+            </div>
+        </div>
+
+        {{if .LatestBenchmark}}
+        <div class="p-3.5 rounded-lg bg-[#0a0e17] border border-[#1a2234] space-y-2.5"
+             {{if or (eq .LatestBenchmark.Status "RUNNING") (eq .LatestBenchmark.Status "PENDING")}}
+             hx-get="/admin/devices/{{$.Device.ID}}"
+             hx-trigger="every 2s"
+             hx-target="#device-detail-container"
+             hx-swap="innerHTML"
+             {{end}}>
+            <div class="flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center space-x-3">
+                    <span class="text-xl font-mono font-semibold {{if ge .LatestBenchmark.Score 80.0}}text-emerald-400{{else if ge .LatestBenchmark.Score 60.0}}text-amber-400{{else}}text-rose-400{{end}}">
+                        {{printf "%.1f" .LatestBenchmark.Score}}%
+                    </span>
+                    <div>
+                        <div class="text-xs font-medium text-white">Profile: <span class="font-mono text-blue-400">{{.LatestBenchmark.Profile}}</span></div>
+                        <div class="text-[10px] text-slate-500 font-mono">
+                            Scan: {{slice .LatestBenchmark.ID 0 8}}
+                            {{if .LatestBenchmark.CompletedAt}} &bull; {{.LatestBenchmark.CompletedAt.Format "2006-01-02 15:04:05 UTC"}}{{end}}
+                        </div>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-2 text-xs font-mono">
+                    {{if eq .LatestBenchmark.Status "COMPLETED"}}
+                        <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">COMPLETED</span>
+                    {{else if or (eq .LatestBenchmark.Status "RUNNING") (eq .LatestBenchmark.Status "PENDING")}}
+                        <span class="px-2 py-0.5 rounded text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20">{{.LatestBenchmark.Status}}</span>
+                    {{else}}
+                        <span class="px-2 py-0.5 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/20">{{.LatestBenchmark.Status}}</span>
+                    {{end}}
+                    <span class="px-2 py-0.5 rounded bg-[#141b2a] border border-[#1a2234] text-emerald-400">{{.LatestBenchmark.RulesPassed}} Passed</span>
+                    <span class="px-2 py-0.5 rounded bg-[#141b2a] border border-[#1a2234] text-rose-400">{{.LatestBenchmark.RulesFailed}} Failed</span>
+                    <span class="px-2 py-0.5 rounded bg-[#141b2a] border border-[#1a2234] text-slate-500">{{.LatestBenchmark.RulesOther}} Other</span>
+                </div>
+            </div>
+
+            {{if .LatestBenchmark.ErrorMessage}}
+            <div class="p-2 rounded bg-rose-500/10 border border-rose-500/20 text-xs font-mono text-rose-400">
+                {{.LatestBenchmark.ErrorMessage}}
+            </div>
+            {{end}}
+
+            {{if .LatestBenchmark.FailedRules}}
+            <div class="pt-2 border-t border-[#1a2234] space-y-1">
+                <div class="text-[10px] font-medium text-slate-400">Failed Rules ({{len .LatestBenchmark.FailedRules}})</div>
+                <div class="space-y-1 max-h-48 overflow-y-auto pr-1">
+                    {{range .LatestBenchmark.FailedRules}}
+                    <div class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded bg-[#0f1420] border border-[#1a2234] text-xs">
+                        <div class="truncate">
+                            <span class="font-medium text-slate-200">{{if .Title}}{{.Title}}{{else}}{{.RuleID}}{{end}}</span>
+                            <span class="text-[10px] font-mono text-slate-500 ml-2">{{.RuleID}}</span>
+                        </div>
+                        {{if canRemediateRule .RuleID}}
+                        <button hx-post="/admin/benchmarks/remediate-rule"
+                                hx-vals='{"rule_id": "{{.RuleID}}", "device_id": "{{$.Device.ID}}"}'
+                                hx-swap="outerHTML"
+                                class="shrink-0 px-2 py-0.5 rounded text-[10px] font-mono text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 transition">
+                            Remediate
+                        </button>
+                        {{end}}
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+        {{else}}
+        <div class="p-4 rounded-md bg-[#0a0e17] border border-[#1a2234] text-center text-xs text-slate-500">
+            No CIS benchmark scan executed yet. Click Run CIS Benchmark Scan above to audit.
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Security & Disk Encryption (TPM 2.0 + LUKS2 Escrow) -->
+    <div class="border-t border-[#1a2234] pt-4 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+                <h3 class="text-xs font-semibold text-white">Security &amp; Disk Encryption</h3>
+                <p class="text-[11px] text-slate-500 mt-0.5">TPM 2.0 PCR attestation and RSA-OAEP-4096 / AES-256-GCM LUKS2 recovery key escrow.</p>
+            </div>
+            <div class="flex items-center space-x-2 text-xs font-mono">
+                <span class="px-2 py-0.5 rounded bg-[#0a0e17] border border-[#1a2234] text-slate-400">
+                    TPM: <strong class="text-slate-200">{{.Device.AttestationStatus}}</strong>
+                </span>
+                <span class="px-2 py-0.5 rounded bg-[#0a0e17] border border-[#1a2234] text-slate-400">
+                    Secure Boot: {{if .Device.SecureBootEnabled}}<strong class="text-emerald-400">Enabled</strong>{{else}}<strong class="text-slate-500">Disabled</strong>{{end}}
+                </span>
+            </div>
+        </div>
+
+        {{if .RevealedKey}}
+        <div class="p-3 rounded-md bg-amber-500/10 border border-amber-500/30 space-y-1.5">
+            <div class="flex items-center justify-between text-xs font-mono">
+                <span class="text-amber-300 font-medium">Decrypted LUKS2 Key</span>
+                <span class="text-slate-400 text-[10px]">UUID: {{.RevealedKey.VolumeUUID}}</span>
+            </div>
+            <div class="p-2 rounded bg-[#0a0e17] border border-amber-500/20 font-mono text-xs font-semibold text-emerald-400 select-all break-all">
+                {{.RevealedKey.RecoveryKey}}
+            </div>
+            <div class="text-[10px] text-slate-400 font-mono">
+                Logged to audit trail: "{{.RevealedKey.Reason}}"
+            </div>
+        </div>
+        {{end}}
+
+        {{if .TPMAttestation}}
+        <div class="p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-1.5">
+            <div class="text-[11px] font-medium text-slate-400">Measured TPM 2.0 PCR Digests (SHA-256)</div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 font-mono text-[10px]">
+                {{range $pcr, $digest := .TPMAttestation.PCRValues}}
+                <div class="px-2 py-1 rounded bg-[#0f1420] border border-[#1a2234] truncate">
+                    <span class="text-blue-400">PCR {{$pcr}}:</span> <span class="text-slate-300">{{$digest}}</span>
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+
+        <!-- Escrowed LUKS2 Volumes Table -->
+        <div class="bg-[#0a0e17] border border-[#1a2234] rounded-md overflow-hidden">
+            <table class="min-w-full divide-y divide-[#1a2234]">
+                <thead class="bg-[#0f1420]">
+                    <tr class="text-[11px] font-medium text-slate-400">
+                        <th class="px-3 py-2 text-left font-normal">Volume UUID</th>
+                        <th class="px-3 py-2 text-left font-normal">Mount</th>
+                        <th class="px-3 py-2 text-left font-normal">Device</th>
+                        <th class="px-3 py-2 text-left font-normal">Slot</th>
+                        <th class="px-3 py-2 text-left font-normal">Escrowed</th>
+                        <th class="px-3 py-2 text-right font-normal">Recovery Key</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-[#1a2234] text-xs font-mono">
+                    {{if .LUKSEscrows}}
+                        {{range .LUKSEscrows}}
+                        <tr class="hover:bg-[#141b2a]/40 transition">
+                            <td class="px-3 py-2 text-blue-400 text-[11px]">{{.VolumeUUID}}</td>
+                            <td class="px-3 py-2 text-slate-200">{{.MountPoint}}</td>
+                            <td class="px-3 py-2 text-slate-500">{{if .DevicePath}}{{.DevicePath}}{{else}}-{{end}}</td>
+                            <td class="px-3 py-2 text-slate-400">Slot {{.KeySlot}}</td>
+                            <td class="px-3 py-2 text-slate-500 font-sans text-[11px]">{{.EscrowedAt.Format "2006-01-02 15:04"}}</td>
+                            <td class="px-3 py-2 text-right font-sans">
+                                <details class="inline-block text-left">
+                                    <summary class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-amber-400 border border-[#1a2234] transition cursor-pointer list-none">
+                                        Reveal Key
+                                    </summary>
+                                    <form hx-post="/admin/devices/{{$.Device.ID}}/luks/reveal" hx-target="#device-detail-container" hx-swap="innerHTML"
+                                        class="mt-2 p-3 rounded-md bg-[#0f1420] border border-amber-500/30 space-y-2 w-72">
+                                        <input type="hidden" name="volume_uuid" value="{{.VolumeUUID}}">
+                                        <label class="block text-[11px] font-medium text-amber-300">Ticket / Justification</label>
+                                        <input type="text" name="reason" required placeholder="e.g. INC-4092 User locked out"
+                                            class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white focus:outline-none focus:border-amber-500">
+                                        <button type="submit"
+                                            class="w-full px-2.5 py-1 rounded text-xs font-medium bg-amber-600 hover:bg-amber-500 text-white transition">
+                                            Confirm Reveal
+                                        </button>
+                                    </form>
+                                </details>
+                            </td>
+                        </tr>
+                        {{end}}
+                    {{else}}
+                        <tr>
+                            <td colspan="6" class="px-3 py-4 text-center text-slate-600 font-sans text-xs">No LUKS2 volumes escrowed for this endpoint yet.</td>
                         </tr>
                     {{end}}
                 </tbody>
@@ -350,95 +878,174 @@
     </div>
 
     <!-- Diagnostic Shell / Command Runner Section -->
-    <div class="border-t border-slate-800 pt-5 space-y-4">
+    <div class="border-t border-[#1a2234] pt-4 space-y-3">
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
             <div>
-                <h3 class="text-sm font-semibold text-slate-200 uppercase tracking-wider">Diagnostic Shell / Command Runner</h3>
-                <p class="text-xs text-slate-400">Queue an ad-hoc diagnostic command for execution on the endpoint's next check-in (30s timeout, 64KB output cap).</p>
+                <h3 class="text-xs font-semibold text-white">Diagnostic Shell / Command Runner</h3>
+                <p class="text-[11px] text-slate-500 mt-0.5">Live execution over duplex WebSocket or queued for next sync (30s timeout, 64KB cap).</p>
             </div>
         </div>
 
         <form hx-post="/admin/devices/{{.Device.ID}}/commands" hx-target="#device-detail-container" hx-swap="innerHTML" class="flex flex-col sm:flex-row gap-2">
             <input type="text" name="command" required placeholder="e.g. uptime, df -h, systemctl status network-manager, who"
-                class="flex-1 font-mono rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500">
+                class="flex-1 font-mono rounded-md bg-[#0a0e17] border border-[#1a2234] px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 transition">
             <button type="submit"
-                class="px-4 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow transition cursor-pointer">
+                class="px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition">
                 Dispatch Command
             </button>
         </form>
 
-        <div class="bg-slate-950 border border-slate-800 rounded-lg overflow-hidden">
-            <table class="min-w-full divide-y divide-slate-800">
-                <thead class="bg-slate-900/70">
-                    <tr>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Command</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Status</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Exit Code</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Executed At</th>
-                        <th class="px-4 py-2.5 text-left text-xs font-semibold text-slate-400 uppercase">Output (stdout / stderr)</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-800/70 text-xs">
-                    {{if .Commands}}
-                        {{range .Commands}}
-                        <tr>
-                            <td class="px-4 py-3 font-mono text-indigo-300">{{.Command}}</td>
-                            <td class="px-4 py-3">
-                                {{if eq .Status "COMPLETED"}}
-                                    <span class="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-semibold">COMPLETED</span>
-                                {{else if eq .Status "QUEUED"}}
-                                    <span class="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold">QUEUED</span>
-                                {{else if eq .Status "RUNNING"}}
-                                    <span class="px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400 border border-indigo-500/30 font-semibold">RUNNING</span>
-                                {{else}}
-                                    <span class="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30 font-semibold">{{.Status}}</span>
-                                {{end}}
-                            </td>
-                            <td class="px-4 py-3 font-mono text-slate-300">
-                                {{if .ExitCode}}{{derefInt .ExitCode}}{{else}}-{{end}}
-                            </td>
-                            <td class="px-4 py-3 text-slate-400">
-                                {{if .ExecutedAt}}{{.ExecutedAt.Format "2006-01-02 15:04:05"}}{{else}}Pending check-in{{end}}
-                            </td>
-                            <td class="px-4 py-3">
-                                {{if or .Stdout .Stderr}}
-                                <details class="font-mono">
-                                    <summary class="cursor-pointer text-indigo-400 hover:text-indigo-300">View Output</summary>
-                                    {{if .Stdout}}
-                                    <pre class="mt-1.5 p-2 rounded bg-slate-900 text-slate-200 border border-slate-800 overflow-x-auto max-h-40">{{.Stdout}}</pre>
-                                    {{end}}
-                                    {{if .Stderr}}
-                                    <pre class="mt-1.5 p-2 rounded bg-rose-950/40 text-rose-300 border border-rose-800/40 overflow-x-auto max-h-40">{{.Stderr}}</pre>
-                                    {{end}}
-                                </details>
-                                {{else}}
-                                <span class="text-slate-600">-</span>
-                                {{end}}
-                            </td>
-                        </tr>
-                        {{end}}
-                    {{else}}
-                        <tr>
-                            <td colspan="5" class="px-4 py-6 text-center text-slate-500">No diagnostic commands dispatched yet.</td>
-                        </tr>
-                    {{end}}
-                </tbody>
-            </table>
+        <div id="device-commands-table"
+            hx-ws="connect:/admin/devices/{{.Device.ID}}/ws"
+            hx-get="/admin/devices/{{.Device.ID}}/commands-table"
+            hx-trigger="every 2s"
+            hx-swap="innerHTML">
+            {{template "device_commands_table" .}}
         </div>
     </div>
 
+    <!-- Interactive Web PTY Terminal (xterm.js) -->
+    <div class="border-t border-[#1a2234] pt-4 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+                <h3 class="text-xs font-semibold text-white">Live Root Terminal (xterm.js PTY) &amp; Remote Assist</h3>
+                <p class="text-[11px] text-slate-500 mt-0.5">Interactive bidirectional shell (<code class="text-blue-400 font-mono">/admin/devices/{{.Device.ID}}/terminal</code>) and attended assistance.</p>
+            </div>
+            <div class="flex items-center space-x-2">
+                <button type="button"
+                    onclick="startSpireTerminal('{{.Device.ID}}')"
+                    class="px-2.5 py-1 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition">
+                    Connect PTY
+                </button>
+                <button type="button"
+                    hx-post="/admin/devices/{{.Device.ID}}/remote-assist"
+                    hx-target="#remote-assist-status-{{.Device.ID}}"
+                    hx-swap="innerHTML"
+                    class="px-2.5 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 border border-[#1a2234] transition">
+                    Request Remote Assist
+                </button>
+            </div>
+        </div>
+
+        <div id="remote-assist-status-{{.Device.ID}}"></div>
+
+        <div id="xterm-wrapper-{{.Device.ID}}" class="rounded-md bg-black border border-[#1a2234] p-2">
+            <div id="xterm-container-{{.Device.ID}}" class="h-64 w-full font-mono text-xs"></div>
+        </div>
+    </div>
+
+    <script>
+    function startSpireTerminal(deviceId) {
+        const container = document.getElementById('xterm-container-' + deviceId);
+        if (!container || typeof Terminal === 'undefined') return;
+        container.innerHTML = '';
+
+        const term = new Terminal({
+            cursorBlink: true,
+            fontSize: 12,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            theme: { background: '#000000', foreground: '#e2e8f0' }
+        });
+        const fitAddon = typeof FitAddon !== 'undefined' ? new FitAddon.FitAddon() : null;
+        if (fitAddon) term.loadAddon(fitAddon);
+        term.open(container);
+        if (fitAddon) fitAddon.fit();
+
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = proto + '//' + window.location.host + '/admin/devices/' + deviceId + '/terminal';
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = function() {
+            term.writeln('\x1b[32m[SpireUEM] Connected to root PTY (' + deviceId + ')\x1b[0m');
+            ws.send(JSON.stringify({ type: 'resize', rows: term.rows || 24, cols: term.cols || 80 }));
+        };
+        ws.onmessage = function(ev) {
+            term.write(ev.data);
+        };
+        ws.onclose = function() {
+            term.writeln('\r\n\x1b[33m[SpireUEM] PTY session closed.\x1b[0m');
+        };
+        term.onData(function(data) {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(data);
+            }
+        });
+    }
+    </script>
+
     <!-- Expandable Reported Package Inventory -->
     {{if .Packages}}
-    <details class="bg-slate-950 border border-slate-800 rounded-lg p-4">
-        <summary class="text-xs font-semibold text-slate-300 cursor-pointer select-none">
-            View Reported Debian Packages ({{.PackageCount}} packages installed)
+    <details class="bg-[#0a0e17] border border-[#1a2234] rounded-md p-3">
+        <summary class="text-xs font-medium text-slate-300 cursor-pointer select-none">
+            Reported Debian Packages ({{.PackageCount}} installed)
         </summary>
-        <div class="mt-3 max-h-48 overflow-y-auto grid grid-cols-1 sm:grid-cols-3 gap-1.5 font-mono text-xs text-slate-400">
+        <div class="mt-2.5 max-h-48 overflow-y-auto grid grid-cols-1 sm:grid-cols-3 gap-1 font-mono text-[11px] text-slate-400">
             {{range .Packages}}
-            <div class="bg-slate-900/80 px-2 py-1 rounded border border-slate-800/60 truncate">{{.}}</div>
+            <div class="bg-[#0f1420] px-2 py-0.5 rounded border border-[#1a2234] truncate">{{.}}</div>
             {{end}}
         </div>
     </details>
     {{end}}
+</div>
+{{end}}
+
+{{define "device_commands_table"}}
+<div class="bg-[#0a0e17] border border-[#1a2234] rounded-md overflow-hidden">
+    <table class="min-w-full divide-y divide-[#1a2234]">
+        <thead class="bg-[#0f1420]">
+            <tr class="text-[11px] font-medium text-slate-400">
+                <th class="px-3 py-1.5 text-left font-normal">Command</th>
+                <th class="px-3 py-1.5 text-left font-normal">Status</th>
+                <th class="px-3 py-1.5 text-left font-normal">Exit Code</th>
+                <th class="px-3 py-1.5 text-left font-normal">Executed At</th>
+                <th class="px-3 py-1.5 text-left font-normal">Output</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-[#1a2234] text-xs">
+            {{if .Commands}}
+                {{range .Commands}}
+                <tr class="hover:bg-[#141b2a]/40 transition">
+                    <td class="px-3 py-2 font-mono text-[11px] text-blue-400">{{.Command}}</td>
+                    <td class="px-3 py-2">
+                        {{if eq .Status "COMPLETED"}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">COMPLETED</span>
+                        {{else if eq .Status "QUEUED"}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">QUEUED</span>
+                        {{else if eq .Status "RUNNING"}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-blue-500/10 text-blue-400 border border-blue-500/20">RUNNING</span>
+                        {{else}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">{{.Status}}</span>
+                        {{end}}
+                    </td>
+                    <td class="px-3 py-2 font-mono text-[11px] text-slate-300">
+                        {{if .ExitCode}}{{derefInt .ExitCode}}{{else}}-{{end}}
+                    </td>
+                    <td class="px-3 py-2 text-slate-400 font-mono text-[10px]">
+                        {{if .ExecutedAt}}{{.ExecutedAt.Format "15:04:05"}}{{else}}Queued{{end}}
+                    </td>
+                    <td class="px-3 py-2">
+                        {{if or .Stdout .Stderr}}
+                        <details class="font-mono text-[11px]">
+                            <summary class="cursor-pointer text-blue-400 hover:underline">View Output</summary>
+                            {{if .Stdout}}
+                            <pre class="mt-1 p-2 rounded bg-[#0f1420] text-slate-200 border border-[#1a2234] overflow-x-auto max-h-36">{{.Stdout}}</pre>
+                            {{end}}
+                            {{if .Stderr}}
+                            <pre class="mt-1 p-2 rounded bg-rose-950/40 text-rose-300 border border-rose-800/40 overflow-x-auto max-h-36">{{.Stderr}}</pre>
+                            {{end}}
+                        </details>
+                        {{else}}
+                        <span class="text-slate-600 font-mono">-</span>
+                        {{end}}
+                    </td>
+                </tr>
+                {{end}}
+            {{else}}
+                <tr>
+                    <td colspan="5" class="px-3 py-4 text-center text-slate-600">No diagnostic commands dispatched yet.</td>
+                </tr>
+            {{end}}
+        </tbody>
+    </table>
 </div>
 {{end}}

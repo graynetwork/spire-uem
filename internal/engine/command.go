@@ -1,19 +1,23 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/spire-uem/spire-uem/internal/types"
 )
 
-const maxCommandOutputBytes = 64 * 1024 // 64KB cap
+const (
+	maxCommandOutputBytes = 64 * 1024 // 64KB hard cap
+	truncationNotice      = "\n[TRUNCATED: Output exceeded 64KB limit]"
+)
 
 // ExecuteDiagnosticCommand runs an ad-hoc diagnostic command with a strict timeout (default 30s)
-// and captures stdout and stderr truncated to 64KB.
+// and reads stdout and stderr using io.LimitReader to strictly bound memory allocations.
 func ExecuteDiagnosticCommand(parentCtx context.Context, cmdDTO types.CommandDTO, timeout time.Duration) types.CommandReportRequest {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -23,26 +27,93 @@ func ExecuteDiagnosticCommand(parentCtx context.Context, cmdDTO types.CommandDTO
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cmdDTO.Command)
-	var stdoutBuf, stderrBuf bytes.Buffer
-	cmd.Stdout = &stdoutBuf
-	cmd.Stderr = &stderrBuf
 
-	err := cmd.Run()
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return types.CommandReportRequest{
+			CommandID: cmdDTO.ID,
+			Status:    "FAILED",
+			ExitCode:  1,
+			Stderr:    "Failed to create stdout pipe: " + err.Error(),
+		}
+	}
 
-	stdoutStr := truncateOutput(stdoutBuf.Bytes(), maxCommandOutputBytes)
-	stderrStr := truncateOutput(stderrBuf.Bytes(), maxCommandOutputBytes)
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return types.CommandReportRequest{
+			CommandID: cmdDTO.ID,
+			Status:    "FAILED",
+			ExitCode:  1,
+			Stderr:    "Failed to create stderr pipe: " + err.Error(),
+		}
+	}
+
+	if err := cmd.Start(); err != nil {
+		return types.CommandReportRequest{
+			CommandID: cmdDTO.ID,
+			Status:    "FAILED",
+			ExitCode:  1,
+			Stderr:    "Failed to start command: " + err.Error(),
+		}
+	}
+
+	var stdoutBytes, stderrBytes []byte
+	var stdoutTruncated, stderrTruncated bool
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		lr := io.LimitReader(stdoutPipe, maxCommandOutputBytes+1)
+		b, _ := io.ReadAll(lr)
+		if len(b) > maxCommandOutputBytes {
+			stdoutBytes = b[:maxCommandOutputBytes]
+			stdoutTruncated = true
+		} else {
+			stdoutBytes = b
+		}
+		// Drain remaining output so the process does not block on write
+		_, _ = io.Copy(io.Discard, stdoutPipe)
+	}()
+
+	go func() {
+		defer wg.Done()
+		lr := io.LimitReader(stderrPipe, maxCommandOutputBytes+1)
+		b, _ := io.ReadAll(lr)
+		if len(b) > maxCommandOutputBytes {
+			stderrBytes = b[:maxCommandOutputBytes]
+			stderrTruncated = true
+		} else {
+			stderrBytes = b
+		}
+		// Drain remaining output so the process does not block on write
+		_, _ = io.Copy(io.Discard, stderrPipe)
+	}()
+
+	wg.Wait()
+	waitErr := cmd.Wait()
+
+	stdoutStr := string(stdoutBytes)
+	if stdoutTruncated {
+		stdoutStr += truncationNotice
+	}
+
+	stderrStr := string(stderrBytes)
+	if stderrTruncated {
+		stderrStr += truncationNotice
+	}
 
 	status := "COMPLETED"
 	exitCode := 0
 
-	if err != nil {
+	if waitErr != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			status = "TIMED_OUT"
 			exitCode = -1
 		} else {
 			status = "FAILED"
 			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
+			if errors.As(waitErr, &exitErr) {
 				exitCode = exitErr.ExitCode()
 			} else {
 				exitCode = 1
@@ -57,11 +128,4 @@ func ExecuteDiagnosticCommand(parentCtx context.Context, cmdDTO types.CommandDTO
 		Stdout:    stdoutStr,
 		Stderr:    stderrStr,
 	}
-}
-
-func truncateOutput(b []byte, maxBytes int) string {
-	if len(b) <= maxBytes {
-		return string(b)
-	}
-	return string(b[:maxBytes]) + "\n...[truncated at 64KB]"
 }
