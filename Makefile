@@ -1,6 +1,6 @@
 VERSION ?= 0.1.0
 
-.PHONY: all build server agent build-hub deb release init-repo publish-deb test vet clean
+.PHONY: all build server agent build-hub deb release init-repo publish-deb test vet review audit install-hooks clean
 
 all: build
 
@@ -41,6 +41,17 @@ publish-deb:
 
 test:
 	./scripts/test_e2e.sh
+
+review:
+	./scripts/security_audit.sh
+
+audit: review
+
+install-hooks:
+	@mkdir -p .git/hooks
+	@ln -sf ../../scripts/hooks/pre-commit-security.sh .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "Installed SpireUEM security pre-commit hook into .git/hooks/pre-commit"
 
 clean:
 	rm -rf bin/ dist/ bin/spire-hub

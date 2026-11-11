@@ -1,0 +1,44 @@
+name: Security Code Review & Systems Audit
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  security-audit:
+    name: Zero-Trust Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+          cache: true
+
+      - name: Go Vet Analysis
+        run: go vet ./...
+
+      - name: Execute SpireUEM Security Auditor
+        id: security_audit
+        run: |
+          chmod +x ./scripts/security_audit.sh
+          ./scripts/security_audit.sh | tee security_report.md
+
+      - name: Upload Security Review Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spireuem-security-review-report
+          path: security_report.md
+          retention-days: 14
