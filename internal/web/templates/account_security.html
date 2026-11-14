@@ -1,0 +1,158 @@
+{{define "account_security_content"}}
+<div class="space-y-6 max-w-4xl mx-auto" id="account-security" data-csrf="{{.CSRFToken}}">
+    <div class="pb-4 border-b border-[#1a2234]">
+        <h1 class="text-lg font-semibold text-white tracking-tight">Account Security</h1>
+        <p class="text-xs text-slate-400 mt-0.5">Two-factor authentication and personal access tokens for <span class="font-mono text-slate-300">{{.AdminUser}}</span></p>
+    </div>
+
+    {{if .StaticAdmin}}
+    <div class="rounded-md bg-[#141b2a] border border-amber-700/40 p-4 text-sm text-amber-300">
+        You are signed in as the static break-glass administrator. This account has no database record, so it cannot own personal access tokens or enroll MFA. Create a local admin user for day-to-day access.
+    </div>
+    {{else}}
+
+    {{if .Forced}}
+    <div class="rounded-md bg-[#141b2a] border border-blue-700/40 p-4 text-sm text-blue-300">
+        Your administrator requires multi-factor authentication. Please enroll now to continue using SpireUEM.
+    </div>
+    {{end}}
+
+    <!-- MFA -->
+    <section class="rounded-lg bg-[#0f1623] border border-[#1a2234] p-5">
+        <h2 class="text-sm font-semibold text-white mb-1">Multi-Factor Authentication (TOTP)</h2>
+        {{if not .IsLocal}}
+        <p class="text-xs text-slate-400">MFA for this account is managed by your identity provider (SSO).</p>
+        {{else}}
+        <p class="text-xs text-slate-400 mb-3">Status:
+            {{if .MFAEnabled}}<span class="text-emerald-400 font-medium">Enabled</span> &middot; {{.Recovery.Remaining}} of {{.Recovery.Total}} recovery codes remaining{{else}}<span class="text-slate-400">Not enabled</span>{{end}}
+        </p>
+
+        {{if not .MFAEnabled}}
+        <div id="mfa-enroll">
+            <button id="mfa-begin" class="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white">Set up authenticator</button>
+            <div id="mfa-setup" class="hidden mt-4 space-y-3">
+                <img id="mfa-qr" alt="TOTP QR code" width="200" height="200" class="bg-white p-2 rounded"/>
+                <p class="text-xs text-slate-400">Secret (manual entry): <code id="mfa-secret" class="font-mono text-slate-300"></code></p>
+                <form id="mfa-confirm-form" class="flex items-center gap-2">
+                    <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" class="px-2 py-1 text-sm rounded bg-[#0a0e17] border border-[#1a2234] text-white font-mono w-32"/>
+                    <button class="px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-600 hover:bg-emerald-500 text-white">Confirm &amp; enable</button>
+                </form>
+            </div>
+        </div>
+        {{else}}
+        <form id="mfa-disable-form" class="flex items-center gap-2">
+            <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="code or recovery code" class="px-2 py-1 text-sm rounded bg-[#0a0e17] border border-[#1a2234] text-white font-mono w-52"/>
+            <button class="px-3 py-1.5 text-xs font-medium rounded-md bg-red-700 hover:bg-red-600 text-white">Disable MFA</button>
+        </form>
+        {{end}}
+        <div id="mfa-result" class="mt-3 text-xs"></div>
+        {{end}}
+    </section>
+
+    <!-- Personal access tokens -->
+    <section class="rounded-lg bg-[#0f1623] border border-[#1a2234] p-5">
+        <h2 class="text-sm font-semibold text-white mb-1">Personal Access Tokens</h2>
+        <p class="text-xs text-slate-400 mb-3">Bearer tokens (<code class="font-mono">spire_pat_…</code>) for scripts and API clients. A token's role cannot exceed yours ({{.AdminRole}}), and it stops working if your role is lowered or your account is disabled.</p>
+
+        <form id="pat-create-form" class="flex flex-wrap items-end gap-2 mb-4">
+            <label class="text-xs text-slate-400">Name<br><input name="name" required class="mt-1 px-2 py-1 text-sm rounded bg-[#0a0e17] border border-[#1a2234] text-white w-48"/></label>
+            <label class="text-xs text-slate-400">Role<br>
+                <select name="role" class="mt-1 px-2 py-1 text-sm rounded bg-[#0a0e17] border border-[#1a2234] text-white">
+                    <option value="">Same as mine ({{.AdminRole}})</option>
+                    <option value="AUDITOR">AUDITOR</option>
+                    <option value="OPERATOR">OPERATOR</option>
+                    <option value="SECURITY_ADMIN">SECURITY_ADMIN</option>
+                    <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                </select>
+            </label>
+            <label class="text-xs text-slate-400">Expires (days)<br><input name="expires_in_days" type="number" min="1" max="365" value="90" class="mt-1 px-2 py-1 text-sm rounded bg-[#0a0e17] border border-[#1a2234] text-white w-24"/></label>
+            <button class="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white">Create token</button>
+        </form>
+        <div id="pat-new" class="hidden mb-4 p-3 rounded bg-[#0a0e17] border border-emerald-700/40 text-xs">
+            <p class="text-emerald-300 mb-1">Copy this token now — it will not be shown again:</p>
+            <code id="pat-new-value" class="font-mono text-emerald-200 break-all"></code>
+        </div>
+
+        <table class="w-full text-xs">
+            <thead class="text-slate-500 text-left border-b border-[#1a2234]"><tr><th class="py-1">Name</th><th>Prefix</th><th>Role</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+            <tbody id="pat-list">
+            {{range .Tokens}}
+                <tr class="border-b border-[#141b2a]" data-id="{{.ID}}">
+                    <td class="py-1 text-slate-200">{{.Name}}</td>
+                    <td class="font-mono text-slate-400">{{.TokenPrefix}}…</td>
+                    <td class="text-slate-300">{{.Role}}</td>
+                    <td class="text-slate-400">{{.ExpiresAt.Format "2006-01-02"}}</td>
+                    <td class="text-slate-400">{{if .LastUsedAt}}{{.LastUsedAt.Format "2006-01-02 15:04"}}{{else}}never{{end}}</td>
+                    <td class="text-right">{{if .RevokedAt}}<span class="text-slate-500">revoked</span>{{else}}<button class="pat-revoke text-red-400 hover:text-red-300" data-id="{{.ID}}">revoke</button>{{end}}</td>
+                </tr>
+            {{else}}
+                <tr><td colspan="6" class="py-2 text-slate-500">No tokens yet.</td></tr>
+            {{end}}
+            </tbody>
+        </table>
+    </section>
+    {{end}}
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById('account-security');
+  if (!root) return;
+  var csrf = root.getAttribute('data-csrf');
+  function post(url, form) {
+    var body = form ? new URLSearchParams(new FormData(form)) : null;
+    return fetch(url, { method: 'POST', headers: { 'X-CSRF-Token': csrf, 'Accept': 'application/json' }, body: body });
+  }
+  function del(url) {
+    return fetch(url, { method: 'DELETE', headers: { 'X-CSRF-Token': csrf, 'Accept': 'application/json' } });
+  }
+  var out = document.getElementById('mfa-result');
+  function msg(el, text, ok) { if (el) { el.textContent = text; el.className = 'mt-3 text-xs ' + (ok ? 'text-emerald-400' : 'text-red-400'); } }
+
+  var begin = document.getElementById('mfa-begin');
+  if (begin) begin.addEventListener('click', function () {
+    post('/admin/account/mfa/begin').then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error) { msg(out, d.error, false); return; }
+      document.getElementById('mfa-secret').textContent = d.secret;
+      document.getElementById('mfa-qr').src = d.qr_png_url + '?t=' + Date.now();
+      document.getElementById('mfa-setup').classList.remove('hidden');
+    });
+  });
+  var confirmForm = document.getElementById('mfa-confirm-form');
+  if (confirmForm) confirmForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    post('/admin/account/mfa/confirm', confirmForm).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error) { msg(out, d.error, false); return; }
+      msg(out, 'MFA enabled. Recovery codes (store now): ' + (d.recovery_codes || []).join('  '), true);
+      setTimeout(function () { location.reload(); }, 8000);
+    });
+  });
+  var disableForm = document.getElementById('mfa-disable-form');
+  if (disableForm) disableForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    post('/admin/account/mfa/disable', disableForm).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error) { msg(out, d.error, false); return; }
+      location.reload();
+    });
+  });
+
+  var patForm = document.getElementById('pat-create-form');
+  if (patForm) patForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    post('/admin/account/tokens', patForm).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error) { alert(d.error); return; }
+      var box = document.getElementById('pat-new');
+      document.getElementById('pat-new-value').textContent = d.token;
+      box.classList.remove('hidden');
+      setTimeout(function () { location.reload(); }, 15000);
+    });
+  });
+  document.querySelectorAll('.pat-revoke').forEach(function (b) {
+    b.addEventListener('click', function () {
+      if (!confirm('Revoke this token?')) return;
+      del('/admin/account/tokens/' + b.getAttribute('data-id')).then(function () { location.reload(); });
+    });
+  });
+})();
+</script>
+{{end}}

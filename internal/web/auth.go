@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/types"
 	"golang.org/x/crypto/bcrypt"
@@ -308,16 +309,21 @@ func requestIsHTTPS(r *http.Request) bool {
 
 // SessionAuthMiddleware enforces authentication via session cookie or Basic Auth fallback.
 func SessionAuthMiddleware(adminUser, adminPass string, enforceHTTPS bool) func(http.Handler) http.Handler {
-	return SessionAuthMiddlewareWithRepo(nil, adminUser, adminPass, enforceHTTPS)
+	return SessionAuthMiddlewareWithRepo(nil, adminUser, adminPass, enforceHTTPS, nil)
 }
 
 // SessionAuthMiddlewareWithRepo enforces authentication validating against PostgreSQL admin_users or static credentials.
-func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass string, enforceHTTPS bool) func(http.Handler) http.Handler {
+// When repo and auditor are set, it additionally accepts personal access tokens via
+// `Authorization: Bearer spire_pat_...` (auth method "token", CSRF-exempt like Basic Auth).
+func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass string, enforceHTTPS bool, auditor *audit.Forwarder) func(http.Handler) http.Handler {
 	expectedUserHash := sha256.Sum256([]byte(adminUser))
 	expectedPassHash := sha256.Sum256([]byte(adminPass))
 	// The static break-glass account exists only when a password is configured; an empty
 	// password must never authenticate anyone.
 	staticEnabled := adminPass != ""
+	// Per-IP throttle on FAILED token attempts (5 failures / minute), shared across all
+	// requests routed through this middleware instance.
+	patLimiter := newPATRateLimiter(5, time.Minute)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -367,7 +373,27 @@ func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass str
 				}
 			}
 
-			// 2. Fallback to Basic Auth (for automated test scripts / API clients)
+			// 2. Personal access token via Authorization: Bearer spire_pat_...
+			if repo != nil && auditor != nil {
+				if raw := bearerPAT(r); raw != "" {
+					res, handled := authenticatePATRequest(w, r, repo, auditor, patLimiter, raw)
+					if handled {
+						return
+					}
+					if res.authenticated {
+						next.ServeHTTP(w, r.WithContext(patContext(r.Context(), res)))
+						return
+					}
+					// A presented-but-invalid PAT is a definitive failure: do not fall
+					// through to Basic Auth or the cookie path with the same credential.
+					w.Header().Set("Content-Type", "application/json; charset=utf-8")
+					w.WriteHeader(http.StatusUnauthorized)
+					_, _ = w.Write([]byte(`{"error":"invalid or expired personal access token"}`))
+					return
+				}
+			}
+
+			// 3. Fallback to Basic Auth (for automated test scripts / API clients)
 			if user, pass, ok := r.BasicAuth(); ok {
 				var authenticatedRole types.AdminRole
 				var userObj *types.AdminUser
@@ -378,6 +404,16 @@ func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass str
 					if err == nil && dbUser != nil && dbUser.IsActive {
 						if dbUser.AuthProvider == types.AuthProviderLocal && dbUser.PasswordHash != "" {
 							if bcrypt.CompareHashAndPassword([]byte(dbUser.PasswordHash), []byte(pass)) == nil {
+								// An MFA-enabled local account must not authenticate via
+								// Basic Auth: a single password cannot carry a second
+								// factor. Such accounts use a personal access token for
+								// scripted/API access instead.
+								if mfaEnabledForUser(r.Context(), repo, dbUser.ID) {
+									w.Header().Set("Content-Type", "application/json; charset=utf-8")
+									w.WriteHeader(http.StatusUnauthorized)
+									_, _ = w.Write([]byte(`{"error":"Basic Auth is disabled for MFA-enabled accounts; use a personal access token (spire_pat_...)"}`))
+									return
+								}
 								authenticated = true
 								authenticatedRole = dbUser.Role
 								userObj = dbUser
@@ -409,7 +445,7 @@ func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass str
 				}
 			}
 
-			// 3. Unauthenticated handling
+			// 4. Unauthenticated handling
 			isAPIOrHTMX := r.Header.Get("HX-Request") == "true" ||
 				strings.Contains(r.Header.Get("Accept"), "application/json") ||
 				r.Method != http.MethodGet
@@ -434,9 +470,11 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// When authenticated via Basic Auth without cookie, exempt from CSRF
+		// When authenticated via Basic Auth or a personal access token without a cookie,
+		// exempt from CSRF: these clients carry no cookie, so cross-site request forgery
+		// does not apply.
 		authMethod, _ := r.Context().Value(AuthMethodCtxKey).(string)
-		if authMethod == "basic" {
+		if authMethod == "basic" || authMethod == AuthMethodTokenID {
 			// If request also didn't have a session cookie, allow
 			if _, err := r.Cookie(SessionCookieName); err != nil {
 				next.ServeHTTP(w, r)

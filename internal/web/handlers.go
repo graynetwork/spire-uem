@@ -591,6 +591,40 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 		}
 
 		secure := ShouldEnforceHTTPSCookie(h.enforceHTTPS, r)
+
+		// MFA second factor: a verified LOCAL account with MFA enabled does NOT get a
+		// session yet. Begin a short-lived, single-use pending-login challenge instead;
+		// the session is issued only after /login/mfa verifies the second factor.
+		if authenticatedUser != nil && authenticatedUser.AuthProvider == types.AuthProviderLocal {
+			enr, mfaErr := h.repo.GetMFAEnrollment(r.Context(), authenticatedUser.ID)
+			if mfaErr == nil && enr.Enabled {
+				h.beginMFAChallenge(w, r, authenticatedUser, secure)
+				return
+			}
+			// Mandatory-MFA policy: a local account without MFA is signed in but routed
+			// straight to enrollment, which it must complete.
+			if (mfaErr != nil || !enr.Enabled) && h.requireMFAEnabled(r) {
+				cookie, _, err := IssueSession(r.Context(), h.repo, authenticatedUsername, secure)
+				if err != nil {
+					http.Error(w, "Failed to create session", http.StatusInternalServerError)
+					return
+				}
+				http.SetCookie(w, cookie)
+				if h.auditor != nil {
+					_, _, _ = h.auditor.Emit(r.Context(), authenticatedUsername, "LOGIN_SUCCESS", authenticatedUser.ID, r.RemoteAddr, map[string]any{
+						"auth_provider":  "LOCAL",
+						"mfa_enrollment": "forced",
+					})
+				}
+				if strings.Contains(r.Header.Get("Accept"), "application/json") {
+					writeJSON(w, http.StatusOK, map[string]any{"status": "mfa_enrollment_required", "redirect": "/admin/account/mfa/setup"})
+					return
+				}
+				http.Redirect(w, r, "/admin/account/mfa/setup?forced=1", http.StatusSeeOther)
+				return
+			}
+		}
+
 		cookie, csrfToken, err := IssueSession(r.Context(), h.repo, authenticatedUsername, secure)
 		if err != nil {
 			http.Error(w, "Failed to create session", http.StatusInternalServerError)

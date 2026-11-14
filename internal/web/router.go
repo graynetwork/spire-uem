@@ -28,6 +28,11 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 	r.Post("/login", h.LoginSubmit(adminUser, adminPass))
 	r.Post("/logout", h.Logout)
 
+	// Second-factor (TOTP) challenge pages. Public: no session exists yet, the pending
+	// state is carried by a short-lived signed cookie set by /login.
+	r.Get("/login/mfa", h.MFAChallengePage)
+	r.Post("/login/mfa", h.MFAChallengeSubmit)
+
 	// OpenID Connect (OIDC) Single Sign-On Endpoints
 	r.Get("/auth/oidc/login", h.OIDCSignIn)
 	r.Get("/auth/oidc/callback", h.OIDCCallback)
@@ -54,19 +59,38 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 
 	// Break-glass API endpoint for automated bare-metal & security operations
 	r.Group(func(r chi.Router) {
-		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS))
+		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS, h.auditor))
 		r.Use(RequireRole(types.RoleSuperAdmin, types.RoleSecurityAdmin))
 		r.Use(CSRFMiddleware)
 		r.Post("/api/v1/auth/recovery-key", h.RevealLUKSRawRecoveryKey)
 	})
 
 	r.Route("/admin", func(r chi.Router) {
-		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS))
+		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS, h.auditor))
 		r.Use(CSRFMiddleware)
 
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/dashboard", http.StatusFound)
 		})
+
+		// ------------------------------------------------------------------
+		// Account self-service (ANY authenticated role): own API tokens + MFA.
+		// A personal access token's role is capped at the creator's; MFA applies
+		// to LOCAL accounts only. The static break-glass admin has no DB row and
+		// is told it cannot own tokens / enroll MFA.
+		// ------------------------------------------------------------------
+		r.Get("/account/mfa/setup", h.AccountSecurityPage)
+		r.Get("/account/security", h.AccountSecurityPage)
+		r.Get("/account/tokens", h.ListMyTokens)
+		r.Post("/account/tokens", h.CreateMyToken)
+		r.Delete("/account/tokens/{id}", h.RevokeMyToken)
+		r.Post("/account/tokens/{id}/delete", h.RevokeMyToken)
+
+		r.Get("/account/mfa", h.MFAStatus)
+		r.Post("/account/mfa/begin", h.MFABegin)
+		r.Get("/account/mfa/qr.png", h.MFAQRCode)
+		r.Post("/account/mfa/confirm", h.MFAConfirm)
+		r.Post("/account/mfa/disable", h.MFADisable)
 
 		// ------------------------------------------------------------------
 		// Read-Only Views (AUDITOR, OPERATOR, SECURITY_ADMIN, SUPER_ADMIN)
@@ -156,6 +180,15 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 
 			r.Get("/settings", h.SettingsPage)
 			r.Post("/settings/{category}", h.SaveSettingsCategory)
+
+			// Personal access tokens — fleet-wide overview and revoke (any owner).
+			r.Get("/account/tokens/all", h.ListAllTokens)
+			r.Delete("/account/tokens/all/{id}", h.RevokeAnyToken)
+			r.Post("/account/tokens/all/{id}/delete", h.RevokeAnyToken)
+
+			// MFA administration: mandatory-MFA toggle and reset another user's MFA.
+			r.Post("/settings/mfa", h.SetRequireMFA)
+			r.Post("/users/{id}/mfa/reset", h.ResetUserMFA)
 
 			r.Get("/settings/tokens", h.ListTokensFragment)
 			r.Post("/settings/tokens", h.CreateToken)

@@ -238,3 +238,65 @@ curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/comp
 # Export JSON Audit Report
 curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
 ```
+
+---
+
+## Scoped Admin API Tokens (Personal Access Tokens) & MFA
+
+### Personal access tokens (PATs)
+
+Operators authenticate scripts and API clients with a bearer token instead of a password.
+
+- **Format:** `spire_pat_<64 hex chars>` (256 bits of entropy). Only the SHA‑256 hash is
+  stored; the raw value is shown **once** at creation and never again.
+- **Use:** send `Authorization: Bearer spire_pat_...`. This is auth method `token`,
+  CSRF‑exempt (like Basic Auth, because it carries no cookie).
+- **Scope / role:** a token has its own role, capped at the creator's role at creation. The
+  **effective role on every request is `min(token role, owner's current role)`**, and the
+  owner's `is_active` flag is re‑checked each time. Demoting an owner immediately weakens
+  their tokens; disabling the owner kills them (401) — no token mutation required.
+- **Expiry:** required, maximum **365 days**.
+- **Management (self‑service, any role):** Account Security page, or
+  - `GET  /admin/account/tokens` — list your tokens
+  - `POST /admin/account/tokens` — fields `name`, `role` (≤ yours), `expires_in_days` (1–365)
+  - `DELETE /admin/account/tokens/{id}` — revoke your token
+- **Management (SUPER_ADMIN):** `GET /admin/account/tokens/all`,
+  `DELETE /admin/account/tokens/all/{id}` — list/revoke any owner's token.
+- **Audit:** `PAT_CREATE`, `PAT_REVOKE`, `PAT_FIRST_USE` (first use only).
+- **Rate limiting:** failed token attempts are throttled per client IP (5 / minute). This
+  counter is in‑memory per control‑plane process; a multi‑replica deployment should move it
+  to shared state.
+- **Break‑glass admin:** the static `SPIRE_ADMIN_PASSWORD` account has **no database row**,
+  so it **cannot own personal access tokens**. Create a local admin user to issue tokens.
+
+### Multi‑factor authentication (TOTP) for local accounts
+
+- **Scope:** LOCAL accounts only. OIDC/SSO accounts are out of scope — their identity
+  provider owns MFA.
+- **Algorithm:** TOTP (RFC 6238), HMAC‑SHA1, 6 digits, 30‑second step, ±1 step skew
+  tolerated. A used time step is recorded and a code cannot be replayed within its window.
+- **Secret at rest:** the TOTP shared secret is stored **KEK‑wrapped** (RSA‑OAEP‑4096 +
+  AES‑256‑GCM envelope, the same scheme as LUKS recovery keys), never in plaintext. Requires
+  the server KEK (`SPIRE_KEK_PATH`).
+- **Enrollment:** Account Security page → *Set up authenticator*. Shows a QR code
+  (`GET /admin/account/mfa/qr.png`) and the `otpauth://` secret, then requires a valid code
+  to enable (`POST /admin/account/mfa/begin` then `/confirm`). On success, **10 single‑use
+  recovery codes** are shown once (stored hashed).
+- **Login flow:** password OK → if MFA is enabled the server issues **no session**, only a
+  short‑lived (5 min), single‑use, signed pending‑login cookie, and redirects to
+  `/login/mfa`. The session is created only after a valid TOTP **or** recovery code.
+- **Basic Auth is refused for MFA‑enabled accounts** (a single password cannot carry a
+  second factor) — such accounts use a personal access token for scripted/API access.
+- **Mandatory MFA:** a SUPER_ADMIN can set `security.require_mfa`
+  (`POST /admin/settings/mfa`, `require_mfa=true`). Local accounts without MFA are then
+  signed in and routed to `/admin/account/mfa/setup` to enroll.
+- **Admin reset:** SUPER_ADMIN clears a user's MFA (lost device) via
+  `POST /admin/users/{id}/mfa/reset` (audited).
+- **Audit:** `MFA_ENABLE`, `MFA_DISABLE`, `MFA_RESET`, `MFA_REQUIRE_SET`,
+  `MFA_CHALLENGE_FAIL`, and `LOGIN_SUCCESS` with `mfa=true`.
+
+### Dependency note
+
+QR rendering uses `github.com/skip2/go-qrcode` (MIT, zero transitive dependencies).
+TOTP/HOTP is implemented directly on the standard library (no `pquerna/otp`), since the
+algorithm is ~40 lines of well‑specified code and avoids pulling in a dependency tree.
