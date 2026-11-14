@@ -28,11 +28,8 @@ type ptyResizeControl struct {
 
 // ServeAdminTerminal bridges an interactive xterm.js / WebSocket terminal session
 // from GET /admin/devices/{id}/terminal to the target endpoint's duplex WebSocket stream.
-func (h *GatewayHub) ServeAdminTerminal(w http.ResponseWriter, r *http.Request, deviceID string, auditor AuditRecorder) {
-	adminUser, _ := r.Context().Value("spireAdminUser").(string)
-	if strings.TrimSpace(adminUser) == "" {
-		adminUser, _, _ = r.BasicAuth()
-	}
+// adminUser is the authenticated admin, resolved by the caller's auth middleware.
+func (h *GatewayHub) ServeAdminTerminal(w http.ResponseWriter, r *http.Request, deviceID, adminUser string, auditor AuditRecorder) {
 	if strings.TrimSpace(adminUser) == "" {
 		http.Error(w, "Unauthorized: admin session required", http.StatusUnauthorized)
 		return
@@ -57,13 +54,15 @@ func (h *GatewayHub) ServeAdminTerminal(w http.ResponseWriter, r *http.Request, 
 
 	sessionID, _, err := db.GenerateToken()
 	if err != nil {
-		sessionID = fmt.Sprintf("pty-%d", time.Now().UnixNano())
+		// Never fall back to a guessable ID: session IDs route device output to this browser.
+		_ = wsConn.WriteMessage(websocket.TextMessage, []byte("\r\n[SpireUEM] Could not create a terminal session.\r\n"))
+		return
 	}
 
 	outCh := make(chan string, 64)
 	stopCh := make(chan string, 1)
 
-	h.registerPTYSession(sessionID, outCh, stopCh)
+	h.registerPTYSession(sessionID, deviceID, outCh, stopCh)
 	defer h.unregisterPTYSession(sessionID)
 
 	if auditor != nil {
@@ -200,13 +199,13 @@ func (h *GatewayHub) RequestRemoteAssist(ctx context.Context, deviceID, adminAct
 		return nil, fmt.Errorf("device is not connected via WebSocket")
 	}
 
-	sessionID, _, _ := db.GenerateToken()
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("ra-%d", time.Now().UnixNano())
+	sessionID, _, err := db.GenerateToken()
+	if err != nil {
+		return nil, fmt.Errorf("generate remote assist session id: %w", err)
 	}
 
 	respCh := make(chan types.RemoteAssistResponsePayload, 1)
-	h.registerRemoteAssistWaiter(sessionID, respCh)
+	h.registerRemoteAssistWaiter(sessionID, deviceID, respCh)
 	defer h.unregisterRemoteAssistWaiter(sessionID)
 
 	reqBytes, _ := json.Marshal(types.RemoteAssistRequestPayload{

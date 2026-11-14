@@ -162,6 +162,11 @@ func (r *Repository) RevokeDevice(ctx context.Context, id string) (*types.Device
 	r.mu.Lock()
 	delete(r.pendingTokens, id)
 	r.mu.Unlock()
+	// Release the enrollment key binding so a reinstalled agent (with a new key) can
+	// stage this device again and be re-approved.
+	if err := r.ClearEnrollmentKey(ctx, id); err != nil {
+		return nil, err
+	}
 	return r.UpdateDeviceStatus(ctx, id, types.StatusRevoked, nil)
 }
 
@@ -3706,6 +3711,14 @@ func (r *Repository) UpdateAdminUser(ctx context.Context, id string, req types.U
 	}
 	if err != nil {
 		return nil, fmt.Errorf("update admin user: %w", err)
+	}
+	// A disabled account, a new password or a changed role must not leave old sessions
+	// running: end them so the user signs in again under the new state.
+	changedAccess := req.Role != nil || (req.IsActive != nil && !*req.IsActive) || (req.Password != nil && *req.Password != "")
+	if changedAccess {
+		if err := r.RevokeAdminSessionsForUser(ctx, u.Username); err != nil {
+			return nil, err
+		}
 	}
 	return &u, nil
 }

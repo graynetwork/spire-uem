@@ -61,11 +61,11 @@ var upgrader = websocket.Upgrader{
 }
 
 type clientConn struct {
-	deviceID string
-	hostname string
-	conn     *websocket.Conn
-	writeMu  sync.Mutex
-	closed   chan struct{}
+	deviceID  string
+	hostname  string
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 
@@ -99,6 +99,10 @@ type GatewayHub struct {
 	ptyOutSubs map[string]chan string
 	ptyStop    map[string]chan string
 	raWaiters  map[string]chan types.RemoteAssistResponsePayload
+	// sessionOwner maps every PTY and remote-assist session ID to the device it was
+	// opened for. Frames that name a session are only routed when they arrive on that
+	// device's own stream, so one device cannot write into or end another's session.
+	sessionOwner map[string]string
 }
 
 // NewGatewayHub creates a new GatewayHub and resets stale ws_connected flags in PostgreSQL.
@@ -111,6 +115,8 @@ func NewGatewayHub(repo *db.Repository) *GatewayHub {
 		ptyOutSubs: make(map[string]chan string),
 		ptyStop:    make(map[string]chan string),
 		raWaiters:  make(map[string]chan types.RemoteAssistResponsePayload),
+
+		sessionOwner: make(map[string]string),
 	}
 }
 
@@ -312,6 +318,7 @@ func (h *GatewayHub) readLoop(c *clientConn) {
 			}
 			h.mu.RLock()
 			ch, ok := h.ptyOutSubs[out.SessionID]
+			ok = ok && h.sessionOwner[out.SessionID] == c.deviceID
 			h.mu.RUnlock()
 			if ok {
 				select {
@@ -327,6 +334,7 @@ func (h *GatewayHub) readLoop(c *clientConn) {
 			}
 			h.mu.RLock()
 			ch, ok := h.ptyStop[stop.SessionID]
+			ok = ok && h.sessionOwner[stop.SessionID] == c.deviceID
 			h.mu.RUnlock()
 			if ok {
 				select {
@@ -342,6 +350,7 @@ func (h *GatewayHub) readLoop(c *clientConn) {
 			}
 			h.mu.RLock()
 			ch, ok := h.raWaiters[resp.SessionID]
+			ok = ok && h.sessionOwner[resp.SessionID] == c.deviceID
 			h.mu.RUnlock()
 			if ok {
 				select {
@@ -473,10 +482,11 @@ func (h *GatewayHub) notifyUISubscribers(deviceID string, res types.CommandResul
 	h.mu.RUnlock()
 }
 
-func (h *GatewayHub) registerPTYSession(sessionID string, outCh chan string, stopCh chan string) {
+func (h *GatewayHub) registerPTYSession(sessionID, deviceID string, outCh chan string, stopCh chan string) {
 	h.mu.Lock()
 	h.ptyOutSubs[sessionID] = outCh
 	h.ptyStop[sessionID] = stopCh
+	h.sessionOwner[sessionID] = deviceID
 	h.mu.Unlock()
 }
 
@@ -484,29 +494,31 @@ func (h *GatewayHub) unregisterPTYSession(sessionID string) {
 	h.mu.Lock()
 	delete(h.ptyOutSubs, sessionID)
 	delete(h.ptyStop, sessionID)
+	delete(h.sessionOwner, sessionID)
 	h.mu.Unlock()
 }
 
-func (h *GatewayHub) registerRemoteAssistWaiter(sessionID string, ch chan types.RemoteAssistResponsePayload) {
+func (h *GatewayHub) registerRemoteAssistWaiter(sessionID, deviceID string, ch chan types.RemoteAssistResponsePayload) {
 	h.mu.Lock()
 	h.raWaiters[sessionID] = ch
+	h.sessionOwner[sessionID] = deviceID
 	h.mu.Unlock()
 }
 
 func (h *GatewayHub) unregisterRemoteAssistWaiter(sessionID string) {
 	h.mu.Lock()
 	delete(h.raWaiters, sessionID)
+	delete(h.sessionOwner, sessionID)
 	h.mu.Unlock()
 }
 
 func (h *GatewayHub) authenticateHandshake(r *http.Request) *types.Device {
+	// The device token is accepted only in the Authorization header. A ?token= query
+	// parameter would be written to request logs and proxy access logs.
 	rawToken := ""
 	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		rawToken = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-	}
-	if rawToken == "" {
-		rawToken = strings.TrimSpace(r.URL.Query().Get("token"))
 	}
 	if rawToken == "" {
 		return nil

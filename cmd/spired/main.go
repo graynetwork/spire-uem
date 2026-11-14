@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -127,7 +129,15 @@ func main() {
 
 		token := readToken(cfg.Agent.TokenPath)
 		if token == "" {
-			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, hwUUID, hostname)
+			enrollKey, keyErr := loadOrCreateEnrollmentKey(enrollmentKeyPath(cfg.Agent.TokenPath))
+			if keyErr != nil {
+				log.Printf("[spired] cannot load or create enrollment key: %v", keyErr)
+				if *once || !sleepContext(ctx, cfg.Agent.PollInterval) {
+					return
+				}
+				continue
+			}
+			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, hwUUID, hostname, enrollKey)
 			if netErr != nil {
 				backoffAttempt++
 				sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
@@ -287,10 +297,11 @@ func main() {
 	}
 }
 
-func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, hwUUID, hostname string) (string, error) {
+func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, hwUUID, hostname, enrollKey string) (string, error) {
 	reqBody, _ := json.Marshal(types.EnrollRequest{
-		HardwareUUID: hwUUID,
-		Hostname:     hostname,
+		HardwareUUID:  hwUUID,
+		Hostname:      hostname,
+		EnrollmentKey: enrollKey,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/enroll", bytes.NewReader(reqBody))
 	if err != nil {
@@ -533,6 +544,33 @@ func readToken(path string) string {
 	tok := strings.Clone(strings.TrimSpace(string(data)))
 	clear(data)
 	return tok
+}
+
+// enrollmentKeyPath is where the agent keeps its enrollment key: next to the token file.
+func enrollmentKeyPath(tokenPath string) string {
+	return filepath.Join(filepath.Dir(tokenPath), "enrollment.key")
+}
+
+// loadOrCreateEnrollmentKey returns the agent's enrollment key, generating and storing a
+// new random one (mode 0600) on first use. The key survives token loss, so an agent that
+// is told to re-enroll proves it is the same installation that first staged the device.
+func loadOrCreateEnrollmentKey(path string) (string, error) {
+	if b, err := os.ReadFile(path); err == nil {
+		if k := strings.TrimSpace(string(b)); len(k) >= 32 {
+			return k, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	raw := make([]byte, 32)
+	if _, err := cryptorand.Read(raw); err != nil {
+		return "", err
+	}
+	key := hex.EncodeToString(raw)
+	if err := persistToken(path, key); err != nil {
+		return "", err
+	}
+	return key, nil
 }
 
 func persistToken(path, token string) error {

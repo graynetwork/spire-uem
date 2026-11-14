@@ -73,8 +73,30 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	req.HardwareUUID = strings.TrimSpace(req.HardwareUUID)
 	req.Hostname = strings.TrimSpace(req.Hostname)
+	req.EnrollmentKey = strings.TrimSpace(req.EnrollmentKey)
 	if req.HardwareUUID == "" || req.Hostname == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hardware_uuid and hostname are required"})
+		return
+	}
+	if len(req.EnrollmentKey) < 32 || len(req.EnrollmentKey) > 256 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enrollment_key of 32-256 characters is required; upgrade the agent"})
+		return
+	}
+	keyHash := db.HashToken(req.EnrollmentKey)
+
+	// A device already bound to another agent's key is refused before anything about it
+	// changes, so a caller who only knows the hardware UUID cannot rename it or take its token.
+	conflict, err := h.repo.EnrollmentKeyConflict(r.Context(), req.HardwareUUID, keyHash)
+	if err != nil {
+		log.Printf("[api] enroll key lookup error for %s: %v", req.HardwareUUID, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+		return
+	}
+	if conflict {
+		log.Printf("[api] HTTP 403 enroll rejected: enrollment key mismatch for hw=%s remote=%s", req.HardwareUUID, r.RemoteAddr)
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "enrollment key mismatch; an administrator must revoke this device before it can be re-enrolled",
+		})
 		return
 	}
 
@@ -82,6 +104,16 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[api] enroll error for %s: %v", req.HardwareUUID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+		return
+	}
+	if matches, err := h.repo.BindEnrollmentKey(r.Context(), dev.ID, keyHash); err != nil || !matches {
+		if err != nil {
+			log.Printf("[api] enroll key bind error for %s: %v", dev.ID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
+			return
+		}
+		log.Printf("[api] HTTP 403 enroll rejected: lost enrollment key bind race for device id=%s", dev.ID)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "enrollment key mismatch"})
 		return
 	}
 
