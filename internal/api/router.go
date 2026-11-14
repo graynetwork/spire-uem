@@ -26,6 +26,7 @@ func RegisterRoutesWithStorage(r chi.Router, repo *db.Repository, hub *gateway.G
 		r.Get("/status", h.GetDeviceStatus)
 		r.Post("/report", h.Report)
 		r.Post("/commands/report", h.ReportCommand)
+		r.Post("/actions/report", h.ReportAction)
 		r.Post("/benchmarks/report", h.ReportBenchmarkResults)
 		r.Get("/kek", h.GetServerKEK)
 		r.Post("/attest/challenge", h.AttestChallenge)

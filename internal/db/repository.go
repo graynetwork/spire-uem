@@ -27,6 +27,7 @@ import (
 type Repository struct {
 	pool          *pgxpool.Pool
 	kekMgr        crypto.KeyEnvelopeManager
+	wipeSigner    *crypto.WipeSigner
 }
 
 // NewRepository creates a new Repository and initializes the server's 4096-bit RSA KEK.

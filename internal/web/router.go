@@ -115,6 +115,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/scans", h.TriggerDeviceScan)
 			r.Get("/devices/{id}/terminal", h.DeviceTerminalWS)
 			r.Post("/devices/{id}/remote-assist", h.RequestRemoteAssist)
+			// Lock all graphical sessions now (lost-device action). OPERATOR+.
+			r.Post("/devices/{id}/lock", h.LockDevice)
 		})
 
 		// ------------------------------------------------------------------
@@ -131,6 +133,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/tags", h.UpdateDeviceTags)
 			r.Post("/devices/{id}/ring", h.UpdateDeviceRing)
 			r.Post("/devices/{id}/luks/reveal", h.RevealLUKSRawRecoveryKey)
+			// Mark / clear LOST device mode (lost-device action). SECURITY_ADMIN+.
+			r.Post("/devices/{id}/lost", h.MarkDeviceLost)
 
 			r.Post("/policies", h.CreatePolicy)
 			r.Post("/policies/from-template", h.CreatePolicyFromTemplate)
@@ -153,6 +157,11 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		// ------------------------------------------------------------------
 		r.Group(func(r chi.Router) {
 			r.Use(RequireRole(types.RoleSuperAdmin))
+
+			// Irreversible crypto-erase (lost-device action): two-person SUPER_ADMIN rule.
+			r.Post("/devices/{id}/wipe/request", h.RequestWipe)
+			r.Post("/devices/{id}/wipe/{requestID}/approve", h.ApproveWipe)
+			r.Post("/devices/{id}/wipe/{requestID}/cancel", h.CancelWipe)
 
 			r.Get("/settings", h.SettingsPage)
 			r.Post("/settings/{category}", h.SaveSettingsCategory)

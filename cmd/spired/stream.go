@@ -164,6 +164,19 @@ func handleStreamSession(
 			if err := json.Unmarshal(frame.Payload, &push); err != nil || strings.TrimSpace(push.ID) == "" {
 				continue
 			}
+			// Structured lost-device action directives are dispatched by the authoritative
+			// HTTP check-in path, which has the device's hardware UUID, pinned wipe key and
+			// server KEK in hand. A live push of one simply wakes that path; the command row
+			// stays RUNNING until the check-in reports its outcome, so it is never executed
+			// twice.
+			if IsActionDirective(push.Command) {
+				log.Printf("[spired-ws] received action directive id=%s; waking check-in to dispatch", push.ID)
+				select {
+				case triggerCheckinCh <- struct{}{}:
+				default:
+				}
+				continue
+			}
 			go func(p types.CommandPushPayload) {
 				select {
 				case commandPushSem <- struct{}{}:

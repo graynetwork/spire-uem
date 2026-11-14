@@ -137,6 +137,7 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 			DeviceID: dev.ID,
 			Status:   dev.Status,
 			Token:    token,
+			WipeSigningPublicKey: h.repo.WipeSigningPublicKeyBase64(),
 		})
 		return
 	}
@@ -232,6 +233,17 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] warning: failed to claim queued commands for %s: %v", dev.ID, err)
 	}
 
+	// Record the location-ish facts the server already has: the IP this check-in came from
+	// and the last active user the agent reported. Shown on the device page when LOST.
+	seenIP := clientIP(r)
+	_ = h.repo.UpdateDeviceSeenFacts(r.Context(), dev.ID, seenIP, strings.TrimSpace(req.ActiveSession))
+
+	// Append lost-device action directives to this check-in's command list. These are
+	// synthetic (not persisted command rows): the lost directive is re-delivered every
+	// check-in until the agent acknowledges applying/reverting it, and the wipe order is
+	// claimed atomically so its cancellation window closes exactly once.
+	queuedCommands = append(queuedCommands, h.pendingActionDirectives(r.Context(), dev)...)
+
 	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d",
 		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands))
 	writeJSON(w, http.StatusOK, types.CheckinResponse{
@@ -243,6 +255,7 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		RevokedPolicies:         revokedPolicies,
 		QueuedCommands:          queuedCommands,
 		ServerKEKPublicPEM:      h.repo.KEKPublicPEM(),
+		WipeSigningPublicKey:    h.repo.WipeSigningPublicKeyBase64(),
 	})
 }
 

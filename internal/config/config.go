@@ -16,6 +16,7 @@ type ServerConfig struct {
 	AdminPassword    string
 	SIEMSyslogAddr   string
 	KEKPath          string
+	WipeSigningKeyPath string
 	AptRepoDir       string
 	BundleStorageDir string
 	EnforceHTTPS     bool
@@ -45,6 +46,7 @@ func Load(configPath string) *Config {
 			AdminUsername:    "admin",
 			AdminPassword:    "", // static break-glass account disabled unless explicitly configured
 			KEKPath:          "internal/crypto/kek.pem",
+			WipeSigningKeyPath: "internal/crypto/wipe-signing.pem",
 			AptRepoDir:       "/var/www/apt/spire",
 			BundleStorageDir: "/var/lib/spire/storage/bundles",
 			EnforceHTTPS:     false,
@@ -88,6 +90,9 @@ func Load(configPath string) *Config {
 	}
 	if v := os.Getenv("SPIRE_KEK_PATH"); v != "" {
 		cfg.Server.KEKPath = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("SPIRE_WIPE_SIGNING_KEY_PATH"); v != "" {
+		cfg.Server.WipeSigningKeyPath = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("SPIRE_APT_REPO_DIR"); v != "" {
 		cfg.Server.AptRepoDir = strings.TrimSpace(v)

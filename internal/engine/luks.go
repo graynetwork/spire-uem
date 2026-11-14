@@ -227,6 +227,13 @@ func loadEscrowedVolumes() map[string]bool {
 	return state
 }
 
+// LoadEscrowedVolumeState returns the agent's local record of which LUKS volume UUIDs it has
+// escrowed. The lost-device wipe engine intersects this with a signed order so it only ever
+// targets volumes this agent itself reported.
+func LoadEscrowedVolumeState() map[string]bool {
+	return loadEscrowedVolumes()
+}
+
 func saveEscrowedVolumes(state map[string]bool) {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err == nil {

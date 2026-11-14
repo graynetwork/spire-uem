@@ -97,6 +97,11 @@ type Device struct {
 	PendingUpdatesCount  int                `db:"pending_updates_count" json:"pending_updates_count"`
 	SecurityUpdatesCount int                `db:"security_updates_count" json:"security_updates_count"`
 	RebootRequiredPkgs   []string           `db:"reboot_required_pkgs" json:"reboot_required_pkgs,omitempty"`
+
+	// Lost-device fields, populated on demand (not part of the shared joined scan).
+	IsLost         bool   `db:"-" json:"is_lost"`
+	LastSeenIP     string `db:"-" json:"last_seen_ip,omitempty"`
+	LastActiveUser string `db:"-" json:"last_active_user,omitempty"`
 }
 
 // PendingPkg represents an upgradeable Debian package identified via apt simulation.
@@ -406,6 +411,9 @@ type EnrollResponse struct {
 	DeviceID string       `json:"device_id"`
 	Status   DeviceStatus `json:"status"`
 	Token    string       `json:"token,omitempty"`
+	// WipeSigningPublicKey lets the agent pin the server's Ed25519 wipe-order signing key
+	// at enrollment (base64). Present only when a token is issued.
+	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
 }
 
 // AssignedPolicy is returned to a device during check-in.
@@ -450,6 +458,10 @@ type CheckinResponse struct {
 	RevokedPolicies         []AssignedPolicy `json:"revoked_policies,omitempty"`
 	QueuedCommands          []CommandDTO     `json:"queued_commands,omitempty"`
 	ServerKEKPublicPEM      string           `json:"server_kek_public_pem,omitempty"`
+	// WipeSigningPublicKey is the server's Ed25519 wipe-order signing public key (base64).
+	// The agent pins it once and persists it next to its token, then refuses any wipe order
+	// not signed by it.
+	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
 }
 
 // PolicyExecutionItem represents a single policy enforcement outcome reported by spired.
