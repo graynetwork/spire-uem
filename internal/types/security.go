@@ -63,26 +63,37 @@ type AttestationChallengeRequest struct {
 	EKPublicPEM      string `json:"ek_public_pem"`
 	AKPublicPEM      string `json:"ak_public_pem,omitempty"`
 	EKCertificatePEM string `json:"ek_certificate_pem,omitempty"`
+	// AKPublicTPM is the AK's TPMT_PUBLIC area; the server derives the AK name from it
+	// for credential activation. Required for hardware attestation.
+	AKPublicTPM []byte `json:"ak_public_tpm,omitempty"`
+	// Simulated marks a software-simulated TPM (accepted only when the server allows it).
+	Simulated bool `json:"simulated,omitempty"`
 }
 
 // AttestationChallengeResponse is returned by POST /api/v1/desktop/attest/challenge.
 type AttestationChallengeResponse struct {
-	EncryptedNonce []byte `json:"encrypted_nonce"`
-	ChallengeID    string `json:"challenge_id,omitempty"`
-	ServerKEKPEM   string `json:"server_kek_pem,omitempty"`
+	EncryptedNonce []byte `json:"encrypted_nonce,omitempty"` // simulated mode only
+	// CredentialBlob and EncryptedSecret are TPM2_ActivateCredential inputs (hardware mode).
+	CredentialBlob  []byte `json:"credential_blob,omitempty"`
+	EncryptedSecret []byte `json:"encrypted_secret,omitempty"`
+	ChallengeID     string `json:"challenge_id,omitempty"`
+	ServerKEKPEM    string `json:"server_kek_pem,omitempty"`
 }
 
 // AttestationVerifyRequest is sent by spired to POST /api/v1/desktop/attest/verify.
 type AttestationVerifyRequest struct {
-	HardwareUUID      string            `json:"hardware_uuid"`
-	EKPublicPEM       string            `json:"ek_public_pem"`
-	AKPublicPEM       string            `json:"ak_public_pem"`
-	EKCertificatePEM  string            `json:"ek_certificate_pem,omitempty"`
-	Nonce             string            `json:"nonce"`
-	PCRValues         map[string]string `json:"pcr_values"`
-	QuoteAttest       []byte            `json:"quote_attest,omitempty"`
-	QuoteSignature    []byte            `json:"quote_signature"`
-	SecureBootEnabled bool              `json:"secure_boot_enabled"`
+	HardwareUUID     string            `json:"hardware_uuid"`
+	EKPublicPEM      string            `json:"ek_public_pem"`
+	AKPublicPEM      string            `json:"ak_public_pem"`
+	EKCertificatePEM string            `json:"ek_certificate_pem,omitempty"`
+	Nonce            string            `json:"nonce"`
+	PCRValues        map[string]string `json:"pcr_values"`
+	QuoteAttest      []byte            `json:"quote_attest,omitempty"`
+	QuoteSignature   []byte            `json:"quote_signature"`
+	// SecureBootEnabled is informational only; the server derives Secure Boot state from the
+	// quote-verified PCR 7 value.
+	SecureBootEnabled bool `json:"secure_boot_enabled"`
+	Simulated         bool `json:"simulated,omitempty"`
 }
 
 // AttestationVerifyResponse is returned by POST /api/v1/desktop/attest/verify.

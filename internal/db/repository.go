@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -94,6 +95,10 @@ func HashToken(rawToken string) string {
 }
 
 // ErrTokenAlreadyClaimed indicates the initial enrollment token for an approved device was already picked up.
+// ErrOIDCEmailConflict is returned when a new OIDC identity claims an email that already
+// belongs to another account. Accounts are never linked automatically by email.
+var ErrOIDCEmailConflict = errors.New("an account with this email already exists; an administrator must link it explicitly")
+
 var ErrTokenAlreadyClaimed = errors.New("enrollment token already claimed; explicit admin re-approval required")
 
 // ApproveDevice transitions a device to APPROVED, stores its token hash, and stages the raw token for enrollment pickup.
@@ -3720,46 +3725,68 @@ func (r *Repository) UpsertOIDCAdminUser(ctx context.Context, subject, email, di
 	if displayName == "" {
 		displayName = email
 	}
-	username := strings.ToLower(strings.Split(email, "@")[0])
-	if username == "" {
-		username = subject
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return nil, errors.New("upsert oidc admin user: empty OIDC subject")
 	}
 
-	const query = `
-		INSERT INTO admin_users (username, email, display_name, role, auth_provider, oidc_subject, is_active, created_at, last_login_at)
-		VALUES ($1, $2, $3, $4, 'OIDC', $5, TRUE, NOW(), NOW())
-		ON CONFLICT (oidc_subject) DO UPDATE
-		SET email = EXCLUDED.email,
-		    display_name = EXCLUDED.display_name,
-		    role = EXCLUDED.role,
-		    last_login_at = NOW(),
-		    is_active = TRUE
-		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
-	`
-	var u types.AdminUser
-	err := r.pool.QueryRow(ctx, query, username, email, displayName, string(role), subject).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
-	)
-	if err != nil {
-		const fallbackQuery = `
-			UPDATE admin_users
-			SET oidc_subject = $1,
-			    role = $2,
-			    display_name = $3,
-			    auth_provider = 'OIDC',
-			    last_login_at = NOW(),
-			    is_active = TRUE
-			WHERE LOWER(email) = LOWER($4)
-			RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
-		`
-		err2 := r.pool.QueryRow(ctx, fallbackQuery, subject, string(role), displayName, email).Scan(
-			&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
-		)
-		if err2 != nil {
-			return nil, fmt.Errorf("upsert oidc admin user: %w (fallback: %v)", err, err2)
+	const returning = `RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at`
+	scan := func(row pgx.Row) (*types.AdminUser, error) {
+		var u types.AdminUser
+		if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt); err != nil {
+			return nil, err
 		}
+		return &u, nil
 	}
-	return &u, nil
+
+	// 1. Existing federated identity: matched ONLY by the IdP subject. is_active is never
+	// touched here, so an administrator's deactivation survives the user's next login.
+	u, err := scan(r.pool.QueryRow(ctx, `
+		UPDATE admin_users
+		SET email = $2, display_name = $3, role = $4, last_login_at = NOW()
+		WHERE oidc_subject = $1 AND auth_provider = 'OIDC'
+		`+returning, subject, email, displayName, string(role)))
+	if err == nil {
+		return u, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("update oidc admin user: %w", err)
+	}
+
+	// 2. New federated identity. Never link to an existing row by email or username:
+	// that would let any IdP account claiming a matching email take over a local admin.
+	base := strings.ToLower(strings.TrimSpace(strings.Split(email, "@")[0]))
+	if base == "" {
+		base = "oidc"
+	}
+	sum := sha256.Sum256([]byte(subject))
+	candidates := []string{base, fmt.Sprintf("%s-%s", base, hex.EncodeToString(sum[:3]))}
+
+	for _, username := range candidates {
+		if len(username) > 64 {
+			username = username[:64]
+		}
+		u, err = scan(r.pool.QueryRow(ctx, `
+			INSERT INTO admin_users (username, email, display_name, role, auth_provider, oidc_subject, is_active, created_at, last_login_at)
+			VALUES ($1, $2, $3, $4, 'OIDC', $5, TRUE, NOW(), NOW())
+			`+returning, username, email, displayName, string(role), subject))
+		if err == nil {
+			return u, nil
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+			return nil, fmt.Errorf("insert oidc admin user: %w", err)
+		}
+		switch {
+		case strings.Contains(pgErr.ConstraintName, "email"):
+			return nil, ErrOIDCEmailConflict
+		case strings.Contains(pgErr.ConstraintName, "oidc_subject"):
+			// The subject exists but is not an OIDC-provider row (e.g. converted manually); refuse.
+			return nil, fmt.Errorf("insert oidc admin user: subject already bound to a non-OIDC account")
+		}
+		// username collision: try the next, subject-qualified candidate
+	}
+	return nil, fmt.Errorf("insert oidc admin user: could not allocate a unique username for %q", base)
 }
 
 // ListOIDCGroupMappings returns all configured group-to-role mappings.

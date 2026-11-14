@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -415,8 +417,25 @@ func (h *Handler) GetServerKEK(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// attestationChallengeTTL bounds how long an issued challenge may be answered.
+const attestationChallengeTTL = 5 * time.Minute
+
+// simulatedTPMAllowed reports whether the server accepts software-simulated TPM
+// attestations (test harnesses only). Simulated attestations prove no hardware state.
+func simulatedTPMAllowed() bool {
+	return os.Getenv("SPIRE_ALLOW_UNATTESTED_DEVICES") == "true" ||
+		os.Getenv("SPIRE_SIMULATE_TPM2") == "1" ||
+		os.Getenv("SPIRE_ALLOW_SIMULATED_TPM") == "1"
+}
+
 // AttestChallenge handles POST /api/v1/desktop/attest/challenge.
-// Issues an encrypted challenge nonce targeting the client's TPM 2.0 Endorsement Key (EK).
+//
+// Hardware mode: the client sends its EK public key and the AK's TPMT_PUBLIC area. The
+// server checks the AK is a restricted fixedTPM signing key and returns a
+// TPM2_ActivateCredential challenge encrypted to the EK and bound to the AK's name. Only
+// the TPM holding both keys can recover the secret, which must then appear in the quote.
+//
+// Simulated mode (server opt-in only): the nonce is RSA-OAEP encrypted to the EK.
 func (h *Handler) AttestChallenge(w http.ResponseWriter, r *http.Request) {
 	dev := h.authenticateBearer(r)
 	if dev == nil || dev.Status != types.StatusApproved {
@@ -430,39 +449,75 @@ func (h *Handler) AttestChallenge(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid attestation challenge payload"})
 		return
 	}
-
-	nonce, _, err := db.GenerateToken()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate challenge nonce"})
+	if strings.TrimSpace(req.EKPublicPEM) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ek_public_pem is required"})
 		return
 	}
 
-	var encryptedNonce []byte
-	if strings.TrimSpace(req.EKPublicPEM) != "" {
-		if enc, encErr := db.EncryptChallengeForEK(req.EKPublicPEM, nonce); encErr == nil {
-			encryptedNonce = enc
-		} else {
-			encryptedNonce = []byte(nonce)
+	var (
+		resp        types.AttestationChallengeResponse
+		stagedNonce string
+		akPEM       string
+	)
+
+	if req.Simulated {
+		if !simulatedTPMAllowed() {
+			log.Printf("[api] rejecting simulated TPM attestation challenge for device=%s (simulation not enabled on server)", dev.ID)
+			h.recordAttestationFailure(r, dev.ID, req.EKPublicPEM)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "simulated TPM attestation is not permitted"})
+			return
 		}
+		nonce, _, err := db.GenerateToken()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate challenge nonce"})
+			return
+		}
+		enc, err := crypto.EncryptChallengeForEK(req.EKPublicPEM, nonce)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid EK public key"})
+			return
+		}
+		resp.EncryptedNonce = enc
+		stagedNonce = nonce
+		akPEM = req.AKPublicPEM
 	} else {
-		encryptedNonce = []byte(nonce)
+		ch, err := crypto.NewCredentialChallenge(req.AKPublicTPM, req.EKPublicPEM)
+		if err != nil {
+			log.Printf("[api] rejecting TPM attestation challenge for device=%s: %v", dev.ID, err)
+			h.recordAttestationFailure(r, dev.ID, req.EKPublicPEM)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid attestation key: " + err.Error()})
+			return
+		}
+		resp.CredentialBlob = ch.CredentialBlob
+		resp.EncryptedSecret = ch.EncryptedSecret
+		stagedNonce = hex.EncodeToString(ch.Secret)
+		akPEM = ch.AKPublicPEM // derived from the TPM public area, not client-asserted PEM
 	}
 
-	if err := h.repo.StageTPMAttestationChallenge(r.Context(), dev.ID, req.EKPublicPEM, req.AKPublicPEM, nonce); err != nil {
+	if err := h.repo.StageTPMAttestationChallenge(r.Context(), dev.ID, req.EKPublicPEM, akPEM, stagedNonce); err != nil {
 		log.Printf("[api] stage TPM challenge error for device=%s: %v", dev.ID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to stage attestation challenge"})
 		return
 	}
 
-	log.Printf("[api] HTTP 200 issued TPM 2.0 challenge nonce for device id=%s hostname=%s", dev.ID, dev.Hostname)
-	writeJSON(w, http.StatusOK, types.AttestationChallengeResponse{
-		EncryptedNonce: encryptedNonce,
-		ServerKEKPEM:   h.repo.KEKPublicPEM(),
-	})
+	resp.ServerKEKPEM = h.repo.KEKPublicPEM()
+	log.Printf("[api] HTTP 200 issued TPM 2.0 challenge device id=%s hostname=%s simulated=%v", dev.ID, dev.Hostname, req.Simulated)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordAttestationFailure marks the device FAILED when it cannot even obtain a valid
+// challenge, so a previously ATTESTED status does not linger.
+func (h *Handler) recordAttestationFailure(r *http.Request, deviceID, ekPEM string) {
+	if err := h.repo.UpsertTPMAttestation(r.Context(), &types.DeviceTPMAttestation{
+		DeviceID: deviceID, EKPublicPEM: ekPEM, AttestationStatus: types.AttestationFailed, PCRValues: map[string]string{},
+	}); err != nil {
+		log.Printf("[api] failed to record attestation failure for device=%s: %v", deviceID, err)
+	}
 }
 
 // AttestVerify handles POST /api/v1/desktop/attest/verify.
-// Validates signed PCR quotes, EK certificate integrity, checks PCR 7 for Secure Boot, and updates device attestation status.
+// Every input that decides the outcome is checked against the staged challenge or the
+// signed quote; client-asserted booleans and PCR values are never trusted on their own.
 func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
 	dev := h.authenticateBearer(r)
 	if dev == nil || dev.Status != types.StatusApproved {
@@ -478,86 +533,24 @@ func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	staged, _ := h.repo.GetTPMAttestation(r.Context(), dev.ID)
-	status := types.AttestationAttested
-
-	// If client explicitly reported absent TPM or empty nonce
-	if req.Nonce == "absent-tpm" || req.Nonce == "unattested-no-tpm" {
-		log.Printf("[api] client device=%s reported missing hardware TPM 2.0 device", dev.ID)
-		status = types.AttestationFailed
-	}
-
-	if staged != nil && staged.ChallengeNonce != "" && req.Nonce != "" && req.Nonce != staged.ChallengeNonce {
-		log.Printf("[api] TPM challenge nonce mismatch for device=%s", dev.ID)
-		status = types.AttestationFailed
-	}
-
-	// Finding C2: Hardware EK Certificate Verification
-	if req.EKCertificatePEM != "" {
-		if _, certErr := crypto.VerifyEKCertificate([]byte(req.EKCertificatePEM), req.EKPublicPEM); certErr != nil {
-			log.Printf("[api] TPM EK certificate validation failed for device=%s: %v", dev.ID, certErr)
-			status = types.AttestationFailed
-		}
-	} else if req.Nonce != "absent-tpm" {
-		// EK cert is missing: check whether unverified/simulated devices are permitted
-		allowUnattested := os.Getenv("SPIRE_ALLOW_UNATTESTED_DEVICES") == "true" ||
-			os.Getenv("SPIRE_SIMULATE_TPM2") == "1" ||
-			os.Getenv("SPIRE_ALLOW_SIMULATED_TPM") == "1"
-		if !allowUnattested {
-			log.Printf("[api] rejecting unverified TPM attestation lacking EK certificate for device=%s", dev.ID)
-			status = types.AttestationFailed
-		}
-	}
-
-	signingPubPEM := strings.TrimSpace(req.AKPublicPEM)
-	if signingPubPEM == "" {
-		signingPubPEM = strings.TrimSpace(req.EKPublicPEM)
-	}
-	if signingPubPEM != "" && len(req.QuoteAttest) > 0 && len(req.QuoteSignature) > 0 {
-		if err := db.VerifyQuoteSignature(signingPubPEM, req.QuoteAttest, req.QuoteSignature); err != nil {
-			log.Printf("[api] TPM quote signature verification failed for device=%s: %v", dev.ID, err)
-			status = types.AttestationFailed
-		}
-	} else if status == types.AttestationAttested {
-		log.Printf("[api] TPM quote signature or payload missing for device=%s", dev.ID)
-		status = types.AttestationFailed
-	}
-
-	pcr7 := strings.TrimSpace(req.PCRValues["7"])
-	if pcr7 == "" {
-		pcr7 = strings.TrimSpace(req.PCRValues["pcr7"])
-	}
-	secureBoot := req.SecureBootEnabled
-	if pcr7 != "" {
-		trimmedZeros := strings.Trim(strings.ToLower(pcr7), "0")
-		if trimmedZeros == "" {
-			secureBoot = false
-			if status == types.AttestationAttested {
-				status = types.AttestationPolicyViolation
-			}
-		} else {
-			secureBoot = true
-		}
-	} else if !secureBoot && status == types.AttestationAttested {
-		status = types.AttestationPolicyViolation
-	}
-
-	ekPEM := req.EKPublicPEM
-	if ekPEM == "" && staged != nil {
-		ekPEM = staged.EKPublicPEM
-	}
-	akPEM := req.AKPublicPEM
-	if akPEM == "" && staged != nil {
-		akPEM = staged.AKPublicPEM
+	status, secureBoot, proven, reason := h.evaluateAttestation(staged, &req)
+	if reason != "" {
+		log.Printf("[api] TPM attestation device=%s status=%s: %s", dev.ID, status, reason)
 	}
 
 	att := &types.DeviceTPMAttestation{
 		DeviceID:          dev.ID,
-		EKPublicPEM:       ekPEM,
-		AKPublicPEM:       akPEM,
-		PCRValues:         req.PCRValues,
-		QuoteSignature:    req.QuoteSignature,
 		AttestationStatus: status,
 		SecureBootEnabled: secureBoot,
+		QuoteSignature:    req.QuoteSignature,
+		PCRValues:         map[string]string{},
+	}
+	if staged != nil {
+		att.EKPublicPEM, att.AKPublicPEM = staged.EKPublicPEM, staged.AKPublicPEM
+	}
+	// Persist only PCR values the quote proved.
+	for idx, v := range proven {
+		att.PCRValues[strconv.Itoa(idx)] = hex.EncodeToString(v)
 	}
 	if err := h.repo.UpsertTPMAttestation(r.Context(), att); err != nil {
 		log.Printf("[api] failed to upsert TPM attestation for device=%s: %v", dev.ID, err)
@@ -565,12 +558,80 @@ func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[api] HTTP 200 TPM 2.0 attestation verified device=%s status=%s secure_boot=%v", dev.ID, status, secureBoot)
+	log.Printf("[api] HTTP 200 TPM 2.0 attestation device=%s status=%s secure_boot=%v simulated=%v", dev.ID, status, secureBoot, req.Simulated)
 	writeJSON(w, http.StatusOK, types.AttestationVerifyResponse{
 		Status:            status,
 		SecureBootEnabled: secureBoot,
 		VerifiedAt:        time.Now().UTC(),
 	})
+}
+
+// evaluateAttestation decides the attestation outcome. A non-empty reason explains a
+// non-ATTESTED result. The staged challenge is consumed by the caller's upsert either way.
+func (h *Handler) evaluateAttestation(staged *types.DeviceTPMAttestation, req *types.AttestationVerifyRequest) (types.AttestationStatus, bool, map[int][]byte, string) {
+	fail := func(reason string) (types.AttestationStatus, bool, map[int][]byte, string) {
+		return types.AttestationFailed, false, nil, reason
+	}
+
+	if req.Nonce == "absent-tpm" || req.Nonce == "unattested-no-tpm" {
+		return fail("client reported no hardware TPM 2.0 device")
+	}
+	if staged == nil || staged.ChallengeNonce == "" {
+		return fail("no outstanding attestation challenge")
+	}
+	if time.Since(staged.UpdatedAt) > attestationChallengeTTL {
+		return fail("attestation challenge expired")
+	}
+	if req.Nonce == "" || subtle.ConstantTimeCompare([]byte(req.Nonce), []byte(staged.ChallengeNonce)) != 1 {
+		return fail("challenge nonce mismatch")
+	}
+
+	var (
+		proven map[int][]byte
+		err    error
+	)
+	if req.Simulated {
+		if !simulatedTPMAllowed() {
+			return fail("simulated TPM attestation is not permitted")
+		}
+		proven, err = crypto.VerifySimulatedQuote(staged.AKPublicPEM, req.QuoteAttest, req.QuoteSignature, staged.ChallengeNonce, req.PCRValues)
+		if err != nil {
+			return fail("simulated quote: " + err.Error())
+		}
+	} else {
+		// The EK must be a genuine manufacturer-certified TPM key, and the very key the
+		// credential challenge was encrypted to.
+		if req.EKCertificatePEM == "" {
+			return fail("EK certificate missing")
+		}
+		if _, err := crypto.VerifyEKCertificate([]byte(req.EKCertificatePEM), staged.EKPublicPEM); err != nil {
+			return fail("EK certificate: " + err.Error())
+		}
+		secret, decErr := hex.DecodeString(staged.ChallengeNonce)
+		if decErr != nil {
+			return fail("staged challenge is not a credential-activation secret")
+		}
+		proven, err = crypto.VerifyQuote(staged.AKPublicPEM, req.QuoteAttest, req.QuoteSignature, secret, req.PCRValues, crypto.RequiredAttestationPCRs)
+		if err != nil {
+			return fail("quote: " + err.Error())
+		}
+	}
+
+	// Secure Boot state comes only from the quote-proven PCR 7. An all-zero PCR 7 means
+	// nothing was measured into it.
+	secureBoot := false
+	if pcr7, ok := proven[7]; ok {
+		for _, b := range pcr7 {
+			if b != 0 {
+				secureBoot = true
+				break
+			}
+		}
+	}
+	if !secureBoot {
+		return types.AttestationPolicyViolation, false, proven, "PCR 7 shows no Secure Boot measurements"
+	}
+	return types.AttestationAttested, true, proven, ""
 }
 
 // EscrowLUKS handles POST /api/v1/desktop/escrow/luks.
@@ -758,12 +819,13 @@ func (h *Handler) UninstallSelfServicePolicy(w http.ResponseWriter, r *http.Requ
 }
 
 // DownloadBundle handles GET /api/v1/desktop/bundles/{sha256}.
-// Protected via machine enrollment Bearer token or mutual TLS client certificate.
+// Protected via the approved device's enrollment Bearer token.
 // Validates sha256 strictly against ^[a-f0-9]{64}$ and streams the bundle via http.ServeContent (supporting HTTP Range requests).
 func (h *Handler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
+	// Only an approved device's bearer token authorizes a download. (A presented TLS client
+	// certificate is NOT accepted on its own: nothing here maps a certificate to a device.)
 	dev := h.authenticateBearer(r)
-	mTLSAuthorized := r.TLS != nil && len(r.TLS.PeerCertificates) > 0
-	if (dev == nil || dev.Status != types.StatusApproved) && !mTLSAuthorized {
+	if dev == nil || dev.Status != types.StatusApproved {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
 		return
 	}
@@ -821,11 +883,12 @@ func (h *Handler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 // DownloadWallpaper handles GET /api/v1/desktop/wallpapers/{filename}.
-// Protected via machine enrollment Bearer token or mutual TLS client certificate.
+// Protected via the approved device's enrollment Bearer token.
 func (h *Handler) DownloadWallpaper(w http.ResponseWriter, r *http.Request) {
+	// Only an approved device's bearer token authorizes a download. (A presented TLS client
+	// certificate is NOT accepted on its own: nothing here maps a certificate to a device.)
 	dev := h.authenticateBearer(r)
-	mTLSAuthorized := r.TLS != nil && len(r.TLS.PeerCertificates) > 0
-	if (dev == nil || dev.Status != types.StatusApproved) && !mTLSAuthorized {
+	if dev == nil || dev.Status != types.StatusApproved {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
 		return
 	}

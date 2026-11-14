@@ -8,6 +8,7 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -497,7 +498,7 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 			sso = h.oidc.GetSettings()
 		}
 
-		if sso.OIDCEnabled && !sso.AllowLocalLogin && user != expectedUser {
+		if sso.OIDCEnabled && !sso.AllowLocalLogin && (expectedPass == "" || user != expectedUser) {
 			if strings.Contains(r.Header.Get("Accept"), "application/json") {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
@@ -547,8 +548,8 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 			}
 		}
 
-		// 2. Fallback to static credentials if DB user wasn't matched
-		if authenticatedUsername == "" {
+		// 2. Fallback to static break-glass credentials (only when explicitly configured)
+		if authenticatedUsername == "" && expectedPass != "" {
 			userHash := sha256.Sum256([]byte(user))
 			passHash := sha256.Sum256([]byte(pass))
 
@@ -3735,19 +3736,26 @@ func (h *Handler) OIDCSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scheme := "http"
-	if ShouldEnforceHTTPSCookie(h.enforceHTTPS, r) {
-		scheme = "https"
-	}
-	redirectURI := fmt.Sprintf("%s://%s/auth/oidc/callback", scheme, r.Host)
+	redirectURI := h.publicBaseURL(r) + "/auth/oidc/callback"
 
-	authURL, _, err := h.oidc.GenerateAuthURL(r.Context(), redirectURI)
+	authURL, state, err := h.oidc.GenerateAuthURL(r.Context(), redirectURI)
 	if err != nil {
 		log.Printf("[oidc] generate auth URL error: %v", err)
 		http.Redirect(w, r, "/login?error=Failed+to+connect+to+OIDC+Identity+Provider", http.StatusSeeOther)
 		return
 	}
 
+	// Bind the state to this browser so a callback started in another browser (login CSRF)
+	// is rejected. SameSite=Lax is required: the IdP returns via a cross-site top-level GET.
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcStateCookieName,
+		Value:    state,
+		Path:     "/auth/oidc/",
+		MaxAge:   600,
+		HttpOnly: true,
+		Secure:   ShouldEnforceHTTPSCookie(h.enforceHTTPS, r),
+		SameSite: http.SameSiteLaxMode,
+	})
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -3769,17 +3777,25 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := h.oidc.ExchangeCode(r.Context(), code, state)
-	if err != nil {
-		log.Printf("[oidc] code exchange error: %v", err)
-		http.Redirect(w, r, "/login?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+	stateCookie, cookieErr := r.Cookie(oidcStateCookieName)
+	http.SetCookie(w, &http.Cookie{Name: oidcStateCookieName, Value: "", Path: "/auth/oidc/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	if cookieErr != nil || subtle.ConstantTimeCompare([]byte(stateCookie.Value), []byte(state)) != 1 {
+		log.Printf("[oidc] state cookie missing or mismatched; rejecting callback (possible login CSRF)")
+		http.Redirect(w, r, "/login?error=Sign-in+session+expired+or+was+started+in+another+browser", http.StatusSeeOther)
 		return
 	}
 
-	claims, err := h.oidc.ParseIDTokenClaims(tok.IDToken)
+	tok, nonce, err := h.oidc.ExchangeCode(r.Context(), code, state)
 	if err != nil {
-		log.Printf("[oidc] parse ID token claims error: %v", err)
-		http.Redirect(w, r, "/login?error=Invalid+ID+token+claims", http.StatusSeeOther)
+		log.Printf("[oidc] code exchange error: %v", err)
+		http.Redirect(w, r, "/login?error=OIDC+code+exchange+failed", http.StatusSeeOther)
+		return
+	}
+
+	claims, err := h.oidc.VerifyIDToken(r.Context(), tok.IDToken, nonce)
+	if err != nil {
+		log.Printf("[oidc] ID token verification failed: %v", err)
+		http.Redirect(w, r, "/login?error=ID+token+verification+failed", http.StatusSeeOther)
 		return
 	}
 
@@ -3789,6 +3805,11 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := h.repo.UpsertOIDCAdminUser(r.Context(), claims.Subject, claims.Email, claims.Name, role)
+	if errors.Is(err, db.ErrOIDCEmailConflict) {
+		log.Printf("[oidc] refusing to provision sub=%s: email %q already belongs to another account", claims.Subject, claims.Email)
+		http.Redirect(w, r, "/login?error=An+account+with+this+email+already+exists.+Ask+an+administrator+to+link+it.", http.StatusSeeOther)
+		return
+	}
 	if err != nil {
 		log.Printf("[oidc] JIT user provisioning error: %v", err)
 		http.Redirect(w, r, "/login?error=Failed+to+provision+user+account", http.StatusSeeOther)
@@ -3845,6 +3866,10 @@ func (h *Handler) OIDCTestCallback(w http.ResponseWriter, r *http.Request) {
 	user, err := h.repo.UpsertOIDCAdminUser(r.Context(), body.Sub, body.Email, body.Name, role)
 	if err != nil {
 		http.Error(w, "Failed to JIT provision OIDC user: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !user.IsActive {
+		http.Error(w, "account is deactivated", http.StatusForbidden)
 		return
 	}
 
@@ -4183,3 +4208,26 @@ func (h *Handler) DeleteOIDCGroupMapping(w http.ResponseWriter, r *http.Request)
 
 
 
+
+const oidcStateCookieName = "spire_oidc_state"
+
+// publicBaseURL returns the externally reachable base URL of this server. It prefers the
+// administrator-configured general.server_base_url and only falls back to the request
+// Host header (which the client controls) when no valid setting exists.
+func (h *Handler) publicBaseURL(r *http.Request) string {
+	if h.repo != nil {
+		if st, err := h.repo.GetSetting(r.Context(), "general.server_base_url"); err == nil && st != nil {
+			var v string
+			if json.Unmarshal(st.Value, &v) == nil {
+				if u, perr := url.Parse(strings.TrimSpace(v)); perr == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+					return strings.TrimRight(u.Scheme+"://"+u.Host+u.Path, "/")
+				}
+			}
+		}
+	}
+	scheme := "http"
+	if ShouldEnforceHTTPSCookie(h.enforceHTTPS, r) {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}

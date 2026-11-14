@@ -43,7 +43,7 @@ func Load(configPath string) *Config {
 			DatabaseURL:      "postgres://spire:spirepassword@localhost:5432/spire_uem?sslmode=disable",
 			MigrationsPath:   "migrations/000001_init_schema.up.sql",
 			AdminUsername:    "admin",
-			AdminPassword:    "changeme",
+			AdminPassword:    "", // static break-glass account disabled unless explicitly configured
 			KEKPath:          "internal/crypto/kek.pem",
 			AptRepoDir:       "/var/www/apt/spire",
 			BundleStorageDir: "/var/lib/spire/storage/bundles",

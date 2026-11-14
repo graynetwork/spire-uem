@@ -123,12 +123,12 @@ docker compose -f docker-compose.test.yml up -d --build
 ```
 The administrative control plane is now live at `http://localhost:18080/admin`.
 - Default Username: `admin`
-- Default Password: `changeme`
+- Password: the value of `SPIRE_ADMIN_PASSWORD` (the test stack defaults it to `spire-e2e-breakglass-pw`; production must set its own, minimum 12 characters)
 
 ### 2. Generate Enrollment Token
 Log into the SpireUEM web console, navigate to **Settings** $\rightarrow$ **Enrollment Tokens**, and click **Generate Token**, or use the API:
 ```bash
-curl -s -u admin:changeme -X POST http://localhost:18080/admin/settings/tokens \
+curl -s -u "admin:${SPIRE_ADMIN_PASSWORD:-spire-e2e-breakglass-pw}" -X POST http://localhost:18080/admin/settings/tokens \
   -H "Content-Type: application/json" \
   -d '{"description":"Workstation Ring Token","target_ring":"GENERAL","max_uses":50}'
 ```

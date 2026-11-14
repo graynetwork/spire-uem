@@ -1,11 +1,21 @@
 package web
 
 import (
+	"log"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/spire-uem/spire-uem/internal/types"
 )
+
+// TestEndpointsEnabled reports whether test-only endpoints are explicitly enabled via
+// SPIRE_ENABLE_TEST_ENDPOINTS=1. It is read at route registration time.
+func TestEndpointsEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("SPIRE_ENABLE_TEST_ENDPOINTS"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
 
 // RegisterRoutes mounts the public onboarding endpoints (/install.sh, /dist/*, /apt/*),
 // authentication endpoints (/login, /logout, /auth/oidc/*), and Admin Web UI routes (/admin/*) onto a chi.Router.
@@ -21,7 +31,13 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 	// OpenID Connect (OIDC) Single Sign-On Endpoints
 	r.Get("/auth/oidc/login", h.OIDCSignIn)
 	r.Get("/auth/oidc/callback", h.OIDCCallback)
-	r.Post("/auth/oidc/test-callback", h.OIDCTestCallback)
+
+	// The mock-claims callback mints a session from caller-supplied claims with no IdP
+	// involved, so it exists only for the E2E harness and must never be reachable in production.
+	if TestEndpointsEnabled() {
+		log.Printf("[web] WARNING: SPIRE_ENABLE_TEST_ENDPOINTS=1 — unauthenticated /auth/oidc/test-callback is ENABLED. Never set this in production.")
+		r.Post("/auth/oidc/test-callback", h.OIDCTestCallback)
+	}
 
 	// Publicly accessible single-command onboarding endpoints (no Basic/Session Auth required)
 	r.Get("/install.sh", h.ServeBootstrapScript)

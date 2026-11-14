@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -94,6 +95,7 @@ func PerformTPMAttestation(ctx context.Context, client *http.Client, serverURL, 
 		rwc         io.ReadWriteCloser
 		ekHandle    tpmutil.Handle
 		akHandle    tpmutil.Handle
+		akPublicTPM []byte
 		pcrValues   = make(map[string]string)
 	)
 
@@ -116,54 +118,12 @@ func PerformTPMAttestation(ctx context.Context, client *http.Client, serverURL, 
 			}
 		}
 
-		ekTemplate := tpm2.Public{
-			Type:       tpm2.AlgRSA,
-			NameAlg:    tpm2.AlgSHA256,
-			Attributes: tpm2.FlagFixedTPM | tpm2.FlagFixedParent | tpm2.FlagSensitiveDataOrigin | tpm2.FlagAdminWithPolicy | tpm2.FlagRestricted | tpm2.FlagDecrypt,
-			RSAParameters: &tpm2.RSAParams{
-				Symmetric: &tpm2.SymScheme{
-					Alg:     tpm2.AlgAES,
-					KeyBits: 128,
-					Mode:    tpm2.AlgCFB,
-				},
-				KeyBits: 2048,
-			},
-		}
-		var ekPub crypto.PublicKey
-		ekHandle, ekPub, err = tpm2.CreatePrimary(rwc, tpm2.HandleEndorsement, tpm2.PCRSelection{}, "", "", ekTemplate)
+		ekHandle, akHandle, ekPubPEM, akPubPEM, akPublicTPM, err = createAttestationKeys(rwc)
 		if err != nil {
-			return nil, fmt.Errorf("tpm2 CreatePrimary EK: %w", err)
+			return nil, err
 		}
 		defer tpm2.FlushContext(rwc, ekHandle)
-
-		ekPubPEM, err = encodePublicKeyPEM(ekPub)
-		if err != nil {
-			return nil, err
-		}
-
-		akTemplate := tpm2.Public{
-			Type:       tpm2.AlgRSA,
-			NameAlg:    tpm2.AlgSHA256,
-			Attributes: tpm2.FlagFixedTPM | tpm2.FlagFixedParent | tpm2.FlagSensitiveDataOrigin | tpm2.FlagUserWithAuth | tpm2.FlagRestricted | tpm2.FlagSign,
-			RSAParameters: &tpm2.RSAParams{
-				Sign: &tpm2.SigScheme{
-					Alg:  tpm2.AlgRSASSA,
-					Hash: tpm2.AlgSHA256,
-				},
-				KeyBits: 2048,
-			},
-		}
-		var akPub crypto.PublicKey
-		akHandle, akPub, err = tpm2.CreatePrimary(rwc, tpm2.HandleOwner, tpm2.PCRSelection{}, "", "", akTemplate)
-		if err != nil {
-			return nil, fmt.Errorf("tpm2 CreatePrimary AK: %w", err)
-		}
 		defer tpm2.FlushContext(rwc, akHandle)
-
-		akPubPEM, err = encodePublicKeyPEM(akPub)
-		if err != nil {
-			return nil, err
-		}
 	} else {
 		var err error
 		simEKPriv, err = rsa.GenerateKey(rand.Reader, 2048)
@@ -186,6 +146,8 @@ func PerformTPMAttestation(ctx context.Context, client *http.Client, serverURL, 
 		EKPublicPEM:      ekPubPEM,
 		AKPublicPEM:      akPubPEM,
 		EKCertificatePEM: ekCertPEM,
+		AKPublicTPM:      akPublicTPM,
+		Simulated:        !hasHardwareTPM,
 	})
 	chalReq, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/attest/challenge", bytes.NewReader(chalReqBody))
 	if err != nil {
@@ -218,33 +180,21 @@ func PerformTPMAttestation(ctx context.Context, client *http.Client, serverURL, 
 	)
 
 	if hasHardwareTPM {
-		pcrSel := tpm2.PCRSelection{
-			Hash: tpm2.AlgSHA256,
-			PCRs: AttestationPCRs,
-		}
-		pcrMap, err := tpm2.ReadPCRs(rwc, pcrSel)
+		secret, attestBytes, sig, pcrs, err := activateAndQuote(rwc, ekHandle, akHandle, chalResp.CredentialBlob, chalResp.EncryptedSecret)
 		if err != nil {
-			return nil, fmt.Errorf("tpm2 ReadPCRs: %w", err)
+			return nil, err
 		}
-		for pcrIdx, digest := range pcrMap {
-			pcrValues[fmt.Sprintf("%d", pcrIdx)] = hex.EncodeToString(digest)
-		}
-
-		attestBytes, sig, err := tpm2.Quote(rwc, akHandle, "", "", chalResp.EncryptedNonce, pcrSel, tpm2.AlgNull)
-		if err != nil {
-			return nil, fmt.Errorf("tpm2 Quote: %w", err)
-		}
-		quoteAttest = attestBytes
-		if sig != nil && sig.RSA != nil {
-			quoteSig = sig.RSA.Signature
+		decryptedNonce = hex.EncodeToString(secret)
+		quoteAttest, quoteSig = attestBytes, sig
+		for k, v := range pcrs {
+			pcrValues[k] = v
 		}
 	} else {
 		plainNonceBytes, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, simEKPriv, chalResp.EncryptedNonce, nil)
-		if err == nil {
-			decryptedNonce = string(plainNonceBytes)
-		} else {
-			decryptedNonce = string(chalResp.EncryptedNonce)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt simulated TPM challenge: %w", err)
 		}
+		decryptedNonce = string(plainNonceBytes)
 
 		for _, idx := range AttestationPCRs {
 			sum := sha256.Sum256([]byte(fmt.Sprintf("spire-pcr-%d-%s", idx, hwUUID)))
@@ -276,6 +226,7 @@ func PerformTPMAttestation(ctx context.Context, client *http.Client, serverURL, 
 		QuoteAttest:       quoteAttest,
 		QuoteSignature:    quoteSig,
 		SecureBootEnabled: secureBoot,
+		Simulated:         !hasHardwareTPM,
 	})
 	verifyReq, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/attest/verify", bytes.NewReader(verifyReqBody))
 	if err != nil {
@@ -335,4 +286,123 @@ func encodePublicKeyPEM(pub crypto.PublicKey) (string, error) {
 		Bytes: der,
 	}
 	return string(pem.EncodeToMemory(block)), nil
+}
+
+// tcgEKAuthPolicy is the TCG default EK policy digest: PolicySecret(TPM_RH_ENDORSEMENT).
+var tcgEKAuthPolicy = []byte{
+	0x83, 0x71, 0x97, 0x67, 0x44, 0x84, 0xB3, 0xF8, 0x1A, 0x90, 0xCC, 0x8D, 0x46, 0xA5, 0xD7, 0x24,
+	0xFD, 0x52, 0xD7, 0x6E, 0x06, 0x52, 0x0B, 0x64, 0xF2, 0xA1, 0xDA, 0x1B, 0x33, 0x14, 0x69, 0xAA,
+}
+
+// tcgEKTemplateRSA is the TCG EK Credential Profile default RSA-2048 EK template (L-1).
+// Using it exactly yields the same EK the manufacturer certified in NV, so the EK
+// certificate's public key matches the key we present.
+func tcgEKTemplateRSA() tpm2.Public {
+	return tpm2.Public{
+		Type:    tpm2.AlgRSA,
+		NameAlg: tpm2.AlgSHA256,
+		Attributes: tpm2.FlagFixedTPM | tpm2.FlagFixedParent | tpm2.FlagSensitiveDataOrigin |
+			tpm2.FlagAdminWithPolicy | tpm2.FlagRestricted | tpm2.FlagDecrypt,
+		AuthPolicy: tcgEKAuthPolicy,
+		RSAParameters: &tpm2.RSAParams{
+			Symmetric:  &tpm2.SymScheme{Alg: tpm2.AlgAES, KeyBits: 128, Mode: tpm2.AlgCFB},
+			KeyBits:    2048,
+			ModulusRaw: make([]byte, 256),
+		},
+	}
+}
+
+// akTemplateRSA is a restricted RSASSA-SHA256 signing key usable for TPM2_Quote.
+func akTemplateRSA() tpm2.Public {
+	return tpm2.Public{
+		Type:    tpm2.AlgRSA,
+		NameAlg: tpm2.AlgSHA256,
+		Attributes: tpm2.FlagFixedTPM | tpm2.FlagFixedParent | tpm2.FlagSensitiveDataOrigin |
+			tpm2.FlagUserWithAuth | tpm2.FlagRestricted | tpm2.FlagSign | tpm2.FlagNoDA,
+		RSAParameters: &tpm2.RSAParams{
+			Sign:    &tpm2.SigScheme{Alg: tpm2.AlgRSASSA, Hash: tpm2.AlgSHA256},
+			KeyBits: 2048,
+		},
+	}
+}
+
+// createAttestationKeys creates the EK (TCG default template) and an AK, returning their
+// handles, PEM public keys and the AK's TPMT_PUBLIC area for the server's credential challenge.
+func createAttestationKeys(rw io.ReadWriter) (ekHandle, akHandle tpmutil.Handle, ekPEM, akPEM string, akPublicTPM []byte, err error) {
+	ekHandle, ekPub, err := tpm2.CreatePrimary(rw, tpm2.HandleEndorsement, tpm2.PCRSelection{}, "", "", tcgEKTemplateRSA())
+	if err != nil {
+		return 0, 0, "", "", nil, fmt.Errorf("tpm2 CreatePrimary EK: %w", err)
+	}
+	if ekPEM, err = encodePublicKeyPEM(ekPub); err != nil {
+		tpm2.FlushContext(rw, ekHandle)
+		return 0, 0, "", "", nil, err
+	}
+
+	akHandle, akPublicTPM, _, _, _, _, err = tpm2.CreatePrimaryEx(rw, tpm2.HandleOwner, tpm2.PCRSelection{}, "", "", akTemplateRSA())
+	if err != nil {
+		tpm2.FlushContext(rw, ekHandle)
+		return 0, 0, "", "", nil, fmt.Errorf("tpm2 CreatePrimary AK: %w", err)
+	}
+	akPub, err := tpm2.DecodePublic(akPublicTPM)
+	if err == nil {
+		var key crypto.PublicKey
+		if key, err = akPub.Key(); err == nil {
+			akPEM, err = encodePublicKeyPEM(key)
+		}
+	}
+	if err != nil {
+		tpm2.FlushContext(rw, ekHandle)
+		tpm2.FlushContext(rw, akHandle)
+		return 0, 0, "", "", nil, fmt.Errorf("decode AK public area: %w", err)
+	}
+	return ekHandle, akHandle, ekPEM, akPEM, akPublicTPM, nil
+}
+
+// activateAndQuote recovers the server's credential secret with TPM2_ActivateCredential
+// (which succeeds only if the AK and EK live in this TPM) and quotes the attestation PCRs
+// with that secret as extraData, binding the quote to this challenge.
+func activateAndQuote(rw io.ReadWriter, ekHandle, akHandle tpmutil.Handle, credBlob, encSecret []byte) (secret, attest, sig []byte, pcrValues map[string]string, err error) {
+	if len(credBlob) < 2 || len(encSecret) < 2 {
+		return nil, nil, nil, nil, errors.New("server did not return a credential activation challenge (server too old?)")
+	}
+
+	// The EK's admin role requires a policy session satisfying PolicySecret(endorsement).
+	sess, _, err := tpm2.StartAuthSession(rw, tpm2.HandleNull, tpm2.HandleNull, make([]byte, 16), nil, tpm2.SessionPolicy, tpm2.AlgNull, tpm2.AlgSHA256)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("tpm2 StartAuthSession: %w", err)
+	}
+	defer tpm2.FlushContext(rw, sess)
+	if _, _, err := tpm2.PolicySecret(rw, tpm2.HandleEndorsement,
+		tpm2.AuthCommand{Session: tpm2.HandlePasswordSession, Attributes: tpm2.AttrContinueSession},
+		sess, nil, nil, nil, 0); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("tpm2 PolicySecret: %w", err)
+	}
+
+	// credactivation.Generate returns TPM2B structures; ActivateCredential re-adds the size prefix.
+	secret, err = tpm2.ActivateCredentialUsingAuth(rw, []tpm2.AuthCommand{
+		{Session: tpm2.HandlePasswordSession, Attributes: tpm2.AttrContinueSession},
+		{Session: sess, Attributes: tpm2.AttrContinueSession},
+	}, akHandle, ekHandle, credBlob[2:], encSecret[2:])
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("tpm2 ActivateCredential: %w", err)
+	}
+
+	pcrSel := tpm2.PCRSelection{Hash: tpm2.AlgSHA256, PCRs: AttestationPCRs}
+	pcrMap, err := tpm2.ReadPCRs(rw, pcrSel)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("tpm2 ReadPCRs: %w", err)
+	}
+	pcrValues = make(map[string]string, len(pcrMap))
+	for idx, digest := range pcrMap {
+		pcrValues[fmt.Sprintf("%d", idx)] = hex.EncodeToString(digest)
+	}
+
+	attest, signature, err := tpm2.Quote(rw, akHandle, "", "", secret, pcrSel, tpm2.AlgNull)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("tpm2 Quote: %w", err)
+	}
+	if signature == nil || signature.RSA == nil {
+		return nil, nil, nil, nil, errors.New("tpm2 Quote returned no RSA signature")
+	}
+	return secret, attest, signature.RSA.Signature, pcrValues, nil
 }
