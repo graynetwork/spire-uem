@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 )
@@ -16,12 +17,26 @@ func RegisterRoutes(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub) 
 
 // RegisterRoutesWithStorage mounts the desktop ingress API routes with an explicit bundle storage directory.
 func RegisterRoutesWithStorage(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, bundleStorageDir string) {
+	registerRoutes(r, repo, hub, bundleStorageDir, nil)
+}
+
+// RegisterRoutesWithAlerts mounts the desktop ingress API routes and wires an
+// alerts notifier so agent-reported failures (patch, attestation, compliance)
+// raise alerts.
+func RegisterRoutesWithAlerts(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, bundleStorageDir string, notifier alerts.Notifier) {
+	registerRoutes(r, repo, hub, bundleStorageDir, notifier)
+}
+
+func registerRoutes(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, bundleStorageDir string, notifier alerts.Notifier) {
 	h := NewHandlerWithHub(repo, hub)
 	h.SetBundleStorageDir(bundleStorageDir)
 	// The agent .deb packages served from /dist live in SPIRE_DIST_DIR (default "dist",
 	// CWD-relative, matching ServeDebPackage). The resolver hashes them for self-update.
 	if dd := strings.TrimSpace(os.Getenv("SPIRE_DIST_DIR")); dd != "" {
 		h.SetDistDir(dd)
+	}
+	if notifier != nil {
+		h.SetNotifier(notifier)
 	}
 	r.Route("/api/v1/enrollment", func(r chi.Router) {
 		r.Post("/register", h.RegisterWithToken)

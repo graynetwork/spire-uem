@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/spire-uem/spire-uem/internal/api"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/crypto"
@@ -68,6 +69,11 @@ func main() {
 	hub := gateway.NewGatewayHub(repo)
 	auditor := audit.NewForwarder(repo, cfg.Server.SIEMSyslogAddr)
 
+	// Alerting: durable queue + channels, offline ticker, event fan-out.
+	alertStore := repo.AlertStore()
+	alertMgr := alerts.NewManager(alertStore, repo.LoadAlertConfig(ctx))
+	go alertMgr.RunWorkers(ctx)
+
 	r := chi.NewRouter()
 	r.Use(web.TrustedProxyRealIPMiddleware)
 	r.Use(middleware.Logger)
@@ -82,7 +88,7 @@ func main() {
 		r.Use(web.EnforceHTTPSMiddleware(true))
 	}
 
-	api.RegisterRoutesWithStorage(r, repo, hub, cfg.Server.BundleStorageDir)
+	api.RegisterRoutesWithAlerts(r, repo, hub, cfg.Server.BundleStorageDir, alertMgr)
 
 	webHandler, err := web.NewHandler(repo, hub, auditor)
 	if err != nil {
@@ -91,6 +97,7 @@ func main() {
 	webHandler.SetEnforceHTTPS(cfg.Server.EnforceHTTPS)
 	webHandler.SetAptRepoDir(cfg.Server.AptRepoDir)
 	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
+	webHandler.SetAlerting(alertStore, alertMgr)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 
 	srv := &http.Server{

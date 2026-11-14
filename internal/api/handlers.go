@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
@@ -32,6 +34,18 @@ type Handler struct {
 	hub              *gateway.GatewayHub
 	bundleStorageDir string
 	artifacts        *artifactResolver
+	notifier         alerts.Notifier
+}
+
+// SetNotifier wires the alerts notifier used by agent-API event hooks (patch
+// failures, attestation failures, compliance drift).
+func (h *Handler) SetNotifier(n alerts.Notifier) { h.notifier = n }
+
+// notify raises an alert if a notifier is wired.
+func (h *Handler) notify(ctx context.Context, ev alerts.Event) {
+	if h.notifier != nil {
+		h.notifier.Notify(ctx, ev)
+	}
 }
 
 // NewHandler creates a new API Handler.
@@ -237,6 +251,7 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		} else if err := h.repo.RefreshFleetPatchDaily(r.Context()); err != nil {
 			log.Printf("[api] warning: failed to refresh daily fleet patch totals: %v", err)
 		}
+		h.maybeAlertPatchFailed(r.Context(), dev, req.PatchStatus)
 	}
 
 	policies, err := h.repo.GetActivePoliciesForDevice(r.Context(), dev.ID)
@@ -373,6 +388,7 @@ func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[api] HTTP 200 compliance report processed for device id=%s items=%d", dev.ID, len(req.Results))
+	h.maybeAlertComplianceDrift(r.Context(), dev, req.Results)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"updated": len(req.Results),
@@ -636,6 +652,20 @@ func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[api] HTTP 200 TPM 2.0 attestation device=%s status=%s secure_boot=%v simulated=%v", dev.ID, status, secureBoot, req.Simulated)
+	if status == types.AttestationFailed || status == types.AttestationPolicyViolation {
+		sev := alerts.SeverityWarning
+		if status == types.AttestationPolicyViolation {
+			sev = alerts.SeverityCritical
+		}
+		h.notify(r.Context(), alerts.Event{
+			Kind:     alerts.EventAttestationFailed,
+			Severity: sev,
+			Subject:  "TPM attestation " + string(status) + " for device " + dev.Hostname,
+			DeviceID: dev.ID,
+			Hostname: dev.Hostname,
+			Details:  map[string]any{"hostname": dev.Hostname, "status": string(status), "reason": reason},
+		})
+	}
 	writeJSON(w, http.StatusOK, types.AttestationVerifyResponse{
 		Status:            status,
 		SecureBootEnabled: secureBoot,

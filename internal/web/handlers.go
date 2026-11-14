@@ -27,6 +27,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/auth"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -46,6 +47,22 @@ type Handler struct {
 	aptRepoDir       string
 	bundleStorageDir string
 	enforceHTTPS     bool
+	alertStore       *db.AlertStore
+	alertMgr         *alerts.Manager
+}
+
+// SetAlerting wires the alert store and manager used by the Alerts admin page and
+// by the event hooks in the web and agent-API handlers.
+func (h *Handler) SetAlerting(store *db.AlertStore, mgr *alerts.Manager) {
+	h.alertStore = store
+	h.alertMgr = mgr
+}
+
+// notify raises an alert if alerting is wired; a no-op otherwise.
+func (h *Handler) notify(ctx context.Context, ev alerts.Event) {
+	if h.alertMgr != nil {
+		h.alertMgr.Notify(ctx, ev)
+	}
 }
 
 // SetEnforceHTTPS configures HTTPS cookie security enforcement on the web handler.
@@ -582,6 +599,7 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 		}
 
 		if authenticatedUsername == "" {
+			h.recordLoginFailure(r, user)
 			if strings.Contains(r.Header.Get("Accept"), "application/json") {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
@@ -1147,6 +1165,19 @@ func (h *Handler) RevealLUKSRawRecoveryKey(w http.ResponseWriter, r *http.Reques
 	} else if h.hub != nil && h.hub.IsConnected(id) {
 		_ = h.hub.TriggerCheckin(id)
 	}
+	h.notify(r.Context(), alerts.Event{
+		Kind:     alerts.EventLUKSKeyRevealed,
+		Severity: alerts.SeverityCritical,
+		Subject:  fmt.Sprintf("LUKS recovery key revealed for device %s (volume %s) by %s", id, escrow.VolumeUUID, adminUser),
+		DeviceID: id,
+		Details: map[string]any{
+			"device_id":   id,
+			"volume_uuid": escrow.VolumeUUID,
+			"mount_point": escrow.MountPoint,
+			"admin":       adminUser,
+			"reason":      reason,
+		},
+	})
 
 	revealedResp := &types.RevealRecoveryKeyResponse{
 		DeviceID:    id,
@@ -1343,6 +1374,14 @@ func (h *Handler) ApproveDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[web] device approved id=%s hostname=%s hw=%s", dev.ID, dev.Hostname, dev.HardwareUUID)
+	h.notify(r.Context(), alerts.Event{
+		Kind:     alerts.EventDeviceApproved,
+		Severity: alerts.SeverityInfo,
+		Subject:  fmt.Sprintf("Device %s was approved", dev.Hostname),
+		DeviceID: dev.ID,
+		Hostname: dev.Hostname,
+		Details:  map[string]any{"hostname": dev.Hostname, "hardware_uuid": dev.HardwareUUID},
+	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "device_row", dev); err != nil {
 		log.Printf("[web] render device_row error: %v", err)
@@ -1368,6 +1407,14 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[web] device revoked id=%s hostname=%s hw=%s", dev.ID, dev.Hostname, dev.HardwareUUID)
+	h.notify(r.Context(), alerts.Event{
+		Kind:     alerts.EventDeviceRevoked,
+		Severity: alerts.SeverityWarning,
+		Subject:  fmt.Sprintf("Device %s was revoked", dev.Hostname),
+		DeviceID: dev.ID,
+		Hostname: dev.Hostname,
+		Details:  map[string]any{"hostname": dev.Hostname, "hardware_uuid": dev.HardwareUUID},
+	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "device_row", dev); err != nil {
 		log.Printf("[web] render device_row error: %v", err)

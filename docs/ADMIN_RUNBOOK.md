@@ -688,3 +688,89 @@ AES-256-GCM envelope, then removes the revealed key's slot. The device page show
   absent the rotation reports `FAILED` and the revealed key's slot is left intact.
 - `/etc/nologin` blocks local logins only; it does not terminate an already-authenticated SSH
   session (non-root graphical sessions are expired, SSH is not).
+## 13. Alerting (outbound notifications)
+
+SpireUEM can notify operators when something goes wrong, in addition to the
+existing syslog-to-SIEM forwarding. Alerts are configured under **Settings →
+Alerts** (`/admin/alerts`) and are restricted to the **SUPER_ADMIN** role.
+
+### 13.1 Channels
+
+Three channel types are supported. All channel secrets are stored server-side
+through the existing KEK envelope encryption and are **never rendered back to the
+browser** — the UI shows only `set` / `not set`.
+
+| Type | Transport | Secret (encrypted) |
+|------|-----------|--------------------|
+| `webhook` | JSON `POST` with an HMAC-SHA256 signature | per-channel signing secret |
+| `slack` | Slack-compatible incoming webhook (text payload) | the Slack webhook URL |
+| `email` | SMTP (`starttls` / `implicit` / `none`) | SMTP password |
+
+**Generic webhook signature.** Each request carries:
+
+- `X-Spire-Timestamp`: unix seconds, also bound into the signature to defeat replay.
+- `X-Spire-Signature`: `sha256=<hex>` where the HMAC is computed over
+  `"<timestamp>.<raw-body>"` using the channel secret.
+- `X-Spire-Event`: the event kind (convenience only; not trusted for auth).
+
+Receivers MUST recompute the HMAC over `"<timestamp>.<body>"` and reject a
+timestamp outside their tolerance window.
+
+**Outbound safety.** Requests use a 10s timeout, follow **no redirects**, and
+refuse any scheme other than `http`/`https`. The destination host is **not**
+IP-filtered: an on-prem UEM legitimately needs to reach internal collectors, so a
+webhook URL can reach internal hosts (**SSRF risk**). This is mitigated by
+restricting who may set these URLs — only SUPER_ADMIN can create or edit channels.
+
+### 13.2 Events
+
+Each event kind is individually enable-able per channel with a minimum severity:
+
+- `attestation_failed` — TPM attestation FAILED / POLICY_VIOLATION.
+- `compliance_drift` — a **required** (non-self-service) policy goes NON_COMPLIANT/FAILED.
+- `device_offline` — no check-in for longer than the configured threshold (background ticker).
+- `luks_key_revealed` — a LUKS recovery key was revealed in the admin UI.
+- `device_approved` / `device_revoked` — device enrollment state changes.
+- `login_failure_burst` — ≥ N failed admin logins for one username within the window.
+- `patch_failed` — an agent reported a FAILED patch run.
+- `test` — the **Send test alert** button.
+
+### 13.3 Delivery, retry and deduplication
+
+Alerts are enqueued to a Postgres table (`alert_queue`) so they survive a restart.
+A background worker claims due rows with `SELECT … FOR UPDATE SKIP LOCKED`, so
+multiple server instances never double-send. Failed deliveries retry with
+exponential backoff (30s, 1m, 2m, 4m, … capped at 1h) until `alerts.max_attempts`
+is reached, then the row is marked `FAILED`. Repeats of the same (event kind +
+device) collapse to one alert within `alerts.throttle_window_seconds`. The recent
+delivery log (status, attempts, last error) is shown on the Alerts page.
+
+### 13.4 Tunable settings (`system_settings`, category `alerts`)
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `alerts.device_offline_minutes` | `30` | Minutes without check-in before an offline alert fires. |
+| `alerts.throttle_window_seconds` | `900` | Collapse window for repeated (kind + device) alerts. |
+| `alerts.max_attempts` | `6` | Max delivery attempts before a queued alert is marked FAILED. |
+| `alerts.login_failure_threshold` | `5` | Failed admin logins for one username that trigger a burst alert. |
+| `alerts.login_failure_window_minutes` | `10` | Window over which login failures are counted. |
+
+### 13.5 Operator steps
+
+1. **Settings → Alerts → Add channel**, pick the type, fill in the URL/SMTP
+   details and secret, choose which events route to it and their minimum severity.
+2. Click **Send test alert** to confirm delivery, then check the delivery log.
+3. To rotate a secret, edit the channel and enter the new value (leaving the
+   secret field blank keeps the existing one). Deleting a channel is audited.
+
+All channel create/update/delete/test actions emit audit events
+(`ALERT_CHANNEL_CREATE` / `_UPDATE` / `_DELETE` / `_TEST`).
+
+### 13.6 Limits
+
+- SMTP supports PLAIN auth over STARTTLS/implicit TLS; OAuth2/XOAUTH2 is not implemented.
+- `device_offline` is computed from `last_checkin_at` by a ~1-minute ticker, so
+  the alert can lag the threshold by up to one tick.
+- The dedupe ledger is keyed on (event kind + device); fleet-wide events without a
+  device dedupe on kind (plus an optional discriminator such as the username for
+  login-failure bursts).
