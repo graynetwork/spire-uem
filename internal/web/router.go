@@ -63,6 +63,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS))
 		r.Use(CSRFMiddleware)
+		// Operator tag scoping: enforced on every /admin/devices/{id}/... route in one
+		// place. No-op for unscoped admins and non-device routes. See scoping.go.
+		r.Use(h.DeviceScopeMiddleware)
 
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/dashboard", http.StatusFound)

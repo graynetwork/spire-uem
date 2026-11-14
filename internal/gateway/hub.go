@@ -103,6 +103,12 @@ type GatewayHub struct {
 	// opened for. Frames that name a session are only routed when they arrive on that
 	// device's own stream, so one device cannot write into or end another's session.
 	sessionOwner map[string]string
+
+	// Multi-instance routing (see routing.go). When clustered, the hub records which
+	// device sockets it owns in Postgres and routes push/trigger frames for non-local
+	// devices to the owning instance via LISTEN/NOTIFY.
+	instanceID string
+	clustered  bool
 }
 
 // NewGatewayHub creates a new GatewayHub and resets stale ws_connected flags in PostgreSQL.
@@ -153,6 +159,19 @@ func (h *GatewayHub) DisconnectDevice(deviceID string) {
 func (h *GatewayHub) updatePresence(deviceID string, connected bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if h.clusterEnabled() {
+		// Record ownership so another instance can route push/trigger frames to us.
+		var err error
+		if connected {
+			err = h.repo.SetDeviceWSOwner(ctx, deviceID, h.InstanceID())
+		} else {
+			err = h.repo.ClearDeviceWSOwner(ctx, deviceID, h.InstanceID())
+		}
+		if err != nil {
+			log.Printf("[gateway] failed to update ws ownership (connected=%v) for device=%s: %v", connected, deviceID, err)
+		}
+		return
+	}
 	if err := h.repo.UpdateDeviceWSPresence(ctx, deviceID, connected); err != nil {
 		log.Printf("[gateway] failed to mark ws_connected=%v for device=%s: %v", connected, deviceID, err)
 	}
@@ -367,13 +386,14 @@ func (h *GatewayHub) PushCommand(ctx context.Context, deviceID string, cmd types
 	h.mu.RLock()
 	client, ok := h.clients[deviceID]
 	h.mu.RUnlock()
+	payloadBytes, _ := json.Marshal(types.CommandPushPayload(cmd))
 	if !ok || client == nil {
-		return false
+		// Not connected here; if another instance owns the socket, hand the push off to it.
+		return h.routeToOwner(ctx, routeKindCommandPush, deviceID, payloadBytes)
 	}
 
 	_ = h.repo.MarkCommandRunning(ctx, deviceID, cmd.ID)
 
-	payloadBytes, _ := json.Marshal(types.CommandPushPayload(cmd))
 	frame := types.GatewayFrame{
 		Type:      types.FrameTypeCommandPush,
 		DeviceID:  deviceID,
@@ -394,7 +414,7 @@ func (h *GatewayHub) TriggerCheckin(deviceID string) bool {
 	client, ok := h.clients[deviceID]
 	h.mu.RUnlock()
 	if !ok || client == nil {
-		return false
+		return h.routeToOwner(context.Background(), routeKindTriggerCheckin, deviceID, nil)
 	}
 	err := client.writeFrame(types.GatewayFrame{
 		Type:      types.FrameTypeTriggerCheckin,
@@ -410,7 +430,7 @@ func (h *GatewayHub) TriggerPatchRun(deviceID string) bool {
 	client, ok := h.clients[deviceID]
 	h.mu.RUnlock()
 	if !ok || client == nil {
-		return false
+		return h.routeToOwner(context.Background(), routeKindTriggerPatch, deviceID, nil)
 	}
 	err := client.writeFrame(types.GatewayFrame{
 		Type:      types.FrameTypeTriggerPatchRun,
@@ -425,14 +445,14 @@ func (h *GatewayHub) PushBenchmarkStart(deviceID string, payload types.Benchmark
 	h.mu.RLock()
 	client, ok := h.clients[deviceID]
 	h.mu.RUnlock()
-	if !ok || client == nil {
-		return false
-	}
-
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return false
 	}
+	if !ok || client == nil {
+		return h.routeToOwner(context.Background(), routeKindBenchmarkStart, deviceID, payloadBytes)
+	}
+
 	frame := types.GatewayFrame{
 		Type:      types.FrameTypeBenchmarkStart,
 		DeviceID:  deviceID,

@@ -23,6 +23,13 @@ import (
 )
 
 func main() {
+	// Subcommand dispatch: `spire-server migrate <status|up|down>` manages the schema and
+	// exits without booting the server.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		runMigrateSubcommand(os.Args[2:])
+		return
+	}
+
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	flag.Parse()
 
@@ -55,10 +62,24 @@ func main() {
 	} else {
 		log.Printf("[spire-server] WARNING: SPIRE_TPM_EK_ROOTS not set; hardware TPM attestations will be reported FAILED because EK certificates cannot be anchored")
 	}
-	if len(strings.TrimSpace(os.Getenv("SPIRE_SESSION_SECRET"))) < 32 {
+	sessionSecret := strings.TrimSpace(os.Getenv("SPIRE_SESSION_SECRET"))
+	if cfg.Server.MultiInstance && len(sessionSecret) < 32 {
+		log.Fatalf("[spire-server] refusing to start in multi-instance mode: SPIRE_SESSION_SECRET must be set to a shared value of at least 32 characters so sessions and CSRF tokens validate across instances")
+	}
+	if len(sessionSecret) < 32 {
 		log.Printf("[spire-server] WARNING: SPIRE_SESSION_SECRET is unset or shorter than 32 characters; using a random per-process key, so every restart signs all admins out")
 	}
 	hub := gateway.NewGatewayHub(repo)
+	if cfg.Server.MultiInstance {
+		instanceID := cfg.Server.InstanceID
+		if instanceID == "" {
+			host, _ := os.Hostname()
+			instanceID = host + cfg.Server.ListenAddr
+		}
+		hub.EnableCluster(instanceID)
+		hub.StartClusterRouting(ctx, cfg.Server.ListenAddr)
+		log.Printf("[spire-server] multi-instance mode active (instance_id=%s)", instanceID)
+	}
 	auditor := audit.NewForwarder(repo, cfg.Server.SIEMSyslogAddr)
 
 	r := chi.NewRouter()

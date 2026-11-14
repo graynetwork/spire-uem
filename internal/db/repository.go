@@ -3489,13 +3489,13 @@ func roleRank(role types.AdminRole) int {
 // GetAdminUserByUsername retrieves an active or inactive admin user by username.
 func (r *Repository) GetAdminUserByUsername(ctx context.Context, username string) (*types.AdminUser, error) {
 	const query = `
-		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 		FROM admin_users
 		WHERE LOWER(username) = LOWER($1)
 	`
 	var u types.AdminUser
 	err := r.pool.QueryRow(ctx, query, strings.TrimSpace(username)).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -3549,13 +3549,13 @@ func (r *Repository) GetAdminUserByOIDCSubject(ctx context.Context, sub string) 
 // GetAdminUserByID retrieves an admin user by UUID.
 func (r *Repository) GetAdminUserByID(ctx context.Context, id string) (*types.AdminUser, error) {
 	const query = `
-		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 		FROM admin_users
 		WHERE id = $1
 	`
 	var u types.AdminUser
 	err := r.pool.QueryRow(ctx, query, id).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrAdminUserNotFound
@@ -3569,7 +3569,7 @@ func (r *Repository) GetAdminUserByID(ctx context.Context, id string) (*types.Ad
 // ListAdminUsers returns all admin users ordered by creation date.
 func (r *Repository) ListAdminUsers(ctx context.Context) ([]types.AdminUser, error) {
 	const query = `
-		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 		FROM admin_users
 		ORDER BY created_at ASC
 	`
@@ -3583,7 +3583,7 @@ func (r *Repository) ListAdminUsers(ctx context.Context) ([]types.AdminUser, err
 	for rows.Next() {
 		var u types.AdminUser
 		if err := rows.Scan(
-			&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+			&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 		); err != nil {
 			return nil, fmt.Errorf("scan admin user: %w", err)
 		}
@@ -3611,14 +3611,18 @@ func (r *Repository) CreateLocalAdminUser(ctx context.Context, req types.CreateU
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
 
+	allowedTags := req.AllowedTags
+	if allowedTags == nil {
+		allowedTags = []string{}
+	}
 	const query = `
-		INSERT INTO admin_users (username, email, display_name, password_hash, role, auth_provider, is_active, created_at)
-		VALUES ($1, $2, $3, $4, $5, 'LOCAL', TRUE, NOW())
-		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		INSERT INTO admin_users (username, email, display_name, password_hash, role, auth_provider, is_active, created_at, allowed_tags)
+		VALUES ($1, $2, $3, $4, $5, 'LOCAL', TRUE, NOW(), $6)
+		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 	`
 	var u types.AdminUser
-	err = r.pool.QueryRow(ctx, query, username, email, displayName, string(hash), string(role)).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+	err = r.pool.QueryRow(ctx, query, username, email, displayName, string(hash), string(role), allowedTags).Scan(
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create admin user: %w", err)
@@ -3656,6 +3660,15 @@ func (r *Repository) UpdateAdminUser(ctx context.Context, id string, req types.U
 		args = append(args, string(hash))
 		argIdx++
 	}
+	if req.AllowedTags != nil {
+		tags := *req.AllowedTags
+		if tags == nil {
+			tags = []string{}
+		}
+		setClauses = append(setClauses, fmt.Sprintf("allowed_tags = $%d", argIdx))
+		args = append(args, tags)
+		argIdx++
+	}
 
 	if len(setClauses) == 0 {
 		return r.GetAdminUserByID(ctx, id)
@@ -3665,13 +3678,13 @@ func (r *Repository) UpdateAdminUser(ctx context.Context, id string, req types.U
 		UPDATE admin_users
 		SET %s
 		WHERE id = $%d
-		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 	`, strings.Join(setClauses, ", "), argIdx)
 	args = append(args, id)
 
 	var u types.AdminUser
 	err := r.pool.QueryRow(ctx, query, args...).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrAdminUserNotFound

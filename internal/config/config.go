@@ -19,6 +19,13 @@ type ServerConfig struct {
 	AptRepoDir       string
 	BundleStorageDir string
 	EnforceHTTPS     bool
+	// MultiInstance signals this server runs as one of several instances behind a load
+	// balancer sharing one database. It turns on gateway cross-instance routing and makes
+	// a shared SPIRE_SESSION_SECRET mandatory.
+	MultiInstance bool
+	// InstanceID uniquely identifies this process in a multi-instance deployment. Defaults
+	// to "<hostname>:<listen_addr>" when unset.
+	InstanceID string
 }
 
 // AgentConfig holds configuration for the spired client daemon.
@@ -97,6 +104,13 @@ func Load(configPath string) *Config {
 	}
 	if v := os.Getenv("SPIRE_ENFORCE_HTTPS"); v != "" {
 		cfg.Server.EnforceHTTPS = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := os.Getenv("SPIRE_MULTI_INSTANCE"); v != "" {
+		cfg.Server.MultiInstance = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_INSTANCE_ID")); v != "" {
+		cfg.Server.InstanceID = v
+		cfg.Server.MultiInstance = true // an explicit instance id implies multi-instance
 	}
 	if v := os.Getenv("SPIRE_SERVER_URL"); v != "" {
 		cfg.Agent.ServerURL = strings.TrimRight(v, "/")

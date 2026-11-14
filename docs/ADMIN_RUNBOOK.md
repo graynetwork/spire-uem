@@ -238,3 +238,122 @@ curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/comp
 # Export JSON Audit Report
 curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
 ```
+
+---
+
+## 7. Operations & Scaling
+
+This section covers tracked schema migrations, running SpireUEM as multiple instances behind a
+load balancer, and limiting operators to a subset of devices by tag.
+
+### 7.1 Tracked schema migrations
+
+The server now records every applied migration in a `schema_migrations` table
+(`version`, `name`, `checksum`, `applied_at`) instead of blindly re-running every
+`*.up.sql` on each boot. On startup the server:
+
+1. Takes a Postgres **advisory lock**, so two instances starting at once do not race — one
+   applies, the other waits then sees the work is done.
+2. Applies each pending migration **once**, in numeric order, **each in its own
+   transaction**.
+3. **Refuses to start** if a migration already recorded as applied has a different checksum
+   on disk (an applied file was edited in place).
+
+**Baseline on an existing database.** The first time the server starts against a database
+that has no `schema_migrations` table, it runs every migration file once (all existing
+`.up.sql` files are idempotent — `CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`,
+duplicate-object guards) and records them. No data is lost; re-running an idempotent file
+against an already-populated schema is a no-op. From then on the ledger tracks state and each
+file runs at most once.
+
+**CLI subcommands** (run with the same `DATABASE_URL` / `SPIRE_MIGRATIONS_PATH` as the
+server):
+
+```bash
+spire-server migrate status          # list every migration and whether it is applied
+spire-server migrate up              # apply all pending migrations (same as boot-time run)
+spire-server migrate down --confirm  # roll back the LAST migration (requires --confirm)
+spire-server migrate down -n 3 --confirm   # roll back the last 3
+```
+
+`down` runs the matching `.down.sql` files in reverse order and deletes their ledger rows; it
+is destructive and refuses to run without `--confirm`.
+
+**Checksum-drift override (emergency only).** If you must start the server after intentionally
+editing an already-applied migration file, set:
+
+```bash
+SPIRE_MIGRATION_ALLOW_CHECKSUM_DRIFT=1
+```
+
+This downgrades the refusal to a logged warning and does **not** re-apply the changed file.
+Never leave it set in normal operation — it defeats the tamper check. Prefer adding a new
+migration over editing an applied one.
+
+**Migration numbering.** Migration number **000008 is intentionally absent** from the
+sequence (a historical gap). This is not an error and files must **not** be renumbered to
+close it — the ledger keys on the version string, so a gap is harmless.
+
+**docker-compose change.** Earlier compose files mounted `./migrations` into the Postgres
+container's `/docker-entrypoint-initdb.d`, so Postgres itself ran every `.up.sql` **and every
+`.down.sql`** in filename order on a fresh volume. That mount has been **removed** from
+`docker-compose.yml` and `docker-compose.test.yml`: the server is now the single authority
+that applies migrations. If you maintain your own compose file, remove any
+`- ./migrations:/docker-entrypoint-initdb.d` line.
+
+### 7.2 Running multiple instances (horizontal scaling)
+
+Set these on **every** instance that shares one database behind a load balancer:
+
+| Env var | Purpose |
+| --- | --- |
+| `SPIRE_MULTI_INSTANCE=true` | Enables multi-instance mode. (Setting `SPIRE_INSTANCE_ID` also implies it.) |
+| `SPIRE_INSTANCE_ID=<unique>` | Stable id for this process (defaults to hostname+listen addr). Used for device-socket ownership. |
+| `SPIRE_SESSION_SECRET=<32+ chars>` | **Required** in multi-instance mode — the shared key that signs admin sessions and CSRF tokens. The server **refuses to start** in multi-instance mode without it, because a per-process random key would sign admins out whenever the load balancer moved them to another instance. |
+
+What was made instance-safe:
+
+- **OIDC login state** (PKCE verifier, nonce, redirect, `state`) is stored in Postgres
+  (`oidc_login_states`, short TTL, single-use), so a sign-in whose `/auth/oidc/login` hits
+  instance A can be completed by a `/auth/oidc/callback` that lands on instance B. Expired
+  rows are swept opportunistically.
+- **TPM attestation challenges** were already stored in Postgres (no change needed).
+- **The admin session secret** must be shared via `SPIRE_SESSION_SECRET` (see above).
+
+**Gateway (device WebSocket) routing.** A device holds a WebSocket to exactly **one**
+instance. Each instance records which device sockets it owns (`devices.ws_instance_id` +
+`ws_last_seen`, plus a `server_instances` heartbeat table). When an admin action on instance B
+needs to reach a device connected to instance A, B publishes the frame on a Postgres
+`LISTEN/NOTIFY` channel; A, which owns the socket, delivers it. This cross-instance routing is
+implemented for **asynchronous push/trigger frames**:
+
+- check-in / sync trigger
+- patch-run trigger
+- benchmark-start push
+- command push
+
+**Interactive PTY streams are NOT routed across instances.** Terminal and remote-assist open
+a live bidirectional stream that is impractical to proxy through `NOTIFY`. If an admin on
+instance B opens a terminal or remote-assist for a device connected to instance A, the request
+is refused with a clear error naming the instance that holds the device
+(`device is connected to instance <id>`). **Operational guidance:** put **sticky sessions**
+(session affinity) on the load balancer for the admin UI, or route terminal/remote-assist to
+the owning instance, so the admin and the device's socket land on the same instance. All
+other device actions work from any instance.
+
+### 7.3 Operator scoping by device tag
+
+Admin users with role **OPERATOR** or **SECURITY_ADMIN** can be limited to the devices that
+carry any of a set of tags. **SUPER_ADMIN** is never scoped (full access) and **AUDITOR** is
+read-only and not scoped here. A user with an empty tag set is unrestricted.
+
+- Set a user's allowed tags in **Settings → Users** (edit a user), or via the user API
+  (`allowed_tags` on create/update).
+- Enforcement is **server-side on every device-targeted admin route** (device detail,
+  commands, terminal, remote-assist, reboot, patch, scans, approve/revoke, tags, ring, LUKS
+  reveal), applied in one central middleware so a new device route cannot silently bypass it.
+  A regression test enumerates the device routes and fails if one is not scoped.
+- An out-of-scope device returns **404** (its existence is hidden from the operator), not 403.
+- A scoped user **cannot edit a device's tags to remove it from their own scope** (tag
+  escape): the new tag set must still contain at least one of their allowed tags.
+- Tag-scope changes are audited.

@@ -8,8 +8,8 @@ services:
       POSTGRES_DB: spire_uem
     ports:
       - "127.0.0.1:5433:5432"
-    volumes:
-      - ./migrations:/docker-entrypoint-initdb.d:ro
+    # The migrations directory is intentionally NOT mounted into /docker-entrypoint-initdb.d;
+    # the spire-server container applies migrations via the tracked runner.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U spire -d spire_uem"]
       interval: 2s
