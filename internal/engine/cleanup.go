@@ -274,6 +274,45 @@ func CleanupOrphanedPolicies(
 				ExecutionOutput:  meta,
 			})
 
+		case types.PolicyTypeNetworkProfile:
+			_ = RemoveNetworkProfile(ctx, polID)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "network_profile_revoked_cleaned",
+				"policy_id":  polID,
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
+		case types.PolicyTypeUSBDeviceControl:
+			_ = RemoveUSBDeviceControl(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "usb_device_control_revoked_cleaned",
+				"policy_id":  polID,
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
+		case types.PolicyTypeAuditdRules:
+			_ = RemoveAuditdRules(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "auditd_rules_revoked_cleaned",
+				"policy_id":  polID,
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
 		case types.PolicyTypePackagePresence:
 			// Do not forcibly purge packages when PACKAGE_PRESENCE is revoked.
 			meta, _ := json.Marshal(map[string]any{

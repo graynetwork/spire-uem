@@ -442,6 +442,12 @@ func executePoliciesAndCleanup(
 			item = engine.EnforceLocalAccountPolicy(ctx, pol)
 		case types.PolicyTypeTrustedCACerts:
 			item = engine.EnforceTrustedCACertificates(ctx, pol)
+		case types.PolicyTypeNetworkProfile:
+			item = engine.EnforceNetworkProfilePolicy(ctx, pol)
+		case types.PolicyTypeUSBDeviceControl:
+			item = engine.ReconcileUSBDeviceControl(ctx, pol)
+		case types.PolicyTypeAuditdRules:
+			item = engine.EnforceAuditdRulesPolicy(ctx, pol)
 		default:
 			out, _ := json.Marshal(map[string]string{"note": "unsupported policy type"})
 			item = types.PolicyExecutionItem{
