@@ -78,13 +78,19 @@ func (e *WipeEngine) PerformWipe(ctx context.Context, pinnedPubKeyBase64, hwUUID
 	if e.Now != nil {
 		now = e.Now()
 	}
-	if !order.ExpiresAt.IsZero() && now.After(order.ExpiresAt) {
+	// Expiry and device binding are mandatory: a signed order missing either would stay
+	// valid forever, or on every device, so it is refused rather than trusted.
+	if order.ExpiresAt.IsZero() {
+		res.Detail = "wipe order has no expiry; refusing"
+		return res
+	}
+	if now.After(order.ExpiresAt) {
 		res.Detail = fmt.Sprintf("wipe order expired at %s", order.ExpiresAt.Format(time.RFC3339))
 		return res
 	}
-	if strings.TrimSpace(order.HardwareUUID) != "" && strings.TrimSpace(hwUUID) != "" &&
-		!strings.EqualFold(order.HardwareUUID, hwUUID) {
-		res.Detail = "wipe order hardware_uuid does not match this device"
+	if strings.TrimSpace(order.HardwareUUID) == "" || strings.TrimSpace(hwUUID) == "" ||
+		!strings.EqualFold(strings.TrimSpace(order.HardwareUUID), strings.TrimSpace(hwUUID)) {
+		res.Detail = "wipe order is not bound to this device's hardware_uuid; refusing"
 		return res
 	}
 

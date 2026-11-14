@@ -189,3 +189,25 @@ func TestVerifyWipeOrder_Direct(t *testing.T) {
 		t.Fatalf("malformed key must error")
 	}
 }
+
+// A validly signed order that omits its expiry or its device binding is refused: either
+// omission would make the order replayable forever or on any device.
+func TestPerformWipe_MissingExpiryOrDeviceBinding_Refused(t *testing.T) {
+	signer := newTestSigner(t)
+	cases := map[string]func(*types.WipeOrder){
+		"no expiry":        func(o *types.WipeOrder) { o.ExpiresAt = time.Time{} },
+		"no hardware uuid": func(o *types.WipeOrder) { o.HardwareUUID = "" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			o := baseOrder()
+			mutate(&o)
+			rr := &recordingRunner{}
+			we := &WipeEngine{Runner: rr.run, EscrowedVolumes: escrowFunc("vol-a")}
+			res := we.PerformWipe(context.Background(), signer.PublicKeyBase64(), "HW-1", signedDirective(t, signer, o))
+			if res.Status != string(types.WipeFailed) || res.ErasedSlots != 0 || len(rr.calls) != 0 {
+				t.Fatalf("expected refusal with no commands run, got %s slots=%d calls=%v (%s)", res.Status, res.ErasedSlots, rr.calls, res.Detail)
+			}
+		})
+	}
+}
