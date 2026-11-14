@@ -25,6 +25,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/inventory"
 	"github.com/spire-uem/spire-uem/internal/ipc"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/version"
 )
 
 func main() {
@@ -260,6 +261,23 @@ func main() {
 				} else {
 					ipcSrv.UpdateLUKSEscrow(true)
 				}
+
+				// Agent self-update: if the server dispatched a target version and the
+				// maintenance window permits it, verify and install it. The install detaches
+				// via systemd-run so spired does not kill itself mid-dpkg; the result is
+				// persisted and reported on the NEXT check-in (it survives the restart).
+				if checkinResp.AgentUpdate != nil && checkinResp.AgentUpdate.Action == types.UpdateActionUpdate {
+					if !checkinResp.MaintenanceWindowActive {
+						log.Printf("[spired] agent update to %s deferred: outside maintenance window", checkinResp.AgentUpdate.TargetVersion)
+					} else {
+						log.Printf("[spired] agent self-update directive: %s -> %s (%s)", version.Version, checkinResp.AgentUpdate.TargetVersion, checkinResp.AgentUpdate.Reason)
+						updateClient := &http.Client{Timeout: 10 * time.Minute}
+						updater := engine.NewSelfUpdater(updateClient, cfg.Agent.ServerURL, version.Version, nil)
+						if res := updater.ApplyDirective(ctx, checkinResp.AgentUpdate, token); res != nil {
+							log.Printf("[spired] agent self-update result target=%s status=%s msg=%s", res.TargetVersion, res.Status, res.Message)
+						}
+					}
+				}
 			}
 			return code, nil
 		}()
@@ -371,6 +389,8 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		KernelVersion:   osInfo.Kernel,
 		SourcePackages:  srcPkgs,
 		ReleaseCodename: releaseCodename,
+		AgentVersion:    version.Version,
+		UpdateResult:    engine.ConsumePendingUpdateResult(engine.DefaultUpdateStatePath),
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/checkin", bytes.NewReader(payload))
@@ -378,6 +398,9 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		return nil, installedMap, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Advertise the agent version on every authenticated request so the server's
+	// minimum-version gate can refuse an outdated agent on gated endpoints.
+	req.Header.Set("X-Spire-Agent-Version", version.Version)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}

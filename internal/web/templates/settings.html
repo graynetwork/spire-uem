@@ -89,6 +89,10 @@
                 class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "siem"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
                 SIEM &amp; Logging
             </button>
+            <button type="button" onclick="switchSettingsTab('rollout')" id="tab-btn-rollout"
+                class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "rollout"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
+                Agent Rollout
+            </button>
             <button type="button" onclick="switchSettingsTab('tokens')" id="tab-btn-tokens"
                 class="settings-tab-btn px-3 py-2 text-xs font-medium border-b-2 transition whitespace-nowrap {{if eq .ActiveTab "tokens"}}border-blue-500 text-white font-semibold{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">
                 Enrollment Tokens
@@ -470,6 +474,82 @@
                 </button>
                 <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
                     Save SIEM Settings
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- TAB: Agent Self-Update Rollout -->
+    <div id="tab-pane-rollout" class="settings-pane {{if ne .ActiveTab "rollout"}}hidden{{end}}">
+        <form hx-post="/admin/settings/rollout" hx-target="#rollout-toast" class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-6 space-y-6">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div id="rollout-toast"></div>
+
+            <div>
+                <h2 class="text-sm font-semibold text-white">Agent Self-Update Rollout</h2>
+                <p class="text-[11px] text-slate-500 mt-0.5">Drive <code>spired</code> self-updates per patch ring. Set a target version per ring (or <code>none</code> to disable auto-update for that ring) and a minimum supported version. Agents below the minimum are refused on check-in (HTTP 426) on every endpoint except the self-update path, so they can still update. A <code>dev</code> agent is never auto-updated and never refused.</p>
+            </div>
+
+            <div class="space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Minimum Supported Version</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Agents strictly below this are refused with HTTP 426. Leave empty to disable the floor.</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <input type="text" name="minimum_version" value="{{.Rollout.MinimumVersion}}" placeholder="e.g. 0.2.0 (empty = none)"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">CANARY Ring Target</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Target agent version for CANARY devices, or <code>none</code>.</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <input type="text" name="target_version_CANARY" value="{{.Rollout.CANARY}}" placeholder="none"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">BETA Ring Target</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Target agent version for BETA devices, or <code>none</code>.</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <input type="text" name="target_version_BETA" value="{{.Rollout.BETA}}" placeholder="none"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">PILOT Ring Target</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Target agent version for PILOT devices, or <code>none</code>.</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <input type="text" name="target_version_PILOT" value="{{.Rollout.PILOT}}" placeholder="none"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">PRODUCTION Ring Target</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Target agent version for PRODUCTION devices, or <code>none</code>.</p>
+                    </div>
+                    <div class="w-full sm:w-72">
+                        <input type="text" name="target_version_PRODUCTION" value="{{.Rollout.PRODUCTION}}" placeholder="none"
+                            class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium rounded-md transition shadow-sm">
+                    Save Rollout Settings
                 </button>
             </div>
         </form>

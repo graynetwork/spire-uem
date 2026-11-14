@@ -111,6 +111,13 @@ type Device struct {
 	PendingUpdatesCount  int                `db:"pending_updates_count" json:"pending_updates_count"`
 	SecurityUpdatesCount int                `db:"security_updates_count" json:"security_updates_count"`
 	RebootRequiredPkgs   []string           `db:"reboot_required_pkgs" json:"reboot_required_pkgs,omitempty"`
+
+	// Agent self-update tracking (migration 000025)
+	AgentVersion  string     `db:"agent_version" json:"agent_version"`
+	UpdateStatus  string     `db:"update_status" json:"update_status,omitempty"`
+	UpdateMessage string     `db:"update_message" json:"update_message,omitempty"`
+	UpdateTarget  string     `db:"update_target" json:"update_target,omitempty"`
+	LastUpdateAt  *time.Time `db:"last_update_at" json:"last_update_at,omitempty"`
 }
 
 // PendingPkg represents an upgradeable Debian package identified via apt simulation.
@@ -692,6 +699,10 @@ type CheckinRequest struct {
 	// SourcePackages and ReleaseCodename feed CVE matching; optional for old agents.
 	SourcePackages  []ReportedPackage `json:"source_packages,omitempty"`
 	ReleaseCodename string            `json:"release_codename,omitempty"`
+	// AgentVersion is the build version of the reporting spired binary (internal/version.Version).
+	AgentVersion string `json:"agent_version,omitempty"`
+	// UpdateResult, when set, reports the outcome of the agent's most recent self-update attempt.
+	UpdateResult *AgentUpdateResult `json:"update_result,omitempty"`
 }
 
 // CheckinResponse is returned by POST /api/v1/desktop/checkin.
@@ -704,6 +715,10 @@ type CheckinResponse struct {
 	RevokedPolicies         []AssignedPolicy `json:"revoked_policies,omitempty"`
 	QueuedCommands          []CommandDTO     `json:"queued_commands,omitempty"`
 	ServerKEKPublicPEM      string           `json:"server_kek_public_pem,omitempty"`
+	// AgentUpdate tells the agent the target version and artifact to install, when the
+	// rollout engine has decided this device should update. Nil / Action=="none" means
+	// no update is pending.
+	AgentUpdate *AgentUpdateDirective `json:"agent_update,omitempty"`
 }
 
 // PolicyExecutionItem represents a single policy enforcement outcome reported by spired.

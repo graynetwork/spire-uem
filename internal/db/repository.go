@@ -166,7 +166,7 @@ func (r *Repository) Pool() *pgxpool.Pool {
 	return r.pool
 }
 
-const deviceSelectColumns = `id, hardware_uuid, hostname, status, tags, patch_ring, reboot_required, auth_token_hash, reported_state, last_checkin_at, has_tpm2, attestation_status, secure_boot_enabled, last_attested_at, ws_connected, last_ws_seen_at, created_at, updated_at`
+const deviceSelectColumns = `id, hardware_uuid, hostname, status, tags, patch_ring, reboot_required, auth_token_hash, reported_state, last_checkin_at, has_tpm2, attestation_status, secure_boot_enabled, last_attested_at, ws_connected, last_ws_seen_at, created_at, updated_at, agent_version, update_status, update_message, update_target, last_update_at`
 
 const deviceJoinedSelectColumns = `
 	d.id, d.hardware_uuid, d.hostname, d.status, d.tags, d.patch_ring,
@@ -176,7 +176,8 @@ const deviceJoinedSelectColumns = `
 	d.ws_connected, d.last_ws_seen_at, d.created_at, d.updated_at,
 	COALESCE(ps.pending_updates_count, 0) AS pending_updates_count,
 	COALESCE(ps.security_updates_count, 0) AS security_updates_count,
-	COALESCE(ps.reboot_required_pkgs, '{}') AS reboot_required_pkgs
+	COALESCE(ps.reboot_required_pkgs, '{}') AS reboot_required_pkgs,
+	d.agent_version, d.update_status, d.update_message, d.update_target, d.last_update_at
 `
 
 func scanDevice(row pgx.Row) (*types.Device, error) {
@@ -200,6 +201,11 @@ func scanDevice(row pgx.Row) (*types.Device, error) {
 		&d.LastWSSeenAt,
 		&d.CreatedAt,
 		&d.UpdatedAt,
+		&d.AgentVersion,
+		&d.UpdateStatus,
+		&d.UpdateMessage,
+		&d.UpdateTarget,
+		&d.LastUpdateAt,
 	)
 	if err != nil {
 		return nil, err
@@ -243,6 +249,11 @@ func scanDeviceWithPatch(row pgx.Row) (*types.Device, error) {
 		&d.PendingUpdatesCount,
 		&d.SecurityUpdatesCount,
 		&d.RebootRequiredPkgs,
+		&d.AgentVersion,
+		&d.UpdateStatus,
+		&d.UpdateMessage,
+		&d.UpdateTarget,
+		&d.LastUpdateAt,
 	)
 	if err != nil {
 		return nil, err
