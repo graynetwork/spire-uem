@@ -177,6 +177,8 @@
                 {{template "device_detail_page" .}}
             {{else if eq .ActiveNav "settings"}}
                 {{template "settings_content" .}}
+            {{else if eq .ActiveNav "account_security"}}
+                {{template "account_security_content" .}}
             {{end}}
         </main>
     </div>
