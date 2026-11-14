@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,8 +26,6 @@ import (
 // Repository provides data access operations backed by pgxpool.
 type Repository struct {
 	pool          *pgxpool.Pool
-	mu            sync.RWMutex
-	pendingTokens map[string]string
 	kekMgr        crypto.KeyEnvelopeManager
 }
 
@@ -48,7 +45,6 @@ func NewRepositoryWithKEK(pool *pgxpool.Pool, kekPath string) *Repository {
 	}
 	return &Repository{
 		pool:          pool,
-		pendingTokens: make(map[string]string),
 		kekMgr:        mgr,
 	}
 }
@@ -101,71 +97,66 @@ var ErrOIDCEmailConflict = errors.New("an account with this email already exists
 
 var ErrTokenAlreadyClaimed = errors.New("enrollment token already claimed; explicit admin re-approval required")
 
-// ApproveDevice transitions a device to APPROVED, stores its token hash, and stages the raw token for enrollment pickup.
+// ApproveDevice transitions a device to APPROVED and marks its bearer token as ready to
+// claim. No token exists until the agent claims it (see ClaimApprovedToken), so nothing
+// secret is held in memory and approval survives a server restart. Approving an already
+// approved device clears its current token, so the agent must enroll again.
+// The returned token string is always empty; it is kept for API compatibility.
 func (r *Repository) ApproveDevice(ctx context.Context, id string) (*types.Device, string, error) {
-	rawToken, tokenHash, err := GenerateToken()
-	if err != nil {
-		return nil, "", err
-	}
-	dev, err := r.UpdateDeviceStatus(ctx, id, types.StatusApproved, &tokenHash)
-	if err != nil || dev == nil {
-		return dev, "", err
-	}
-	r.mu.Lock()
-	r.pendingTokens[dev.ID] = rawToken
-	r.mu.Unlock()
-	return dev, rawToken, nil
-}
-
-// ClaimApprovedToken returns the staged bearer token for an APPROVED device, or returns ErrTokenAlreadyClaimed.
-// It executes within a pgx.Tx to ensure atomic status verification and token issuance.
-func (r *Repository) ClaimApprovedToken(ctx context.Context, dev *types.Device) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	tok, ok := r.pendingTokens[dev.ID]
-	if !ok || tok == "" {
-		return "", ErrTokenAlreadyClaimed
-	}
-
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return "", fmt.Errorf("begin claim transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	var currentStatus string
-	err = tx.QueryRow(ctx, `
+	const query = `
 		UPDATE devices
 		SET status = 'APPROVED',
+		    auth_token_hash = NULL,
+		    token_pending = TRUE,
 		    updated_at = NOW()
-		WHERE id = $1 AND status = 'APPROVED'
-		RETURNING status
-	`, dev.ID).Scan(&currentStatus)
+		WHERE id = $1
+		RETURNING ` + deviceSelectColumns
+	d, err := scanDevice(r.pool.QueryRow(ctx, query, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", nil
+	}
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", fmt.Errorf("device %s is not in approved state in database: %w", dev.ID, err)
-		}
-		return "", fmt.Errorf("update device status in tx: %w", err)
+		return nil, "", fmt.Errorf("approve device: %w", err)
 	}
+	return d, "", nil
+}
 
-	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("commit claim transaction: %w", err)
+// ClaimApprovedToken issues the bearer token for an APPROVED device whose token has not
+// been claimed yet, or returns ErrTokenAlreadyClaimed. Generating the token and clearing
+// token_pending happen in one UPDATE, so exactly one caller can win even with several
+// server instances.
+func (r *Repository) ClaimApprovedToken(ctx context.Context, dev *types.Device) (string, error) {
+	rawToken, tokenHash, err := GenerateToken()
+	if err != nil {
+		return "", err
 	}
-
-	delete(r.pendingTokens, dev.ID)
-	return tok, nil
+	var id string
+	err = r.pool.QueryRow(ctx, `
+		UPDATE devices
+		SET auth_token_hash = $2,
+		    token_pending = FALSE,
+		    updated_at = NOW()
+		WHERE id = $1 AND status = 'APPROVED' AND token_pending
+		RETURNING id
+	`, dev.ID, tokenHash).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrTokenAlreadyClaimed
+	}
+	if err != nil {
+		return "", fmt.Errorf("claim device token: %w", err)
+	}
+	return rawToken, nil
 }
 
 // RevokeDevice transitions a device to REVOKED and clears its auth_token_hash.
 func (r *Repository) RevokeDevice(ctx context.Context, id string) (*types.Device, error) {
-	r.mu.Lock()
-	delete(r.pendingTokens, id)
-	r.mu.Unlock()
 	// Release the enrollment key binding so a reinstalled agent (with a new key) can
 	// stage this device again and be re-approved.
 	if err := r.ClearEnrollmentKey(ctx, id); err != nil {
 		return nil, err
+	}
+	if _, err := r.pool.Exec(ctx, `UPDATE devices SET token_pending = FALSE WHERE id = $1`, id); err != nil {
+		return nil, fmt.Errorf("clear pending token: %w", err)
 	}
 	return r.UpdateDeviceStatus(ctx, id, types.StatusRevoked, nil)
 }
@@ -554,26 +545,13 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 		return nil, fmt.Errorf("get dashboard compliance metrics: %w", err)
 	}
 
-	metrics.NeedsUpdates = nonCompliantDevices
-	metrics.UpToDateHosts = metrics.ApprovedHosts - nonCompliantDevices
-	if metrics.UpToDateHosts < 0 {
-		metrics.UpToDateHosts = 0
-	}
 	metrics.CompliantHosts = compliantDevices
-	metrics.WarningHosts = metrics.NeedsUpdates
+	metrics.WarningHosts = nonCompliantDevices
 	metrics.CriticalHosts = metrics.FailedHosts + failedPolicies
-	if metrics.NeedsUpdates > 0 {
-		metrics.OutdatedPackages = metrics.NeedsUpdates * 3
-		metrics.SecurityUpdates = metrics.NeedsUpdates
-	} else {
-		metrics.OutdatedPackages = 0
-		metrics.SecurityUpdates = 0
-	}
 
-	metrics.UpdateStatus = types.UpdateStatusBreakdown{
-		UpToDate:     metrics.UpToDateHosts,
-		NeedsUpdates: metrics.NeedsUpdates,
-		Errored:      metrics.CriticalHosts,
+	// Update counts, OS, kernel and the trend come from agent-reported telemetry.
+	if err := r.fillPatchTelemetry(ctx, metrics); err != nil {
+		return nil, err
 	}
 
 	// Query top 5 most recently active endpoints
@@ -617,17 +595,6 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 			}
 		}
 	}
-	if len(metrics.RecentUsers) == 0 {
-		metrics.RecentUsers = append(metrics.RecentUsers, types.RecentUserActivity{
-			Username:    "Super Admin",
-			LastLoginAt: time.Now().UTC(),
-			LastLogin:   "Active now",
-		})
-	}
-
-	// OS Distribution Breakdown
-	metrics.OSDistribution["Debian 12 bookworm"] = metrics.TotalHosts
-	metrics.OSDistribution["Debian 11 bullseye"] = 0
 
 	// Benchmark Telemetry
 	if benchSummary, bErr := r.GetLatestFleetBenchmarkSummary(ctx); bErr == nil {

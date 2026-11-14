@@ -66,6 +66,8 @@ type ReportedState struct {
 	Flatpaks       []string  `json:"flatpaks,omitempty"`
 	ActiveSession  string    `json:"active_session"`
 	RebootRequired bool      `json:"reboot_required"`
+	OSName         string    `json:"os_name,omitempty"`
+	KernelVersion  string    `json:"kernel_version,omitempty"`
 	CheckedInAt    time.Time `json:"checked_in_at"`
 }
 
@@ -434,6 +436,8 @@ type CheckinRequest struct {
 	ActiveSession  string             `json:"active_session"`
 	RebootRequired bool               `json:"reboot_required"`
 	PatchStatus    *DevicePatchStatus `json:"patch_status,omitempty"`
+	OSName         string             `json:"os_name,omitempty"`
+	KernelVersion  string             `json:"kernel_version,omitempty"`
 }
 
 // CheckinResponse is returned by POST /api/v1/desktop/checkin.

@@ -193,6 +193,8 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		Flatpaks:       req.Flatpaks,
 		ActiveSession:  req.ActiveSession,
 		RebootRequired: req.RebootRequired,
+		OSName:         truncate(strings.TrimSpace(req.OSName), 128),
+		KernelVersion:  truncate(strings.TrimSpace(req.KernelVersion), 128),
 		CheckedInAt:    time.Now().UTC(),
 	}
 	if err := h.repo.RecordCheckin(r.Context(), hwUUID, reported); err != nil {
@@ -208,6 +210,8 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.repo.UpsertDevicePatchStatus(r.Context(), nil, req.PatchStatus); err != nil {
 			log.Printf("[api] warning: failed to upsert device patch status for %s: %v", dev.ID, err)
+		} else if err := h.repo.RefreshFleetPatchDaily(r.Context()); err != nil {
+			log.Printf("[api] warning: failed to refresh daily fleet patch totals: %v", err)
 		}
 	}
 
@@ -1064,3 +1068,11 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+
+// truncate shortens s to at most n bytes, for agent-reported free text stored server-side.
+func truncate(s string, n int) string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}

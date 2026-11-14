@@ -353,6 +353,7 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		_ = engine.NotifyDesktopRebootPending(ctx, "A system update applied by SpireUEM is awaiting a reboot.")
 	}
 
+	osInfo := inventory.GetOSInfo()
 	payload, _ := json.Marshal(types.CheckinRequest{
 		HardwareUUID:   hwUUID,
 		Hostname:       hostname,
@@ -361,6 +362,8 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		ActiveSession:  activeSession,
 		RebootRequired: rebootReq,
 		PatchStatus:    patchStatus,
+		OSName:         osInfo.Name,
+		KernelVersion:  osInfo.Kernel,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/checkin", bytes.NewReader(payload))

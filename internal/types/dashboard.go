@@ -24,6 +24,13 @@ type UpdateStatusBreakdown struct {
 	Errored      int `json:"errored"`
 }
 
+// PatchTrendPoint is one day of fleet-wide update totals.
+type PatchTrendPoint struct {
+	Day             string `json:"day"`
+	PendingUpdates  int    `json:"pending_updates"`
+	SecurityUpdates int    `json:"security_updates"`
+}
+
 // DashboardMetrics holds the aggregated 6-metric summary ribbon and telemetry cards.
 type DashboardMetrics struct {
 	// 6-Metric Stat Ribbon
@@ -56,6 +63,19 @@ type DashboardMetrics struct {
 	// Visualizations Data
 	OSDistribution map[string]int        `json:"os_distribution"`
 	UpdateStatus   UpdateStatusBreakdown `json:"update_status"`
+
+	// Patch telemetry reported by agents (device_patch_status).
+	PatchReportingHosts      int `json:"patch_reporting_hosts"`
+	HostsWithSecurityUpdates int `json:"hosts_with_security_updates"`
+	PatchFailedHosts         int `json:"patch_failed_hosts"`
+
+	// MostCommonOS and MostCommonKernel are the most frequent values agents reported,
+	// empty when no agent has reported one.
+	MostCommonOS     string `json:"most_common_os"`
+	MostCommonKernel string `json:"most_common_kernel"`
+
+	// PatchTrend holds one point per day for the last 30 days that have data.
+	PatchTrend []PatchTrendPoint `json:"patch_trend"`
 
 	// Benchmark Telemetry
 	BenchmarkSummary *BenchmarkSummary `json:"benchmark_summary,omitempty"`

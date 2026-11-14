@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/spire-uem/spire-uem/internal/version"
 	"html/template"
 	"io"
 	"log"
@@ -67,6 +68,17 @@ func (h *Handler) SetBundleStorageDir(dir string) {
 // NewHandler parses the embedded HTML templates and creates a Web UI Handler.
 func NewHandler(repo *db.Repository, hub *gateway.GatewayHub, auditor *audit.Forwarder) (*Handler, error) {
 	funcMap := template.FuncMap{
+		"appVersion": func() string { return version.Version },
+		"gatewayConnected": func() int {
+			if hub == nil {
+				return 0
+			}
+			return hub.ConnectedCount()
+		},
+		"toJSON": func(v any) (string, error) {
+			b, err := json.Marshal(v)
+			return string(b), err
+		},
 		"joinTags": func(tags []string) string {
 			return strings.Join(tags, ", ")
 		},
