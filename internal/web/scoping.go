@@ -110,6 +110,37 @@ func (h *Handler) DeviceScopeMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// deviceInScope reports whether the request's admin may act on deviceID. It is the check
+// for handlers whose device id does NOT come from an /admin/devices/{id} path (form or JSON
+// body fields, query strings, fleet-wide endpoints), which DeviceScopeMiddleware cannot see.
+// An unknown device is out of scope for a scoped admin (404, not 403, like the middleware).
+func (h *Handler) deviceInScope(r *http.Request, deviceID string) bool {
+	u := AdminUserObjFromContext(r.Context())
+	if !userIsTagScoped(u) {
+		return true
+	}
+	dev, err := h.repo.GetDeviceByID(r.Context(), strings.TrimSpace(deviceID))
+	if err != nil || dev == nil {
+		return false
+	}
+	return tagsIntersect(dev.Tags, u.AllowedTags)
+}
+
+// scopeDevices filters a device list to the request admin's tag scope.
+func scopeDevices(r *http.Request, devices []types.Device) []types.Device {
+	allowed, scoped := AllowedTagsForContext(r)
+	if !scoped {
+		return devices
+	}
+	out := make([]types.Device, 0, len(devices))
+	for _, d := range devices {
+		if tagsIntersect(d.Tags, allowed) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // deviceIDFromPath extracts the device id from a device-targeted admin URL path. It returns
 // (id, true) for /admin/devices/{id} and /admin/devices/{id}/<anything>, and ("", false)
 // for the list page /admin/devices (no id) and any non-device path. Keying off the URL path

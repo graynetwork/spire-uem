@@ -344,6 +344,8 @@ func (h *Handler) TriggerFleetScan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load devices", http.StatusInternalServerError)
 		return
 	}
+	// "Scan all" means all devices in the admin's tag scope.
+	devices = scopeDevices(r, devices)
 
 	profile := strings.TrimSpace(r.FormValue("profile"))
 	if profile == "" {
@@ -432,6 +434,13 @@ func (h *Handler) RemediateBenchmarkRule(w http.ResponseWriter, r *http.Request)
 		if summary, err := h.repo.GetLatestFleetBenchmarkSummary(r.Context()); err == nil && summary.LatestDeviceID != "" {
 			deviceID = summary.LatestDeviceID
 		}
+	}
+
+	// A scoped admin may only remediate devices in their tag scope (device id comes from
+	// the body or the latest fleet scan, never from the URL path).
+	if deviceID != "" && !h.deviceInScope(r, deviceID) {
+		denyOutOfScope(w, r)
+		return
 	}
 
 	// Check if policy already exists; if not, create active policy from template
@@ -708,6 +717,15 @@ func (h *Handler) ExportComplianceAudit(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[web] get compliance audit snapshot error: %v", err)
 		http.Error(w, "Failed to generate compliance audit snapshot", http.StatusInternalServerError)
 		return
+	}
+	if allowed, scoped := AllowedTagsForContext(r); scoped {
+		kept := records[:0]
+		for _, rec := range records {
+			if tagsIntersect(rec.DeviceTags, allowed) {
+				kept = append(kept, rec)
+			}
+		}
+		records = kept
 	}
 
 	ts := time.Now().UTC().Format("20060102-150405")
@@ -1128,6 +1146,13 @@ func (h *Handler) RevealLUKSRawRecoveryKey(w http.ResponseWriter, r *http.Reques
 
 	if reason == "" {
 		http.Error(w, "A ticket/justification reason is required to reveal a LUKS2 recovery key", http.StatusBadRequest)
+		return
+	}
+
+	// The device id may come from the request body (/api/v1/auth/recovery-key), which
+	// DeviceScopeMiddleware cannot see, so check tag scope here.
+	if !h.deviceInScope(r, id) {
+		denyOutOfScope(w, r)
 		return
 	}
 
@@ -1674,8 +1699,12 @@ func (h *Handler) ListPoliciesPage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[web] list devices error for policy inspector: %v", err)
 	}
+	devices = scopeDevices(r, devices)
 
 	selectedDeviceID := strings.TrimSpace(r.URL.Query().Get("device_id"))
+	if selectedDeviceID != "" && !h.deviceInScope(r, selectedDeviceID) {
+		selectedDeviceID = ""
+	}
 	var (
 		selectedDevice              *types.Device
 		selectedDevicePolicyDetails []types.DevicePolicyDetail
@@ -1735,6 +1764,9 @@ func (h *Handler) HostPoliciesCompliancePartial(w http.ResponseWriter, r *http.R
 	}
 
 	dev, err := h.repo.GetDeviceByID(r.Context(), deviceID)
+	if err == nil && dev != nil && !h.deviceInScope(r, dev.ID) {
+		dev = nil // out of scope reads exactly like "not found"
+	}
 	if err != nil || dev == nil {
 		_, _ = fmt.Fprint(w, `<div class="p-4 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-400 font-mono">Host not found or invalid device ID.</div>`)
 		return

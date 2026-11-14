@@ -179,6 +179,9 @@ func (h *Handler) ApproveWipe(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	requestID := chi.URLParam(r, "requestID")
 	adminUser := AdminUserFromContext(r.Context())
+	if !h.wipeRequestBelongsTo(w, r, requestID, id) {
+		return
+	}
 
 	wr, err := h.repo.ApproveWipeRequest(r.Context(), requestID, adminUser, 0)
 	if err != nil {
@@ -188,7 +191,7 @@ func (h *Handler) ApproveWipe(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditor != nil {
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "DEVICE_WIPE_APPROVE", id, r.RemoteAddr, map[string]any{
-			"request_id": requestID, "requested_by": derefStr(wr.ApprovedBy), "status": string(wr.Status),
+			"request_id": requestID, "requested_by": wr.RequestedBy, "status": string(wr.Status),
 		})
 	}
 	log.Printf("[web] AUDIT: WIPE APPROVED device=%s request=%s by=%s (signed order ready; cancellable until agent fetches it)", id, requestID, adminUser)
@@ -201,6 +204,9 @@ func (h *Handler) CancelWipe(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	requestID := chi.URLParam(r, "requestID")
 	adminUser := AdminUserFromContext(r.Context())
+	if !h.wipeRequestBelongsTo(w, r, requestID, id) {
+		return
+	}
 
 	wr, err := h.repo.CancelWipeRequest(r.Context(), requestID, adminUser)
 	if err != nil {
@@ -215,6 +221,19 @@ func (h *Handler) CancelWipe(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[web] AUDIT: WIPE CANCELLED device=%s request=%s by=%s", id, requestID, adminUser)
 	h.respondAction(w, r, id, map[string]any{"status": "wipe_cancelled", "device_id": id, "request_id": requestID})
+}
+
+// wipeRequestBelongsTo checks that the wipe request named in the URL is for the device named
+// in the same URL, so a request can only be approved or cancelled through its own device's
+// route: tag scoping and the audit trail both key off that device id. Writes a 404 and
+// returns false otherwise.
+func (h *Handler) wipeRequestBelongsTo(w http.ResponseWriter, r *http.Request, requestID, deviceID string) bool {
+	wr, err := h.repo.GetWipeRequestByID(r.Context(), requestID)
+	if err != nil || wr == nil || wr.DeviceID != deviceID {
+		http.Error(w, "wipe request not found for this device", http.StatusNotFound)
+		return false
+	}
+	return true
 }
 
 // writeWipeError maps the two-person workflow sentinel errors to clear HTTP responses.
