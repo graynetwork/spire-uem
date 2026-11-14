@@ -254,10 +254,14 @@ func TestOIDCService_AuthURLIncludesNonce(t *testing.T) {
 		t.Errorf("auth URL lacks nonce: %s", authURL)
 	}
 	svc.mu.RLock()
-	st := svc.stateStore[state]
+	store := svc.states
 	svc.mu.RUnlock()
-	if st.nonce == "" || !strings.Contains(authURL, "nonce="+st.nonce) {
-		t.Errorf("stored nonce %q not in auth URL", st.nonce)
+	st, found, err := store.Pop(context.Background(), state)
+	if err != nil || !found {
+		t.Fatalf("state not found in store (found=%v err=%v)", found, err)
+	}
+	if st.Nonce == "" || !strings.Contains(authURL, "nonce="+st.Nonce) {
+		t.Errorf("stored nonce %q not in auth URL", st.Nonce)
 	}
 }
 

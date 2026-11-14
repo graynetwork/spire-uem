@@ -185,6 +185,12 @@ func NewHandler(repo *db.Repository, hub *gateway.GatewayHub, auditor *audit.For
 		}
 	}
 	oidcSvc := auth.NewService(ssoSettings)
+	// In a multi-instance deployment the OIDC authorization-code flow's /login and
+	// /callback requests can land on different instances. Back the login state with
+	// Postgres so any instance can complete a sign-in started elsewhere.
+	if repo != nil {
+		oidcSvc.SetStateStore(auth.NewPostgresStateStore(repo))
+	}
 
 	return &Handler{
 		repo:             repo,
@@ -865,6 +871,17 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Operator tag scoping: a scoped operator only sees devices carrying one of their tags.
+	if allowed, scoped := AllowedTagsForContext(r); scoped {
+		filtered := devices[:0]
+		for _, d := range devices {
+			if tagsIntersect(d.Tags, allowed) {
+				filtered = append(filtered, d)
+			}
+		}
+		devices = filtered
+	}
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(devices)
@@ -1443,6 +1460,14 @@ func (h *Handler) UpdateDeviceTags(w http.ResponseWriter, r *http.Request) {
 		tags = parseCommaSeparatedTags(r.FormValue("tags"))
 	}
 
+	// Tag-escape prevention: a scoped operator may not set a tag list that would move the
+	// device out of their own scope (the middleware already verified it is currently in
+	// scope). Unscoped admins are unaffected.
+	if ok, reason := ScopedUpdatedTagsAllowed(AdminUserObjFromContext(r.Context()), tags); !ok {
+		http.Error(w, reason, http.StatusForbidden)
+		return
+	}
+
 	dev, err := h.repo.UpdateDeviceTags(r.Context(), id, tags)
 	if err != nil {
 		log.Printf("[web] update device tags %s error: %v", id, err)
@@ -1820,6 +1845,12 @@ func (h *Handler) DeviceTerminalWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GatewayHub not initialized", http.StatusServiceUnavailable)
 		return
 	}
+	// PTY streaming is not routed across instances. If this device's socket is held by a
+	// different instance, tell the operator to reconnect to that instance (sticky routing).
+	if owner, elsewhere := h.hub.DeviceOwnerInstance(r.Context(), id); elsewhere {
+		http.Error(w, fmt.Sprintf("device is connected to instance %q; interactive terminal requires a session on that instance. Configure the load balancer to pin /admin/devices/%s/terminal to instance %q (sticky routing), or retry until the load balancer routes you there.", owner, id, owner), http.StatusConflict)
+		return
+	}
 	h.hub.ServeAdminTerminal(w, r, id, AdminUserFromContext(r.Context()), h.auditor)
 }
 
@@ -1831,6 +1862,11 @@ func (h *Handler) RequestRemoteAssist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adminUser := AdminUserFromContext(r.Context())
+
+	if owner, elsewhere := h.hub.DeviceOwnerInstance(r.Context(), id); elsewhere {
+		http.Error(w, fmt.Sprintf("device is connected to instance %q; remote assist requires a session on that instance. Pin this request to instance %q (sticky routing) — see docs/ADMIN_RUNBOOK.md.", owner, owner), http.StatusConflict)
+		return
+	}
 
 	resp, err := h.hub.RequestRemoteAssist(r.Context(), id, adminUser)
 	if err != nil {
@@ -4109,6 +4145,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		req.DisplayName = strings.TrimSpace(r.FormValue("display_name"))
 		req.Password = strings.TrimSpace(r.FormValue("password"))
 		req.Role = types.AdminRole(strings.ToUpper(strings.TrimSpace(r.FormValue("role"))))
+		req.AllowedTags = parseCommaSeparatedTags(r.FormValue("allowed_tags"))
 	}
 
 	if req.Username == "" || req.Email == "" || req.Password == "" {
@@ -4185,6 +4222,12 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		if pass := strings.TrimSpace(r.FormValue("password")); pass != "" {
 			req.Password = &pass
 		}
+		// An explicit allowed_tags field (even empty) sets/clears the scope. We detect
+		// presence via Form so clearing all tags is possible.
+		if _, present := r.Form["allowed_tags"]; present {
+			tags := parseCommaSeparatedTags(r.FormValue("allowed_tags"))
+			req.AllowedTags = &tags
+		}
 	}
 
 	user, err := h.repo.UpdateAdminUser(r.Context(), id, req)
@@ -4196,9 +4239,10 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditor != nil {
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "USER_UPDATE", user.ID, r.RemoteAddr, map[string]any{
-			"username":  user.Username,
-			"role":      user.Role,
-			"is_active": user.IsActive,
+			"username":     user.Username,
+			"role":         user.Role,
+			"is_active":    user.IsActive,
+			"allowed_tags": user.AllowedTags,
 		})
 	}
 

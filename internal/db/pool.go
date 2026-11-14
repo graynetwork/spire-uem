@@ -3,10 +3,8 @@ package db
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,45 +45,20 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return nil, fmt.Errorf("ping database after retries: %w", lastErr)
 }
 
-// RunMigrations applies all *.up.sql files in the migrations directory idempotently in lexical order.
+// RunMigrations applies all pending *.up.sql migrations once each via the tracked
+// migration runner (schema_migrations ledger, advisory lock, per-file transaction,
+// checksum enforcement, first-run baseline). See MigrateUp for the full contract. The
+// signature is kept so existing callers (cmd/spire-server, tests) need no change.
 func RunMigrations(ctx context.Context, pool *pgxpool.Pool, migrationFile string) error {
 	if migrationFile == "" {
 		return nil
 	}
-
-	dir := migrationFile
-	info, err := os.Stat(migrationFile)
-	if err != nil {
+	if _, err := os.Stat(migrationFile); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return fmt.Errorf("stat migration path %s: %w", migrationFile, err)
 	}
-	if !info.IsDir() {
-		dir = filepath.Dir(migrationFile)
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("read migrations dir %s: %w", dir, err)
-	}
-
-	var sqlFiles []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".up.sql") {
-			sqlFiles = append(sqlFiles, filepath.Join(dir, entry.Name()))
-		}
-	}
-	sort.Strings(sqlFiles)
-
-	for _, file := range sqlFiles {
-		sqlBytes, err := os.ReadFile(file)
-		if err != nil {
-			return fmt.Errorf("read migration file %s: %w", file, err)
-		}
-		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", file, err)
-		}
-	}
-	return nil
+	_, err := MigrateUp(ctx, pool, migrationFile, log.Printf)
+	return err
 }

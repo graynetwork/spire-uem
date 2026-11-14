@@ -11,7 +11,10 @@ services:
       - "127.0.0.1:5432:5432"   # loopback only; never publish Postgres on all interfaces
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
+      # NOTE: the migrations directory is intentionally NOT mounted into
+      # /docker-entrypoint-initdb.d. The spire-server process owns migrations now (tracked
+      # schema_migrations ledger). Mounting it here would also run every *.down.sql in sort
+      # order on a fresh init, tearing the schema back down. See docs/ADMIN_RUNBOOK.md.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U spire -d spire_uem"]
       interval: 5s

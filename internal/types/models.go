@@ -957,6 +957,9 @@ type AdminUser struct {
 	IsActive     bool             `json:"is_active" db:"is_active"`
 	CreatedAt    time.Time        `json:"created_at" db:"created_at"`
 	LastLoginAt  *time.Time       `json:"last_login_at,omitempty" db:"last_login_at"`
+	// AllowedTags restricts an OPERATOR or SECURITY_ADMIN to devices carrying any of these
+	// tags. Empty means unrestricted. SUPER_ADMIN and AUDITOR are never tag-scoped.
+	AllowedTags []string `json:"allowed_tags" db:"allowed_tags"`
 }
 
 // OIDCGroupMapping maps an Identity Provider group claim to an administrative SpireUEM role.
@@ -985,6 +988,7 @@ type CreateUserRequest struct {
 	DisplayName string    `json:"display_name"`
 	Password    string    `json:"password"`
 	Role        AdminRole `json:"role"`
+	AllowedTags []string  `json:"allowed_tags,omitempty"`
 }
 
 // UpdateUserRequest defines payload to update an existing admin user.
@@ -993,6 +997,9 @@ type UpdateUserRequest struct {
 	Role        *AdminRole `json:"role,omitempty"`
 	IsActive    *bool      `json:"is_active,omitempty"`
 	Password    *string    `json:"password,omitempty"`
+	// AllowedTags, when non-nil, replaces the user's device-tag scope. A non-nil empty
+	// slice clears the scope (unrestricted).
+	AllowedTags *[]string `json:"allowed_tags,omitempty"`
 }
 
 
