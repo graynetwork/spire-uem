@@ -189,18 +189,28 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reported := types.ReportedState{
-		Packages:       req.Packages,
-		Flatpaks:       req.Flatpaks,
-		ActiveSession:  req.ActiveSession,
-		RebootRequired: req.RebootRequired,
-		OSName:         truncate(strings.TrimSpace(req.OSName), 128),
-		KernelVersion:  truncate(strings.TrimSpace(req.KernelVersion), 128),
-		CheckedInAt:    time.Now().UTC(),
+		Packages:        req.Packages,
+		Flatpaks:        req.Flatpaks,
+		ActiveSession:   req.ActiveSession,
+		RebootRequired:  req.RebootRequired,
+		OSName:          truncate(strings.TrimSpace(req.OSName), 128),
+		KernelVersion:   truncate(strings.TrimSpace(req.KernelVersion), 128),
+		CheckedInAt:     time.Now().UTC(),
+		SourcePackages:  req.SourcePackages,
+		ReleaseCodename: truncate(strings.ToLower(strings.TrimSpace(req.ReleaseCodename)), 64),
 	}
 	if err := h.repo.RecordCheckin(r.Context(), hwUUID, reported); err != nil {
 		log.Printf("[api] failed to record check-in for %s: %v", hwUUID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record check-in"})
 		return
+	}
+
+	// Incrementally recompute this device's CVE matches from its freshly reported
+	// inventory. Best-effort: a matching failure must not fail the check-in.
+	if len(reported.SourcePackages) > 0 && reported.ReleaseCodename != "" {
+		if err := h.repo.RecomputeDeviceCVEsFromState(r.Context(), dev.ID, reported); err != nil {
+			log.Printf("[api] warning: CVE rematch failed for device %s: %v", dev.ID, err)
+		}
 	}
 
 	if req.PatchStatus != nil {

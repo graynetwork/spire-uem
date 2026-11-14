@@ -80,4 +80,9 @@ type DashboardMetrics struct {
 	// Benchmark Telemetry
 	BenchmarkSummary *BenchmarkSummary `json:"benchmark_summary,omitempty"`
 	ActiveScans      []*BenchmarkScan  `json:"active_scans,omitempty"`
+
+	// CVE Telemetry: distinct CVEs the fleet is currently exposed to, and how many are
+	// high urgency. Real counts from device_cve_matches; 0 when the feed is unimported.
+	OpenCVEs        int `json:"open_cves"`
+	HighUrgencyCVEs int `json:"high_urgency_cves"`
 }

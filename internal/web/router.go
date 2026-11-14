@@ -91,6 +91,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Head("/compliance/export", h.ExportComplianceAudit)
 		r.Get("/audit/events", h.ListSystemAuditEventsJSON)
 
+		r.Get("/vulnerabilities", h.VulnerabilitiesPage)
+
 		r.Get("/patch-windows", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/policies", http.StatusFound)
 		})
@@ -125,6 +127,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 
 			r.Post("/benchmarks/scan-all", h.TriggerFleetScan)
 			r.Post("/benchmarks/remediate-rule", h.RemediateBenchmarkRule)
+
+			r.Post("/vulnerabilities/import", h.TriggerCVEFeedImport)
+			r.Post("/vulnerabilities/upload", h.UploadCVEFeed)
 
 			r.Post("/devices/{id}/approve", h.ApproveDevice)
 			r.Post("/devices/{id}/revoke", h.RevokeDevice)

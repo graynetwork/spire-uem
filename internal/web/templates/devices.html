@@ -973,6 +973,9 @@
     }
     </script>
 
+    <!-- Per-device CVE matches (Debian Security Tracker) -->
+    {{template "device_cve_section" .}}
+
     <!-- Expandable Reported Package Inventory -->
     {{if .Packages}}
     <details class="bg-[#0a0e17] border border-[#1a2234] rounded-md p-3">
