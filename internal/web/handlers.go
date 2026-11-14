@@ -2190,6 +2190,15 @@ func buildStructuredPolicyPayload(r *http.Request, policyType types.PolicyType) 
 		})
 		return b, err
 
+	case types.PolicyTypeFirewallRuleset:
+		return buildFirewallRulesetPayload(r)
+
+	case types.PolicyTypeLocalAccountPolicy:
+		return buildLocalAccountPolicyPayload(r)
+
+	case types.PolicyTypeTrustedCACerts:
+		return buildTrustedCACertificatesPayload(r)
+
 	default:
 		return nil, fmt.Errorf("unsupported policy_type: %s", policyType)
 	}

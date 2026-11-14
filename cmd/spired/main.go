@@ -436,6 +436,12 @@ func executePoliciesAndCleanup(
 			item = engine.EnforceSysctlPolicy(ctx, pol)
 		case types.PolicyTypeAptConfig:
 			item = engine.ReconcileAptConfig(ctx, pol)
+		case types.PolicyTypeFirewallRuleset:
+			item = engine.EnforceFirewallRuleset(ctx, pol)
+		case types.PolicyTypeLocalAccountPolicy:
+			item = engine.EnforceLocalAccountPolicy(ctx, pol)
+		case types.PolicyTypeTrustedCACerts:
+			item = engine.EnforceTrustedCACertificates(ctx, pol)
 		default:
 			out, _ := json.Marshal(map[string]string{"note": "unsupported policy type"})
 			item = types.PolicyExecutionItem{

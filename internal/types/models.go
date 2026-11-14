@@ -29,6 +29,10 @@ const (
 	PolicyFlatpakBundle       PolicyType = "FLATPAK_BUNDLE"
 	PolicyTypeSysctlSetting   PolicyType = "SYSCTL_SETTING"
 	PolicyTypeAptConfig       PolicyType = "APT_CONFIG"
+	// Policy types A: declarative host-hardening policies.
+	PolicyTypeFirewallRuleset   PolicyType = "FIREWALL_RULESET"
+	PolicyTypeLocalAccountPolicy PolicyType = "LOCAL_ACCOUNT_POLICY"
+	PolicyTypeTrustedCACerts     PolicyType = "TRUSTED_CA_CERTIFICATES"
 )
 
 // DeploymentRing represents the phased patch deployment ring of a device or policy.
@@ -303,6 +307,66 @@ type SysctlSettingPayload struct {
 type AptConfigPayload struct {
 	FileName string `json:"file_name"`
 	Content  string `json:"content"`
+}
+
+// FirewallInboundRule is a single allowed inbound rule inside a FIREWALL_RULESET policy.
+// Port and PortEnd express either a single port (PortEnd == 0) or an inclusive range.
+type FirewallInboundRule struct {
+	Proto     string `json:"proto"`                // "tcp" | "udp"
+	Port      int    `json:"port"`                 // 1-65535
+	PortEnd   int    `json:"port_end,omitempty"`   // optional range end; >= Port when set
+	SourceCIDR string `json:"source_cidr,omitempty"` // optional IPv4/IPv6 CIDR scoping the rule
+	Comment   string `json:"comment,omitempty"`
+}
+
+// FirewallRulesetPayload defines the payload for FIREWALL_RULESET (nftables) policies. The agent
+// renders a dedicated `table inet spire`, never touching other tables, validated with `nft -c`
+// and applied with `nft -f`. Outbound traffic is always left open so the agent keeps its server link.
+type FirewallRulesetPayload struct {
+	DefaultInbound    string                `json:"default_inbound"`               // "accept" | "drop"
+	AllowEstablished  bool                  `json:"allow_established"`             // allow ct state established,related
+	AllowLoopback     bool                  `json:"allow_loopback"`               // allow iif lo
+	AllowICMP         bool                  `json:"allow_icmp,omitempty"`         // allow icmp + icmpv6
+	InboundRules      []FirewallInboundRule `json:"inbound_rules,omitempty"`
+}
+
+// LocalAccountSudoersPayload is the managed /etc/sudoers.d/90-spire drop-in specification.
+type LocalAccountSudoersPayload struct {
+	Groups   []string `json:"groups,omitempty"` // group names granted sudo (prefixed with %)
+	Users    []string `json:"users,omitempty"`  // user names granted sudo
+	NoPasswd bool     `json:"nopasswd,omitempty"`
+}
+
+// LocalAccountPolicyPayload defines the payload for LOCAL_ACCOUNT_POLICY policies. It configures
+// pam_pwquality (password quality), pam_faillock (lockout), PASS_MAX_DAYS (login.defs), and a
+// managed sudoers drop-in. The agent uses Debian drop-in config files, never blind sed on pam.d.
+type LocalAccountPolicyPayload struct {
+	// Password quality (written to /etc/security/pwquality.conf.d/90-spire.conf).
+	PwqualityMinLen  int `json:"pwquality_minlen,omitempty"`  // minimum length; 0 = unset
+	PwqualityMinClass int `json:"pwquality_minclass,omitempty"` // minimum character classes 0-4
+
+	// Account lockout (written to /etc/security/faillock.conf).
+	FaillockDeny       int `json:"faillock_deny,omitempty"`        // failed attempts before lock; 0 = unset
+	FaillockUnlockTime int `json:"faillock_unlock_time,omitempty"` // seconds before auto-unlock; 0 = unset
+
+	// Password ageing for local users (written to /etc/login.defs drop-in semantics).
+	PassMaxDays int `json:"pass_max_days,omitempty"` // PASS_MAX_DAYS; 0 = unset
+
+	// Managed sudoers drop-in (/etc/sudoers.d/90-spire).
+	Sudoers *LocalAccountSudoersPayload `json:"sudoers,omitempty"`
+}
+
+// TrustedCACertificate is one PEM CA cert managed by a TRUSTED_CA_CERTIFICATES policy.
+type TrustedCACertificate struct {
+	Name string `json:"name"` // logical file base name (becomes spire/<name>.crt)
+	PEM  string `json:"pem"`  // PEM-encoded CA certificate
+}
+
+// TrustedCACertificatesPayload defines the payload for TRUSTED_CA_CERTIFICATES policies. The agent
+// writes each cert to /usr/local/share/ca-certificates/spire/<name>.crt, runs update-ca-certificates,
+// and removes spire-managed certs no longer listed. Compliance is reported by SHA-256 fingerprint.
+type TrustedCACertificatesPayload struct {
+	Certificates []TrustedCACertificate `json:"certificates"`
 }
 
 // SystemdServicePayload defines the payload for SYSTEMD_SERVICE policies.
