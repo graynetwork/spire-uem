@@ -238,3 +238,94 @@ curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/comp
 # Export JSON Audit Report
 curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
 ```
+
+---
+
+## 7. Declarative Host-Hardening Policy Types (A)
+
+Three declarative policy types extend the desired-state engine. All three are created from
+**Admin → Policies → Create Baseline Policy** (select the type in the **Policy Type** dropdown), or
+via `POST /admin/policies` (SECURITY_ADMIN / SUPER_ADMIN, CSRF-protected). The payload is validated at
+the server trust boundary before storage; the agent (`spired`) enforces it on check-in, detects drift,
+reasserts desired state, and — when a policy is unassigned/revoked (`RevokedPolicies` in the check-in
+response) — removes **only** what it created.
+
+### 7.1 `FIREWALL_RULESET` (nftables)
+Renders a dedicated `table inet spire` and nothing else. The agent validates the rendered ruleset with
+`nft -c -f` before applying it with `nft -f`, then verifies by reading back `nft list table inet spire`.
+Other nftables tables are never touched, and **outbound traffic is deliberately left unmanaged (open)**
+so the agent never severs its own control-plane connection — document and account for this when planning
+egress controls elsewhere.
+
+Payload fields:
+- `default_inbound` — `"accept"` or `"drop"` (the input-chain base policy).
+- `allow_established` — allow `ct state established,related`.
+- `allow_loopback` — allow `iif lo`.
+- `allow_icmp` — allow ICMP and ICMPv6.
+- `inbound_rules[]` — `{proto: "tcp"|"udp", port, port_end?, source_cidr?, comment?}`. Ports must be
+  1–65535; `port_end` ≥ `port` when set; `source_cidr` must be a valid IPv4/IPv6 CIDR. The UI also accepts
+  a line form: `<tcp|udp> <port[-portEnd]> [source_cidr] [# comment]`.
+
+Drift: if someone flushes or alters `table inet spire`, the next check-in reports `NON_COMPLIANT` and
+re-applies. Revoke deletes `/etc/nftables.d/spire.nft` and runs `nft delete table inet spire`.
+
+Verify on an endpoint:
+```bash
+sudo nft list table inet spire
+cat /etc/nftables.d/spire.nft
+```
+
+### 7.2 `LOCAL_ACCOUNT_POLICY`
+Configures local account controls using **Debian 12 drop-in config files** — never blind `sed` on
+`/etc/pam.d/*`. The `common-auth`/`common-password` PAM stacks remain owned by `pam-auth-update`.
+
+Payload fields (all optional; omit to leave unmanaged):
+- `pwquality_minlen`, `pwquality_minclass` → `/etc/security/pwquality.conf.d/90-spire.conf` (pam_pwquality).
+- `faillock_deny`, `faillock_unlock_time` → `/etc/security/faillock.conf` (pam_faillock lockout).
+- `pass_max_days` → a SpireUEM-delimited managed block in `/etc/login.defs` (`PASS_MAX_DAYS`), added/updated
+  non-destructively around existing content.
+- `sudoers` → `{groups[], users[], nopasswd}` written to `/etc/sudoers.d/90-spire`, **validated with
+  `visudo -cf` before install** and installed mode `0440`. A payload that `visudo` rejects is refused and
+  the live drop-in is left untouched.
+
+Revoke removes the two `security/*` drop-ins, strips the managed `login.defs` block, and removes the
+sudoers drop-in.
+
+Verify:
+```bash
+cat /etc/security/pwquality.conf.d/90-spire.conf
+cat /etc/security/faillock.conf
+grep -A2 'SpireUEM LOCAL_ACCOUNT_POLICY' /etc/login.defs
+sudo cat /etc/sudoers.d/90-spire && sudo visudo -cf /etc/sudoers.d/90-spire
+```
+
+### 7.3 `TRUSTED_CA_CERTIFICATES`
+Distributes PEM CA certificates to the system trust store. The server validates that every PEM parses as
+a **CA certificate** (`BasicConstraints CA=true`) and surfaces the parse error otherwise. The agent writes
+each cert to `/usr/local/share/ca-certificates/spire/<name>.crt`, runs `update-ca-certificates`, removes
+any spire-managed cert no longer present in the policy, and reports compliance by SHA-256 fingerprint.
+
+Payload: `{certificates: [{name, pem}, ...]}`. `name` must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (becomes
+`<name>.crt`) and be unique within the policy. The UI takes a single `name`+PEM pair; for multiple CAs use
+the Raw JSON Payload Override with the `certificates` array.
+
+Revoke removes every spire-managed cert under `.../spire/` and refreshes the trust store.
+
+Verify:
+```bash
+ls -la /usr/local/share/ca-certificates/spire/
+openssl x509 -in /usr/local/share/ca-certificates/spire/<name>.crt -noout -subject -enddate -fingerprint -sha256
+trust list | grep -i <subject>   # or: ls -la /etc/ssl/certs | grep -i spire
+```
+
+### 7.4 Testing engines without root
+All three agent engines inject a filesystem root and a command runner so their unit tests run unprivileged
+in temp dirs with fake `nft` / `visudo` / `update-ca-certificates` output. They never execute these tools
+against the real host during tests. See `internal/engine/firewall_test.go`, `local_account_test.go`, and
+`trusted_ca_test.go`.
+
+### 7.5 Database migrations
+The three types are added to the `policy_type` Postgres enum by idempotent migrations
+`000029_add_firewall_and_local_account_policy_types.up.sql` and
+`000030_add_trusted_ca_certificates_policy_type.up.sql` (`ALTER TYPE ... ADD VALUE IF NOT EXISTS`),
+re-applied safely on every server start.

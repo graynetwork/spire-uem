@@ -161,6 +161,9 @@
                         <option value="FLATPAK_APP">FLATPAK_APP (Flatpak Application)</option>
                         <option value="DCONF_SETTING">DCONF_SETTING (Desktop gsettings/dconf)</option>
                         <option value="SYSTEMD_SERVICE">SYSTEMD_SERVICE (Systemd Unit)</option>
+                        <option value="FIREWALL_RULESET">FIREWALL_RULESET (nftables inbound firewall)</option>
+                        <option value="LOCAL_ACCOUNT_POLICY">LOCAL_ACCOUNT_POLICY (password/lockout/sudoers)</option>
+                        <option value="TRUSTED_CA_CERTIFICATES">TRUSTED_CA_CERTIFICATES (system trust anchors)</option>
                     </select>
                 </div>
                 <div>
@@ -304,6 +307,104 @@
                 </div>
             </div>
 
+            <!-- Firewall Ruleset Fields (nftables, table inet spire) -->
+            <div id="fields-firewall" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <p class="text-[11px] text-slate-500">Renders a dedicated <code class="text-slate-400 font-mono">table inet spire</code> only. Outbound traffic is always left open so the agent keeps its control-plane link.</p>
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Default Inbound Policy</label>
+                        <select name="fw_default_inbound" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                            <option value="drop">drop (deny by default)</option>
+                            <option value="accept">accept (allow by default)</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="fw_allow_established" value="true" checked class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>Allow established/related</span>
+                        </label>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="fw_allow_loopback" value="true" checked class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>Allow loopback</span>
+                        </label>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="fw_allow_icmp" value="true" class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>Allow ICMP / ICMPv6</span>
+                        </label>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Allowed Inbound Rules</label>
+                    <textarea name="fw_rules" rows="4" placeholder="One rule per line: &lt;tcp|udp&gt; &lt;port[-portEnd]&gt; [source_cidr] [# comment]&#10;tcp 22 10.0.0.0/8 # ssh from mgmt&#10;udp 51820&#10;tcp 8000-8010"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"></textarea>
+                    <p class="text-[10px] text-slate-500 mt-1">Ports and CIDRs are validated server-side before the policy is saved.</p>
+                </div>
+            </div>
+
+            <!-- Local Account Policy Fields -->
+            <div id="fields-local-account" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <p class="text-[11px] text-slate-500">Uses Debian drop-in config (<code class="text-slate-400 font-mono">pwquality.conf.d</code>, <code class="text-slate-400 font-mono">faillock.conf</code>, <code class="text-slate-400 font-mono">login.defs</code>, <code class="text-slate-400 font-mono">sudoers.d/90-spire</code>). Leave a field blank to leave it unmanaged.</p>
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Password min length</label>
+                        <input type="number" name="la_minlen" min="0" max="255" placeholder="14" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Min char classes</label>
+                        <input type="number" name="la_minclass" min="0" max="4" placeholder="3" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Lockout after (fails)</label>
+                        <input type="number" name="la_faillock_deny" min="0" max="1000" placeholder="5" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Unlock after (sec)</label>
+                        <input type="number" name="la_faillock_unlock" min="0" placeholder="900" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Password max age (days)</label>
+                        <input type="number" name="la_pass_max_days" min="0" max="99999" placeholder="365" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Sudo groups (comma/space)</label>
+                        <input type="text" name="la_sudo_groups" placeholder="sudo, admins" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Sudo users (comma/space)</label>
+                        <input type="text" name="la_sudo_users" placeholder="ops" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="la_sudo_nopasswd" value="true" class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>NOPASSWD (no password for sudo)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trusted CA Certificates Fields -->
+            <div id="fields-trusted-ca" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <p class="text-[11px] text-slate-500">Each PEM is validated as a CA certificate server-side, installed to <code class="text-slate-400 font-mono">/usr/local/share/ca-certificates/spire/</code>, and converged with <code class="text-slate-400 font-mono">update-ca-certificates</code>.</p>
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div class="sm:col-span-1">
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Certificate name</label>
+                        <input type="text" name="ca_name" placeholder="corp-root" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div class="sm:col-span-3">
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">PEM certificate</label>
+                        <textarea name="ca_pem" rows="5" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                            class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white focus:outline-none focus:border-blue-500"></textarea>
+                    </div>
+                </div>
+                <p class="text-[10px] text-slate-500">For multiple CAs, use the Raw JSON Payload Override below with <code class="text-slate-400 font-mono">{"certificates":[{"name":"...","pem":"..."}]}</code>.</p>
+            </div>
+
             <!-- Optional Raw JSON Payload Override -->
             <div>
                 <label class="block text-[11px] font-medium text-slate-500 mb-1">Raw JSON Payload Override (Optional)</label>
@@ -400,10 +501,16 @@ function togglePolicyFields(policyType) {
     const flatpak = document.getElementById('fields-flatpak');
     const dconf = document.getElementById('fields-dconf');
     const sysd = document.getElementById('fields-systemd');
+    const firewall = document.getElementById('fields-firewall');
+    const localAccount = document.getElementById('fields-local-account');
+    const trustedCA = document.getElementById('fields-trusted-ca');
     pkg.classList.add('hidden');
     flatpak.classList.add('hidden');
     dconf.classList.add('hidden');
     sysd.classList.add('hidden');
+    firewall.classList.add('hidden');
+    localAccount.classList.add('hidden');
+    trustedCA.classList.add('hidden');
 
     if (policyType === 'PACKAGE_ABSENCE' || policyType === 'PACKAGE_PRESENCE') {
         pkg.classList.remove('hidden');
@@ -413,6 +520,12 @@ function togglePolicyFields(policyType) {
         dconf.classList.remove('hidden');
     } else if (policyType === 'SYSTEMD_SERVICE') {
         sysd.classList.remove('hidden');
+    } else if (policyType === 'FIREWALL_RULESET') {
+        firewall.classList.remove('hidden');
+    } else if (policyType === 'LOCAL_ACCOUNT_POLICY') {
+        localAccount.classList.remove('hidden');
+    } else if (policyType === 'TRUSTED_CA_CERTIFICATES') {
+        trustedCA.classList.remove('hidden');
     }
 }
 
