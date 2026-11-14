@@ -436,6 +436,12 @@ func executePoliciesAndCleanup(
 			item = engine.EnforceSysctlPolicy(ctx, pol)
 		case types.PolicyTypeAptConfig:
 			item = engine.ReconcileAptConfig(ctx, pol)
+		case types.PolicyTypeNetworkProfile:
+			item = engine.EnforceNetworkProfilePolicy(ctx, pol)
+		case types.PolicyTypeUSBDeviceControl:
+			item = engine.ReconcileUSBDeviceControl(ctx, pol)
+		case types.PolicyTypeAuditdRules:
+			item = engine.EnforceAuditdRulesPolicy(ctx, pol)
 		default:
 			out, _ := json.Marshal(map[string]string{"note": "unsupported policy type"})
 			item = types.PolicyExecutionItem{

@@ -238,3 +238,89 @@ curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/comp
 # Export JSON Audit Report
 curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
 ```
+
+
+## 7. Declarative Policy Types: NETWORK_PROFILE, USB_DEVICE_CONTROL, AUDITD_RULES
+
+These three desired-state policy types are authored from **Admin → Policies → Custom Baseline
+Policy Creator** (pick the type in the *Policy Type* dropdown) or via the JSON API
+(`POST /admin/policies` with `policy_type` + `payload`). Each is enforced by `spired` on every
+check-in, reports drift, and is cleanly removed when the policy is revoked. No new admin routes,
+nav entries, or env vars are introduced.
+
+### 7.1 NETWORK_PROFILE (NetworkManager)
+
+Pushes a NetworkManager keyfile to `/etc/NetworkManager/system-connections/spire-<policy_id>.nmconnection`
+(mode `0600`, root), runs `nmcli connection reload`, and verifies the connection loaded. On revoke,
+**only** the spire-owned keyfile for that policy is removed (other profiles are never touched).
+
+Three `kind`s:
+
+- **`wifi`** — SSID + security:
+  - `wpa2-personal` / `wpa3-personal`: pre-shared key (8–63 chars).
+  - `wpa2-enterprise` / `wpa3-enterprise` (802.1X): EAP method `peap-mschapv2` (identity + password)
+    or `tls` (client cert + key, optional CA). CA/client certs are supplied as PEM text.
+- **`wired_8021x`** — wired 802.1X, same EAP options as enterprise Wi-Fi.
+- **`wireguard`** — interface address(es), DNS, and one or more peers (peer public key, endpoint,
+  allowed IPs, optional preshared key).
+
+**WireGuard key handling (important):** the server **never** holds a device WireGuard private key.
+The agent generates an X25519 private key **on the device**, writes it into the keyfile, and reports
+the derived **public key** back in its compliance `execution_output` (field
+`wireguard_public_key`), visible in the **Host Policy Inspector** compliance row. The admin reads
+that public key and registers the device as a peer on the WireGuard server. The device private key
+is stable across convergence cycles (it is not regenerated once a valid keyfile exists).
+
+**Secret handling (PSK / EAP password / peer PSK):**
+- **At rest:** sealed with the server's RSA-OAEP-4096 + AES-256-GCM KEK envelope (the same scheme as
+  LUKS recovery-key escrow) before the policy payload is persisted. The stored payload holds only
+  ciphertext, and the admin UI never displays a secret back after save.
+- **In transit:** the server unseals secrets **just-in-time** when building a device's check-in
+  response, so only the authenticated agent receives plaintext. **The control-plane binary serves
+  plain HTTP**; transport confidentiality for the check-in channel (and therefore for these
+  secrets) depends on the deployment's TLS-terminating reverse proxy (set `SPIRE_TRUST_PROXY=true`
+  and, for redirect enforcement, `enforce_https`). Terminate TLS at the proxy in any environment
+  carrying network secrets. EAP-TLS client **private keys** are delivered in the payload the same
+  way (plaintext only to the agent over the proxied channel); treat the proxy as mandatory.
+
+### 7.2 USB_DEVICE_CONTROL (usbguard)
+
+Writes `/etc/usbguard/rules.conf` (mode `0600`), validates it with `usbguard read-rules`, and makes a
+best-effort `systemctl enable --now usbguard`. Modes:
+
+- **`allow_all`** — permit everything (control effectively disabled while keeping the policy).
+- **`block_new`** — block devices not matched by an allow-list entry.
+
+On **first apply** in `block_new` mode the agent runs `usbguard generate-policy` and **grandfathers
+the currently-connected devices** into the rules file, so nothing already plugged in is cut off; the
+grandfathered block is preserved on later convergence (no re-generation churn).
+
+Allow-list entries match by `vendor_id[:product_id]`, optional `serial`, or interface `device_class`
+(2 hex digits, e.g. `03` = HID). **HID (keyboards/mice) is allowed by default** (`allow_hid=true`) so
+admins cannot lock users out of their own input devices; the UI shows a lockout **warning** if that
+box is unticked. On revoke, the spire-managed `rules.conf` is removed.
+
+### 7.3 AUDITD_RULES (auditd / augenrules)
+
+Writes `/etc/audit/rules.d/90-spire.rules` (mode `0640`), validates with `augenrules --check`, loads
+with `augenrules --load`, and reports drift. **Only** `90-spire.rules` is ever written or removed;
+other fragments in `rules.d` are left untouched. On revoke the managed file is removed and rules
+reloaded.
+
+A policy is any combination of:
+- **Presets** (CIS-style bundles): `identity` (passwd/group/shadow/gshadow), `sudoers`,
+  `time_change` (adjtimex/settimeofday/clock_settime + `/etc/localtime`), `module_loading`
+  (insmod/rmmod/modprobe + init_module/delete_module).
+- **Watch rules**: `<path> <perms rwxa> <key>`.
+- **Syscall rules**: `<action,filter> <syscall[,syscall…]> <key>` with optional `-F` field filters.
+
+All paths, perms, keys, syscall names, and `-F` field expressions are validated against strict
+allowlists at the trust boundary (both in the admin form and in the agent engine) to prevent
+injection; unknown presets are rejected.
+
+### 7.4 Agent testability
+
+All three engines inject their filesystem root and a command runner, so unit tests exercise
+apply / verify / drift / remove against temp dirs with fake `nmcli` / `usbguard` / `augenrules`
+output and **never** touch the real host network, USB, or audit subsystem. See
+`internal/engine/{network_profile,usb_device_control,auditd_rules}_test.go`.

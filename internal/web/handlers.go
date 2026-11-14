@@ -1934,6 +1934,17 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// policy-types-b: seal any plaintext secrets in the payload (e.g. NETWORK_PROFILE PSK / EAP
+	// password) with the server KEK before persistence, so the stored payload and the admin UI
+	// never hold plaintext. No-op for policy types without secrets.
+	if sealed, serr := h.sealPolicyPayloadSecrets(policyType, payloadRaw); serr != nil {
+		log.Printf("[web] seal policy secrets error: %v", serr)
+		http.Error(w, "Failed to secure policy secrets", http.StatusInternalServerError)
+		return
+	} else {
+		payloadRaw = sealed
+	}
+
 	pol, err := h.repo.CreatePolicyWithAssignment(
 		r.Context(),
 		name,
@@ -2189,6 +2200,13 @@ func buildStructuredPolicyPayload(r *http.Request, policyType types.PolicyType) 
 			Content:  content,
 		})
 		return b, err
+
+	case types.PolicyTypeNetworkProfile:
+		return buildNetworkProfilePayload(r)
+	case types.PolicyTypeUSBDeviceControl:
+		return buildUSBDeviceControlPayload(r)
+	case types.PolicyTypeAuditdRules:
+		return buildAuditdRulesPayload(r)
 
 	default:
 		return nil, fmt.Errorf("unsupported policy_type: %s", policyType)

@@ -222,6 +222,10 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// policy-types-b: unseal payload secrets (e.g. NETWORK_PROFILE PSK / EAP password) just-in-time
+	// so only the agent receives plaintext, over the deployment's TLS-terminating proxy.
+	h.unsealPolicyPayloadSecrets(policies)
+
 	revokedPolicies, err := h.repo.GetRevokedPoliciesForDevice(r.Context(), dev.ID)
 	if err != nil {
 		log.Printf("[api] warning: failed to fetch revoked policies for %s: %v", dev.ID, err)
