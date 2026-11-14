@@ -31,6 +31,7 @@ type Handler struct {
 	repo             *db.Repository
 	hub              *gateway.GatewayHub
 	bundleStorageDir string
+	artifacts        *artifactResolver
 }
 
 // NewHandler creates a new API Handler.
@@ -38,6 +39,7 @@ func NewHandler(repo *db.Repository) *Handler {
 	return &Handler{
 		repo:             repo,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
+		artifacts:        newArtifactResolver("dist"),
 	}
 }
 
@@ -47,6 +49,15 @@ func NewHandlerWithHub(repo *db.Repository, hub *gateway.GatewayHub) *Handler {
 		repo:             repo,
 		hub:              hub,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
+		artifacts:        newArtifactResolver("dist"),
+	}
+}
+
+// SetDistDir configures the directory holding the agent .deb packages the server serves and
+// hashes for self-update. Defaults to "dist" (CWD-relative, matching ServeDebPackage).
+func (h *Handler) SetDistDir(dir string) {
+	if trimmed := strings.TrimSpace(dir); trimmed != "" {
+		h.artifacts = newArtifactResolver(trimmed)
 	}
 }
 
@@ -203,6 +214,9 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Agent version tracking + self-update result (best-effort; never blocks check-in).
+	h.handleAgentVersionReporting(r, dev, &req)
+
 	if req.PatchStatus != nil {
 		req.PatchStatus.DeviceID = dev.ID
 		if req.RebootRequired {
@@ -243,6 +257,7 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		RevokedPolicies:         revokedPolicies,
 		QueuedCommands:          queuedCommands,
 		ServerKEKPublicPEM:      h.repo.KEKPublicPEM(),
+		AgentUpdate:             h.computeAgentUpdateDirective(r, dev, req.AgentVersion),
 	})
 }
 

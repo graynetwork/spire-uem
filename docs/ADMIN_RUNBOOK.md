@@ -238,3 +238,73 @@ curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/comp
 # Export JSON Audit Report
 curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
 ```
+
+## 7. Agent Version Tracking & Self-Update
+
+Each `spired` agent reports its build version on every check-in. The server stores it per
+device, drives a version-based rollout per patch ring, and can refuse agents below a minimum
+supported version. Agents below the target download and install the new `.deb` themselves.
+
+### 7.1 How version reporting works
+On every `POST /api/v1/desktop/checkin` the agent sends its version (in the body and the
+`X-Spire-Agent-Version` header). The value is stored on the device and shown as a badge on
+`/admin/devices` (under the hostname) and on the device detail drawer, alongside the result
+of its last self-update attempt.
+
+- A build with no injected version reports `dev`. **`dev` is treated as unknown**: it is
+  never auto-updated and never refused. From-source / developer builds are therefore never
+  driven by the rollout engine. The build version is injected by the Makefile `VERSION` via
+  `-ldflags` into `internal/version.Version`.
+
+### 7.2 Rollout control (Settings → Agent Rollout, SUPER_ADMIN only)
+Edit under **Settings → Agent Rollout** (`SUPER_ADMIN` role required; the save is CSRF-guarded
+and audited). Backed by `system_settings` rows (migration `000026`):
+
+| Setting key | Meaning |
+|---|---|
+| `rollout.target_version.CANARY` / `.BETA` / `.PILOT` / `.PRODUCTION` | Target agent version for that patch ring, or `none` to disable auto-update for the ring. |
+| `rollout.minimum_version` | Agents strictly below this are refused on gated check-in endpoints with **HTTP 426**. Empty disables the floor. |
+
+Rollout decision per device (ring from its `DeploymentRing`):
+- Agent version **< target** → check-in response carries an `agent_update` directive
+  `{version, url, sha256, size}`. No downgrade: agent **≥ target** gets no directive.
+- Agent version **< minimum** → still gets the update directive on `/checkin` (so it can
+  self-heal — **no deadlock**), but any *other* gated agent endpoint (`/report`,
+  `/commands/report`, `/benchmarks/report`, etc.) returns `426 Upgrade Required` with
+  `{"error":...,"minimum_version":"..."}`. `/checkin` and the public `/dist/*` download path
+  are **never** 426-gated, so an outdated agent can always update.
+- `none` / empty / `dev` target → no constraint.
+
+### 7.3 Update delivery and the artifact descriptor
+The server computes the SHA-256 of the `.deb` it serves from its dist directory (default
+`dist/`, overridable with the **`SPIRE_DIST_DIR`** env var — must match where the release
+`.deb` is placed, same dir `/dist/*.deb` is served from). The hash is **cached by file
+mtime** and recomputed when the file changes.
+
+The agent downloads the artifact over the same server connection with its bearer token,
+and **verifies size and SHA-256 BEFORE installing**. A size or hash mismatch aborts the
+install. The install runs detached in a transient `systemd-run --unit spire-agent-update`
+unit (falling back to a `setsid`-detached `dpkg -i` where systemd is absent) so the agent
+does **not** kill itself when the package restart cycles `spired.service`. The update is only
+applied inside an active maintenance window. The agent reports `SUCCESS`/`FAILED` + a message
+back on its next check-in; a failed update backs off (no hot retry loop).
+
+### 7.4 Integrity — read this before trusting the hash
+The SHA-256 in the descriptor is fetched from the **same server** that serves the `.deb`, so
+it protects against **transport corruption / truncation, not a compromised server**: an
+attacker who controls the server controls both the artifact and its advertised hash. The APT
+repo served at `/apt/*` is **unsigned** (no GPG `Release.gpg`/`InRelease` in this build). For
+a deployment where the control plane is plain HTTP, terminate TLS at a trusted reverse proxy
+(see §4) and treat server compromise as out of scope for this mechanism.
+
+### 7.5 Operator steps to publish a new agent version
+1. Build the new agent `.deb` and place it in the server's dist dir (`SPIRE_DIST_DIR`, default
+   `dist/`). Confirm it is reachable at `GET /dist/<file>.deb`.
+2. In **Settings → Agent Rollout**, set the target version for the ring(s) you want to roll to
+   (start with `CANARY`, promote outward). Optionally raise `rollout.minimum_version`.
+3. Watch the version badges on `/admin/devices` advance as agents check in and self-update;
+   failed updates surface on the device drawer with their error message.
+
+**Limits / out of scope:** no artifact signing (unsigned repo, see §7.4); the agent updates
+to exactly the ring target (no partial/percentage rollout within a ring beyond ring
+membership); `dev` builds are intentionally never touched.

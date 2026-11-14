@@ -236,6 +236,11 @@
             {{end}}
         </div>
         <div class="text-[10px] text-slate-600 font-mono mt-0.5">{{slice .ID 0 8}}</div>
+        <div class="text-[10px] font-mono mt-0.5">
+            <span class="text-slate-500">agent</span>
+            {{if .AgentVersion}}<span class="text-slate-300">{{.AgentVersion}}</span>{{else}}<span class="text-slate-600">unreported</span>{{end}}
+            {{if eq .UpdateStatus "FAILED"}}<span class="text-rose-400">· update failed</span>{{else if eq .UpdateStatus "PENDING"}}<span class="text-amber-400">· updating → {{.UpdateTarget}}</span>{{end}}
+        </div>
     </td>
     <td class="px-4 py-3 whitespace-nowrap font-mono text-xs text-slate-400">
         {{if .HardwareUUID}}{{slice .HardwareUUID 0 13}}...{{else}}-{{end}}
@@ -488,6 +493,19 @@
             <div class="text-[11px] font-medium text-slate-400">Active Session (seat0)</div>
             <div class="text-sm font-mono text-slate-200 mt-1 truncate">{{.ActiveSession}}</div>
             <div class="text-[10px] text-slate-500 mt-0.5">loginctl detector</div>
+        </div>
+        <div class="p-3 rounded-md bg-[#141b2a] border border-[#1a2234]">
+            <div class="text-[11px] font-medium text-slate-400">Agent Version</div>
+            <div class="text-sm font-mono font-semibold text-white mt-1 truncate">{{if .Device.AgentVersion}}{{.Device.AgentVersion}}{{else}}<span class="text-slate-500">unreported</span>{{end}}</div>
+            {{if .Device.UpdateStatus}}
+                <div class="text-[10px] font-mono mt-0.5
+                    {{if eq .Device.UpdateStatus "SUCCESS"}}text-emerald-400{{else if eq .Device.UpdateStatus "FAILED"}}text-rose-400{{else}}text-amber-400{{end}}">
+                    Update: {{.Device.UpdateStatus}}{{if .Device.UpdateTarget}} → {{.Device.UpdateTarget}}{{end}}
+                </div>
+                {{if .Device.UpdateMessage}}<div class="text-[10px] font-mono text-slate-500 mt-0.5 truncate" title="{{.Device.UpdateMessage}}">{{.Device.UpdateMessage}}</div>{{end}}
+            {{else}}
+                <div class="text-[10px] text-slate-500 mt-0.5">no self-update attempts</div>
+            {{end}}
         </div>
         <div class="p-3 rounded-md bg-[#141b2a] border border-[#1a2234]">
             <div class="text-[11px] font-medium text-slate-400">Assigned Tags</div>

@@ -3303,6 +3303,17 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		activeTab = "general"
 	}
 
+	// Agent self-update rollout control (SUPER_ADMIN). Resolved from system_settings into a
+	// flat map the template reads directly.
+	rolloutCfg, _ := h.repo.GetAgentRolloutConfig(r.Context())
+	rollout := map[string]string{
+		"MinimumVersion": rolloutCfg.MinimumVersion,
+		"CANARY":         rolloutCfg.TargetForRing(types.RingCanary),
+		"BETA":           rolloutCfg.TargetForRing(types.RingBeta),
+		"PILOT":          rolloutCfg.TargetForRing(types.RingPilot),
+		"PRODUCTION":     rolloutCfg.TargetForRing(types.RingProduction),
+	}
+
 	data := map[string]any{
 		"Title":           "System Settings",
 		"ActiveNav":       "settings",
@@ -3319,6 +3330,7 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		"Tokens":          tokens,
 		"Users":           users,
 		"GroupMappings":   mappings,
+		"Rollout":         rollout,
 		"ActiveTab":       activeTab,
 		"FlashMessage":    r.URL.Query().Get("msg"),
 		"TotalHostsCount": summary.TotalDevices,
@@ -3341,6 +3353,7 @@ func (h *Handler) SaveSettingsCategory(w http.ResponseWriter, r *http.Request) {
 		"compliance": true,
 		"siem":       true,
 		"sso":        true,
+		"rollout":    true,
 	}
 	if !validCategories[category] {
 		http.Error(w, fmt.Sprintf("Invalid settings category: %s", category), http.StatusBadRequest)
@@ -3417,6 +3430,16 @@ func (h *Handler) SaveSettingsCategory(w http.ResponseWriter, r *http.Request) {
 			}
 			localLogin := r.FormValue("allow_local_login")
 			values["sso.allow_local_login"] = (localLogin == "true" || localLogin == "on" || localLogin == "1")
+		case "rollout":
+			// Full dotted keys so UpdateSettingsCategory stores them verbatim.
+			values["rollout.minimum_version"] = strings.TrimSpace(r.FormValue("minimum_version"))
+			for _, ring := range []string{"CANARY", "BETA", "PILOT", "PRODUCTION"} {
+				v := strings.TrimSpace(r.FormValue("target_version_" + ring))
+				if v == "" {
+					v = "none"
+				}
+				values["rollout.target_version."+ring] = v
+			}
 		}
 	}
 
