@@ -957,6 +957,17 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		latestBenchmark = benchmarkScans[0]
 	}
 
+	// Lost-device action state: LOST directive, wipe requests (two-person), and queued/past
+	// LUKS key rotations. Opportunistically expire stale wipe approvals on page load.
+	_ = h.repo.ExpireStaleWipeApprovals(r.Context())
+	lostState, _ := h.repo.GetDeviceLostState(r.Context(), dev.ID)
+	wipeRequests, _ := h.repo.ListWipeRequests(r.Context(), dev.ID)
+	openWipe, _ := h.repo.GetOpenWipeRequest(r.Context(), dev.ID)
+	luksRotations, _ := h.repo.ListLUKSRotations(r.Context(), dev.ID)
+	if isLost, seenIP, activeUser, err := h.repo.GetDeviceLostFacts(r.Context(), dev.ID); err == nil {
+		dev.IsLost, dev.LastSeenIP, dev.LastActiveUser = isLost, seenIP, activeUser
+	}
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(types.DeviceDetailResponse{
@@ -1015,6 +1026,11 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"DeviceCVEs":         deviceCVEs,
 		"DeviceCVECount":     len(deviceCVEs),
 		"CVEFeedState":       cveFeedState,
+		"LostState":          lostState,
+		"WipeRequests":       wipeRequests,
+		"OpenWipe":           openWipe,
+		"LUKSRotations":      luksRotations,
+		"AdminRole":          string(AdminRoleFromContext(r.Context())),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1122,6 +1138,15 @@ func (h *Handler) RevealLUKSRawRecoveryKey(w http.ResponseWriter, r *http.Reques
 
 	log.Printf("[web] AUDIT: LUKS2 recovery key revealed device=%s volume=%s admin=%s reason=%q ip=%s",
 		id, escrow.VolumeUUID, adminUser, reason, r.RemoteAddr)
+
+	// Revealing a key puts it in an admin's hands, so automatically queue a rotation: the
+	// agent adds a fresh recovery key, re-escrows it, and removes the revealed slot on its
+	// next contact. Failure to queue must not fail the reveal itself.
+	if _, rotErr := h.repo.QueueLUKSRotation(r.Context(), id, escrow.VolumeUUID, adminUser, "auto-rotate after key reveal: "+reason); rotErr != nil {
+		log.Printf("[web] warning: failed to queue LUKS rotation after reveal device=%s volume=%s: %v", id, escrow.VolumeUUID, rotErr)
+	} else if h.hub != nil && h.hub.IsConnected(id) {
+		_ = h.hub.TriggerCheckin(id)
+	}
 
 	revealedResp := &types.RevealRecoveryKeyResponse{
 		DeviceID:    id,

@@ -616,3 +616,75 @@ a deployment where the control plane is plain HTTP, terminate TLS at a trusted r
 **Limits / out of scope:** no artifact signing (unsigned repo, see §7.4); the agent updates
 to exactly the ring target (no partial/percentage rollout within a ring beyond ring
 membership); `dev` builds are intentionally never touched.
+## 12. Lost-Device Actions (Lock / Mark Lost / Crypto-Erase Wipe / Recovery-Key Rotation)
+
+All four actions are driven from the device detail page on `/admin/devices` and are delivered
+to the endpoint either by a live gateway push (when connected) or as a queued directive on the
+agent's next check-in. Each action is audited via `system_audit_events` and reports a status
+(queued / delivered / done / failed) back onto the device page.
+
+### 12.1 Lock Sessions — role: OPERATOR+
+Immediately locks all graphical sessions on the endpoint (`loginctl lock-sessions`). An optional
+message is shown to the signed-in user via `notify-send` when a desktop session is present.
+Fire-and-forget; one directive per click.
+
+### 12.2 Mark Lost / Clear Lost — role: SECURITY_ADMIN+
+Marking a device **LOST** sets a new `devices.is_lost` flag (it does NOT replace the device
+`status`) and records a directive the agent applies on its next contact:
+- locks all graphical sessions;
+- writes `/etc/nologin` with an operator message, blocking new local logins (root console is
+  unaffected — this is deliberately safer than `passwd -l`) and expires non-root sessions;
+- increases its own check-in frequency;
+- reports the facts it already has — the server-observed source IP (`devices.last_seen_ip`) and
+  the last active user (`devices.last_active_user`, from the agent's reported active session).
+
+**Clear Lost** reverts only what the agent changed (removes the SpireUEM-owned `/etc/nologin`
+via its marker file — a foreign `/etc/nologin` placed by an operator is never removed). The
+directive is re-emitted every check-in until the agent acknowledges it via
+`POST /api/v1/desktop/actions/report`.
+
+### 12.3 Crypto-Erase Wipe (IRREVERSIBLE) — role: SUPER_ADMIN, two-person rule
+Destroys the LUKS keyslots of the device's escrowed encrypted volumes (`cryptsetup luksErase`),
+rendering data unrecoverable, then powers the device off. Controls:
+- **Typed confirmation**: the requesting admin must type the device hostname exactly.
+- **Two-person rule**: a *different* SUPER_ADMIN must approve within 24h. The static break-glass
+  `SPIRE_ADMIN_USER` account counts as **one** person, so it cannot both request and approve.
+- **Signed order**: on approval the server signs an Ed25519 wipe order over the device's
+  escrowed volume UUIDs. The agent pins the server's Ed25519 **public** key at enrollment
+  (delivered once in the enroll/check-in response, persisted next to its token) and refuses any
+  unsigned, mis-signed, expired, or wrong-device order.
+- **Cancellation window**: a request stays cancellable (`PENDING_APPROVAL` or `APPROVED`) until
+  the agent actually fetches the order on check-in, at which point it atomically moves to
+  `DELIVERED` and can no longer be cancelled.
+- **Volume safety**: the agent erases ONLY the intersection of the volumes named in the signed
+  order and the volumes it itself reported as escrowed — never its own guess.
+- **Lab guard**: set `SPIRE_AGENT_DISABLE_WIPE=1` in the agent's environment to hard-refuse any
+  crypto-erase on that endpoint even for a fully valid signed order. Recommended for lab/test
+  devices.
+
+Operator steps: Request Wipe (type hostname + reason) → a second SUPER_ADMIN opens the device
+page and clicks Approve → the order is delivered on the agent's next check-in → the device
+crypto-erases and powers off, reporting `COMPLETED`/`FAILED`.
+
+### 12.4 LUKS Recovery-Key Rotation (automatic after a reveal)
+When an admin reveals a LUKS recovery key (`/admin/devices/{id}/luks/reveal`), a rotation is
+**automatically queued** for that volume (status `PENDING`). On its next contact the agent:
+adds a fresh random recovery key to a free keyslot using its provisioning master keyfile
+(`/etc/spire/luks-master.key`), verifies the new key opens the volume
+(`cryptsetup open --test-passphrase`), escrows the new key with the existing RSA-OAEP +
+AES-256-GCM envelope, then removes the revealed key's slot. The device page shows
+`rotation pending / done / failed`.
+
+### 12.5 Server environment / settings
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SPIRE_WIPE_SIGNING_KEY_PATH` | `internal/crypto/wipe-signing.pem` | Path to the server's Ed25519 wipe-signing private key (PKCS#8 PEM, mode 0600). Auto-generated on first boot if absent; the public half is what agents pin. Keep it secret and backed up — losing it means outstanding signed orders can no longer be re-issued. |
+| `SPIRE_AGENT_DISABLE_WIPE` | _(unset)_ | **Agent-side.** Set to `1` to make the endpoint refuse all crypto-erase wipes. |
+
+### 12.6 Limits
+- Wipe depends on the agent having escrowed at least one LUKS volume; a device with no escrow
+  cannot be wiped (the request is refused at creation).
+- LUKS rotation requires the provisioning master keyfile to be present on the endpoint; if it is
+  absent the rotation reports `FAILED` and the revealed key's slot is left intact.
+- `/etc/nologin` blocks local logins only; it does not terminate an already-authenticated SSH
+  session (non-root graphical sessions are expired, SSH is not).

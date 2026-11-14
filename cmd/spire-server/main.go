@@ -44,6 +44,12 @@ func main() {
 	log.Printf("[spire-server] connected to PostgreSQL and verified schema migrations")
 
 	repo := db.NewRepositoryWithKEK(pool, cfg.Server.KEKPath)
+	if signer, err := crypto.NewWipeSigner(cfg.Server.WipeSigningKeyPath); err != nil {
+		log.Fatalf("[spire-server] failed to initialize Ed25519 wipe-signing key (%s): %v", cfg.Server.WipeSigningKeyPath, err)
+	} else {
+		repo.SetWipeSigner(signer)
+		log.Printf("[spire-server] loaded Ed25519 wipe-signing key (agents pin this public key at enrollment)")
+	}
 	if err := enforceAdminCredentials(ctx, repo, cfg.Server); err != nil {
 		log.Fatalf("[spire-server] refusing to start: %v", err)
 	}

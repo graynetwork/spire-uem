@@ -32,6 +32,9 @@ func RegisterRoutesWithStorage(r chi.Router, repo *db.Repository, hub *gateway.G
 		// version, so an outdated agent can still check in, learn its target, and receive
 		// the artifact descriptor. The gate below applies only to the other endpoints.
 		r.Post("/checkin", h.Checkin)
+		// Lost-device action results (lock, lost, wipe, LUKS rotation) are accepted from any
+		// agent version: a security action's outcome must never be refused for being outdated.
+		r.Post("/actions/report", h.ReportAction)
 		r.Get("/kek", h.GetServerKEK)
 
 		// Gated endpoints: an agent below the minimum supported version is refused here with
