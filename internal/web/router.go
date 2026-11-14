@@ -157,6 +157,14 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Get("/settings", h.SettingsPage)
 			r.Post("/settings/{category}", h.SaveSettingsCategory)
 
+			// Alerting (channels, routing, delivery log, test send)
+			r.Get("/alerts", h.AlertsPage)
+			r.Post("/alerts/channels", h.CreateAlertChannel)
+			r.Post("/alerts/channels/{id}", h.UpdateAlertChannel)
+			r.Delete("/alerts/channels/{id}", h.DeleteAlertChannel)
+			r.Post("/alerts/channels/{id}/delete", h.DeleteAlertChannel)
+			r.Post("/alerts/channels/{id}/test", h.TestAlertChannel)
+
 			r.Get("/settings/tokens", h.ListTokensFragment)
 			r.Post("/settings/tokens", h.CreateToken)
 			r.Delete("/settings/tokens/{id}", h.RevokeToken)
