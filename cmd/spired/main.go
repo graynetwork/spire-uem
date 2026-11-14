@@ -354,16 +354,23 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 	}
 
 	osInfo := inventory.GetOSInfo()
+	srcPkgs, srcErr := inventory.GetSourcePackages()
+	if srcErr != nil {
+		log.Printf("[spired] warning: source package inventory collection failed: %v", srcErr)
+	}
+	releaseCodename := inventory.GetReleaseCodename()
 	payload, _ := json.Marshal(types.CheckinRequest{
-		HardwareUUID:   hwUUID,
-		Hostname:       hostname,
-		Packages:       pkgs,
-		Flatpaks:       flatpaks,
-		ActiveSession:  activeSession,
-		RebootRequired: rebootReq,
-		PatchStatus:    patchStatus,
-		OSName:         osInfo.Name,
-		KernelVersion:  osInfo.Kernel,
+		HardwareUUID:    hwUUID,
+		Hostname:        hostname,
+		Packages:        pkgs,
+		Flatpaks:        flatpaks,
+		ActiveSession:   activeSession,
+		RebootRequired:  rebootReq,
+		PatchStatus:     patchStatus,
+		OSName:          osInfo.Name,
+		KernelVersion:   osInfo.Kernel,
+		SourcePackages:  srcPkgs,
+		ReleaseCodename: releaseCodename,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/checkin", bytes.NewReader(payload))

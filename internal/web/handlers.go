@@ -194,6 +194,10 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 			OSDistribution: make(map[string]int),
 		}
 	}
+	if total, high, err := h.repo.CountOpenCVEsByUrgency(r.Context()); err == nil {
+		metrics.OpenCVEs = total
+		metrics.HighUrgencyCVEs = high
+	}
 
 	data := map[string]any{
 		"Title":           "Operations Dashboard",
@@ -220,6 +224,10 @@ func (h *Handler) DashboardMetricsPartial(w http.ResponseWriter, r *http.Request
 		metrics = &types.DashboardMetrics{
 			OSDistribution: make(map[string]int),
 		}
+	}
+	if total, high, err := h.repo.CountOpenCVEsByUrgency(r.Context()); err == nil {
+		metrics.OpenCVEs = total
+		metrics.HighUrgencyCVEs = high
 	}
 
 	data := map[string]any{
@@ -939,6 +947,11 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 
 	selfServiceCatalog, _ := h.repo.GetSelfServiceCatalogForDevice(r.Context(), dev.ID)
 	benchmarkScans, _ := h.repo.ListDeviceBenchmarkScans(r.Context(), dev.ID)
+	deviceCVEs, cveErr := h.repo.ListDeviceCVEMatches(r.Context(), dev.ID)
+	if cveErr != nil {
+		log.Printf("[web] list device CVE matches %s error: %v", id, cveErr)
+	}
+	cveFeedState, _ := h.repo.GetCVEFeedState(r.Context())
 	var latestBenchmark *types.BenchmarkScan
 	if len(benchmarkScans) > 0 {
 		latestBenchmark = benchmarkScans[0]
@@ -999,6 +1012,9 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"CompliantCount":     compliantCount,
 		"PendingCount":       pendingCount,
 		"FailedCount":        failedCount,
+		"DeviceCVEs":         deviceCVEs,
+		"DeviceCVECount":     len(deviceCVEs),
+		"CVEFeedState":       cveFeedState,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -3363,6 +3379,8 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		activeTab = "general"
 	}
 
+	cveFeedState, _ := h.repo.GetCVEFeedState(r.Context())
+
 	data := map[string]any{
 		"Title":           "System Settings",
 		"ActiveNav":       "settings",
@@ -3382,6 +3400,7 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		"ActiveTab":       activeTab,
 		"FlashMessage":    r.URL.Query().Get("msg"),
 		"TotalHostsCount": summary.TotalDevices,
+		"CVEFeedState":    cveFeedState,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -3401,6 +3420,7 @@ func (h *Handler) SaveSettingsCategory(w http.ResponseWriter, r *http.Request) {
 		"compliance": true,
 		"siem":       true,
 		"sso":        true,
+		"cve":        true,
 	}
 	if !validCategories[category] {
 		http.Error(w, fmt.Sprintf("Invalid settings category: %s", category), http.StatusBadRequest)

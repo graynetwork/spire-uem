@@ -473,3 +473,77 @@ Operators authenticate scripts and API clients with a bearer token instead of a 
 QR rendering uses `github.com/skip2/go-qrcode` (MIT, zero transitive dependencies).
 TOTP/HOTP is implemented directly on the standard library (no `pquerna/otp`), since the
 algorithm is ~40 lines of well‑specified code and avoids pulling in a dependency tree.
+## 10. CVE Matching (Debian Security Tracker)
+
+SpireUEM matches each endpoint's installed **source** packages against the Debian Security
+Tracker and reports the CVEs a device is exposed to, per release codename.
+
+### 10.1 What the agent reports
+On every check-in `spired` runs `dpkg-query` with a source-aware format and adds two fields
+to the payload (the legacy flat `Packages` list is kept for compatibility):
+- `source_packages`: per installed package, the binary name, its **source** package name and
+  the source version (the version Debian security data compares against). Bounded to 6000
+  entries to keep the payload small.
+- `release_codename`: `VERSION_CODENAME` from `/etc/os-release` (e.g. `bookworm`). A device
+  that reports no codename or no source packages (older agent) is simply not matched — its
+  CVE list is cleared, never guessed.
+
+### 10.2 The feed importer
+The server imports the Debian Security Tracker JSON and stores only what matching needs
+(source package, CVE id, release, status, fixed_version, urgency, description) in
+`cve_release_status`, swapped in atomically per import. Freshness is tracked in
+`cve_feed_state` (last import time, record/CVE counts, source, last error, duration).
+
+Configuration — environment overrides stored settings (category `cve`), which override
+defaults:
+
+| Setting (category `cve`) | Env var | Default | Meaning |
+|---|---|---|---|
+| `cve.feed_enabled` | `SPIRE_CVE_FEED_ENABLED` | `true` | Enable periodic automatic import. `false` disables scheduling (offline sites import manually). |
+| `cve.feed_url` | `SPIRE_CVE_FEED_URL` | `https://security-tracker.debian.org/tracker/data/json` | Feed URL for online import. |
+| `cve.feed_interval_hours` | `SPIRE_CVE_FEED_INTERVAL` | `24` | Hours between automatic imports. Env accepts a Go duration (`24h`) or an integer hour count. |
+| — | `SPIRE_CVE_FEED_FILE` | — | **Offline/air-gapped**: path to a local feed JSON. When set it takes priority over the URL on every scheduled import. |
+
+Safeguards: streaming JSON decode (the raw body is never held in memory twice), a 512 MiB
+hard size cap, and a 10-minute fetch timeout. A failed import preserves the previous data and
+records the error in `cve_feed_state` (shown in the UI).
+
+### 10.3 Importing the feed
+- **Online**: automatic on the configured interval, and the first import runs ~15 s after
+  server start. Trigger one immediately from **Vulnerabilities → Import now** (requires
+  `SECURITY_ADMIN` or `SUPER_ADMIN`).
+- **Air-gapped, server-side file**: set `SPIRE_CVE_FEED_FILE=/path/feed.json`; each scheduled
+  import reads that file. Refresh it out of band on the operator's own schedule.
+- **Air-gapped, admin upload**: on the **Vulnerabilities** page, upload a feed JSON via the
+  **Offline import** form. The upload is streamed through the same size-capped path.
+
+### 10.4 How matching works
+A device is vulnerable to CVE X for source package P, in the device's release, when:
+- the release status is **open** (vulnerable, no fix available yet) — labelled **"no fix
+  available"**; or
+- the status is **resolved** with a `fixed_version` and the installed source version is
+  strictly older than it (Debian `dpkg` version comparison: epochs, `~` pre-releases,
+  `+deb12u1`/`ubuntu` suffixes, revisions).
+
+`resolved` with no recorded fixed version is treated as no-fix-available (still flagged);
+`undetermined` is not reported. Matches are recomputed **incrementally per device on
+check-in** and **fleet-wide after each feed import**. Lookups are indexed by source package
+(one query per device over only that device's packages) so a 1000-device × 2000-package
+fleet does not trigger an N×M scan.
+
+### 10.5 Where to see it
+- **Device detail page**: per-device CVE list (CVE id, package, installed vs fixed version,
+  urgency, link to `https://security-tracker.debian.org/tracker/<CVE>`).
+- **Vulnerabilities page** (`/admin/vulnerabilities`): one row per CVE with affected-host
+  count, sortable by urgency/count, plus the feed freshness panel and import controls.
+- **Dashboard**: the Security Updates ribbon shows real open-CVE and high-urgency counts,
+  linking to the Vulnerabilities page.
+- **Settings**: a read-only feed-freshness panel (last import, record count, last error).
+
+### 10.6 Limits
+- Matching is Debian-codename based; a device whose `VERSION_CODENAME` is absent is not
+  matched. Ubuntu-style version suffixes compare correctly, but releases are keyed by the
+  Debian tracker's codenames.
+- Only CVE-prefixed tracker keys are imported; `TEMP-`/`DLA-only` grouping keys are skipped.
+- The importer replaces the whole dataset per run (atomic swap), so an import reflects the
+  feed at fetch time; between imports, new upstream CVEs are not yet known.

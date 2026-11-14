@@ -1,0 +1,68 @@
+{{define "device_cve_section"}}
+<div class="bg-[#0a0e17] border border-[#1a2234] rounded-md p-3">
+    <div class="flex items-center justify-between">
+        <h3 class="text-xs font-semibold text-white flex items-center gap-2">
+            <svg class="w-3.5 h-3.5 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.5 0l-7.1 12.25A2 2 0 005 19z"/></svg>
+            CVE Exposure
+            {{if .DeviceCVECount}}<span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">{{.DeviceCVECount}}</span>{{end}}
+        </h3>
+        <a href="/admin/vulnerabilities" class="text-[11px] text-blue-400 hover:text-blue-300">Fleet view</a>
+    </div>
+    <p class="text-[11px] text-slate-500 mt-0.5">Installed source packages matched against Debian Security Tracker data</p>
+
+    {{if and .CVEFeedState (not .CVEFeedState.LastImportedAt)}}
+    <div class="mt-2.5 p-2.5 rounded bg-[#141b2a] border border-amber-500/20 text-[11px] text-amber-400">
+        CVE feed has never been imported, so no matching has run yet. Import it on the
+        <a href="/admin/vulnerabilities" class="underline hover:text-amber-300">Vulnerabilities</a> page.
+    </div>
+    {{else if .DeviceCVEs}}
+    <div class="mt-2.5 overflow-x-auto max-h-80 overflow-y-auto">
+        <table class="min-w-full text-left">
+            <thead class="sticky top-0 bg-[#0a0e17]">
+                <tr class="text-[11px] font-medium text-slate-500 border-b border-[#1a2234]">
+                    <th class="pb-1.5 pr-3 font-normal">CVE</th>
+                    <th class="pb-1.5 pr-3 font-normal">Source package</th>
+                    <th class="pb-1.5 pr-3 font-normal">Installed</th>
+                    <th class="pb-1.5 pr-3 font-normal">Fixed</th>
+                    <th class="pb-1.5 pr-3 font-normal">Urgency</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-[#1a2234]/60 text-xs">
+                {{range .DeviceCVEs}}
+                <tr class="hover:bg-[#141b2a]/40 transition">
+                    <td class="py-1.5 pr-3 font-mono text-[11px]">
+                        <a href="https://security-tracker.debian.org/tracker/{{.CVEID}}" target="_blank" rel="noopener noreferrer"
+                           class="text-blue-400 hover:underline">{{.CVEID}}</a>
+                    </td>
+                    <td class="py-1.5 pr-3 font-mono text-[11px] text-slate-300">{{.SourcePackage}}</td>
+                    <td class="py-1.5 pr-3 font-mono text-[11px] text-slate-400">{{.InstalledVersion}}</td>
+                    <td class="py-1.5 pr-3 font-mono text-[11px]">
+                        {{if .NoFixAvailable}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">no fix available</span>
+                        {{else}}
+                            <span class="text-emerald-400">{{.FixedVersion}}</span>
+                        {{end}}
+                    </td>
+                    <td class="py-1.5 pr-3">
+                        {{if or (eq .Urgency "high") (eq .Urgency "high**")}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">high</span>
+                        {{else if or (eq .Urgency "medium") (eq .Urgency "medium**")}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">medium</span>
+                        {{else if or (eq .Urgency "low") (eq .Urgency "low**")}}
+                            <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-500/10 text-slate-400 border border-slate-500/20">low</span>
+                        {{else}}
+                            <span class="text-[10px] font-mono text-slate-500">{{if .Urgency}}{{.Urgency}}{{else}}—{{end}}</span>
+                        {{end}}
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="mt-2.5 p-2.5 rounded bg-[#141b2a] border border-emerald-500/20 text-[11px] text-emerald-400">
+        No CVE matches for this device's installed source packages in its Debian release.
+    </div>
+    {{end}}
+</div>
+{{end}}

@@ -77,6 +77,12 @@ type ReportedState struct {
 	OSName         string    `json:"os_name,omitempty"`
 	KernelVersion  string    `json:"kernel_version,omitempty"`
 	CheckedInAt    time.Time `json:"checked_in_at"`
+
+	// SourcePackages carries the source-package name/version per installed binary, used
+	// for CVE matching against Debian security data. Optional for backward compatibility
+	// with older agents that report only Packages.
+	SourcePackages  []ReportedPackage `json:"source_packages,omitempty"`
+	ReleaseCodename string            `json:"release_codename,omitempty"` // VERSION_CODENAME, e.g. "bookworm"
 }
 
 // Device represents a managed Debian desktop endpoint in the devices table.
@@ -682,6 +688,10 @@ type CheckinRequest struct {
 	PatchStatus    *DevicePatchStatus `json:"patch_status,omitempty"`
 	OSName         string             `json:"os_name,omitempty"`
 	KernelVersion  string             `json:"kernel_version,omitempty"`
+
+	// SourcePackages and ReleaseCodename feed CVE matching; optional for old agents.
+	SourcePackages  []ReportedPackage `json:"source_packages,omitempty"`
+	ReleaseCodename string            `json:"release_codename,omitempty"`
 }
 
 // CheckinResponse is returned by POST /api/v1/desktop/checkin.

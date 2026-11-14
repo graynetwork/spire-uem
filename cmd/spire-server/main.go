@@ -17,6 +17,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/crypto"
+	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/web"
@@ -100,6 +101,10 @@ func main() {
 			log.Fatalf("[spire-server] server error: %v", err)
 		}
 	}()
+
+	// Debian Security Tracker CVE feed importer: periodic online import + fleet rematch.
+	// Honours cve.feed_* settings and SPIRE_CVE_FEED_URL / _FILE / _INTERVAL / _ENABLED.
+	go cvefeed.New(repo).Schedule(ctx)
 
 	<-ctx.Done()
 	log.Printf("[spire-server] shutting down...")
