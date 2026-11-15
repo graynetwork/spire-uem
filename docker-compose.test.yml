@@ -68,6 +68,15 @@ services:
       SPIRE_POLL_INTERVAL: "2s"
       SPIRE_CHECKIN_INTERVAL: "3s"
       SPIRE_SIMULATE_TPM2: "1"
+    # This client runs privileged (needed for dconf/dbus/flatpak), which leaks the HOST's
+    # real TPM nodes (/dev/tpm0, /dev/tpmrm0) into the container when the host has a TPM.
+    # DetectTPM2Device() would then find hardware and send Simulated=false, bypassing
+    # SPIRE_SIMULATE_TPM2=1 and forcing the real EK-cert path (which has no manufacturer
+    # roots in-test). Mask the two device paths with empty directories so detection fails
+    # and the simulated-TPM attestation path runs deterministically on any host.
+    volumes:
+      - ./test/tpm-mask:/dev/tpmrm0:ro
+      - ./test/tpm-mask:/dev/tpm0:ro
     ulimits:
       nofile:
         soft: 65536
