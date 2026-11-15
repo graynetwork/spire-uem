@@ -25,6 +25,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/inventory"
 	"github.com/spire-uem/spire-uem/internal/ipc"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/version"
 )
 
 func main() {
@@ -46,6 +47,9 @@ func main() {
 		log.Fatalf("[spired] failed to determine hardware UUID: %v", err)
 	}
 	hostname := inventory.GetHostname()
+	if err := config.CheckAgentServerURL(cfg.Agent.ServerURL, cfg.Agent.AllowInsecureHTTP); err != nil {
+		log.Fatalf("[spired] refusing to start: %v", err)
+	}
 	log.Printf("[spired] starting daemon hardware_uuid=%s hostname=%s server=%s", hwUUID, hostname, cfg.Agent.ServerURL)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -137,7 +141,7 @@ func main() {
 				}
 				continue
 			}
-			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, hwUUID, hostname, enrollKey)
+			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey)
 			if netErr != nil {
 				backoffAttempt++
 				sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
@@ -213,6 +217,9 @@ func main() {
 					log.Printf("[spired] warning: failed to update local policy cache %s: %v", engine.DefaultPolicyCachePath, err)
 				}
 
+				// Pin the server's Ed25519 wipe-signing key once (persisted next to the token).
+				pinWipeKey(cfg.Agent.TokenPath, checkinResp.WipeSigningPublicKey)
+
 				pendingReports, _ := engine.LoadPendingReports(engine.DefaultPendingReportsPath)
 				results := executePoliciesAndCleanup(ctx, checkinResp.Policies, checkinResp.RevokedPolicies, installedPkgs)
 				allResults := engine.MergeReports(pendingReports, results)
@@ -238,6 +245,22 @@ func main() {
 				if len(checkinResp.QueuedCommands) > 0 {
 					log.Printf("[spired] received %d queued diagnostic commands", len(checkinResp.QueuedCommands))
 					for _, cmdDTO := range checkinResp.QueuedCommands {
+						if IsActionDirective(cmdDTO.Command) {
+							d, perr := parseActionDirective(cmdDTO.Command)
+							if perr != nil {
+								log.Printf("[spired] invalid action directive id=%s: %v", cmdDTO.ID, perr)
+								_ = reportCommandResult(ctx, client, cfg.Agent.ServerURL, token, types.CommandReportRequest{
+									CommandID: cmdDTO.ID, Status: "FAILED", ExitCode: 1, Stderr: "invalid action directive",
+								})
+								continue
+							}
+							log.Printf("[spired] executing lost-device action id=%s kind=%s", cmdDTO.ID, d.Kind)
+							dispatchActionDirective(ctx, client, cfg.Agent.ServerURL, token, cfg.Agent.TokenPath, hwUUID, checkinResp.ServerKEKPublicPEM, d)
+							_ = reportCommandResult(ctx, client, cfg.Agent.ServerURL, token, types.CommandReportRequest{
+								CommandID: cmdDTO.ID, Status: "COMPLETED", ExitCode: 0, Stdout: "action " + string(d.Kind) + " dispatched",
+							})
+							continue
+						}
 						log.Printf("[spired] executing diagnostic command id=%s cmd=%q", cmdDTO.ID, cmdDTO.Command)
 						cmdReport := engine.ExecuteDiagnosticCommand(ctx, cmdDTO, 30*time.Second)
 						if err := reportCommandResult(ctx, client, cfg.Agent.ServerURL, token, cmdReport); err != nil {
@@ -259,6 +282,23 @@ func main() {
 					log.Printf("[spired] warning: LUKS2 volume escrow failed: %v", luksErr)
 				} else {
 					ipcSrv.UpdateLUKSEscrow(true)
+				}
+
+				// Agent self-update: if the server dispatched a target version and the
+				// maintenance window permits it, verify and install it. The install detaches
+				// via systemd-run so spired does not kill itself mid-dpkg; the result is
+				// persisted and reported on the NEXT check-in (it survives the restart).
+				if checkinResp.AgentUpdate != nil && checkinResp.AgentUpdate.Action == types.UpdateActionUpdate {
+					if !checkinResp.MaintenanceWindowActive {
+						log.Printf("[spired] agent update to %s deferred: outside maintenance window", checkinResp.AgentUpdate.TargetVersion)
+					} else {
+						log.Printf("[spired] agent self-update directive: %s -> %s (%s)", version.Version, checkinResp.AgentUpdate.TargetVersion, checkinResp.AgentUpdate.Reason)
+						updateClient := &http.Client{Timeout: 10 * time.Minute}
+						updater := engine.NewSelfUpdater(updateClient, cfg.Agent.ServerURL, version.Version, nil)
+						if res := updater.ApplyDirective(ctx, checkinResp.AgentUpdate, token); res != nil {
+							log.Printf("[spired] agent self-update result target=%s status=%s msg=%s", res.TargetVersion, res.Status, res.Message)
+						}
+					}
 				}
 			}
 			return code, nil
@@ -297,7 +337,7 @@ func main() {
 	}
 }
 
-func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, hwUUID, hostname, enrollKey string) (string, error) {
+func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPath, hwUUID, hostname, enrollKey string) (string, error) {
 	reqBody, _ := json.Marshal(types.EnrollRequest{
 		HardwareUUID:  hwUUID,
 		Hostname:      hostname,
@@ -320,6 +360,8 @@ func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, hwUUID, 
 	_ = json.Unmarshal(bodyBytes, &enrollResp)
 
 	if resp.StatusCode == http.StatusOK && enrollResp.Status == types.StatusApproved && enrollResp.Token != "" {
+		// Pin the server's Ed25519 wipe-signing key at enrollment (once, persisted).
+		pinWipeKey(tokenPath, enrollResp.WipeSigningPublicKey)
 		return enrollResp.Token, nil
 	}
 
@@ -354,16 +396,25 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 	}
 
 	osInfo := inventory.GetOSInfo()
+	srcPkgs, srcErr := inventory.GetSourcePackages()
+	if srcErr != nil {
+		log.Printf("[spired] warning: source package inventory collection failed: %v", srcErr)
+	}
+	releaseCodename := inventory.GetReleaseCodename()
 	payload, _ := json.Marshal(types.CheckinRequest{
-		HardwareUUID:   hwUUID,
-		Hostname:       hostname,
-		Packages:       pkgs,
-		Flatpaks:       flatpaks,
-		ActiveSession:  activeSession,
-		RebootRequired: rebootReq,
-		PatchStatus:    patchStatus,
-		OSName:         osInfo.Name,
-		KernelVersion:  osInfo.Kernel,
+		HardwareUUID:    hwUUID,
+		Hostname:        hostname,
+		Packages:        pkgs,
+		Flatpaks:        flatpaks,
+		ActiveSession:   activeSession,
+		RebootRequired:  rebootReq,
+		PatchStatus:     patchStatus,
+		OSName:          osInfo.Name,
+		KernelVersion:   osInfo.Kernel,
+		SourcePackages:  srcPkgs,
+		ReleaseCodename: releaseCodename,
+		AgentVersion:    version.Version,
+		UpdateResult:    engine.ConsumePendingUpdateResult(engine.DefaultUpdateStatePath),
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/checkin", bytes.NewReader(payload))
@@ -371,6 +422,9 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		return nil, installedMap, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Advertise the agent version on every authenticated request so the server's
+	// minimum-version gate can refuse an outdated agent on gated endpoints.
+	req.Header.Set("X-Spire-Agent-Version", version.Version)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -436,6 +490,18 @@ func executePoliciesAndCleanup(
 			item = engine.EnforceSysctlPolicy(ctx, pol)
 		case types.PolicyTypeAptConfig:
 			item = engine.ReconcileAptConfig(ctx, pol)
+		case types.PolicyTypeFirewallRuleset:
+			item = engine.EnforceFirewallRuleset(ctx, pol)
+		case types.PolicyTypeLocalAccountPolicy:
+			item = engine.EnforceLocalAccountPolicy(ctx, pol)
+		case types.PolicyTypeTrustedCACerts:
+			item = engine.EnforceTrustedCACertificates(ctx, pol)
+		case types.PolicyTypeNetworkProfile:
+			item = engine.EnforceNetworkProfilePolicy(ctx, pol)
+		case types.PolicyTypeUSBDeviceControl:
+			item = engine.ReconcileUSBDeviceControl(ctx, pol)
+		case types.PolicyTypeAuditdRules:
+			item = engine.EnforceAuditdRulesPolicy(ctx, pol)
 		default:
 			out, _ := json.Marshal(map[string]string{"note": "unsupported policy type"})
 			item = types.PolicyExecutionItem{

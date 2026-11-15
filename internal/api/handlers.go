@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
@@ -31,6 +33,19 @@ type Handler struct {
 	repo             *db.Repository
 	hub              *gateway.GatewayHub
 	bundleStorageDir string
+	artifacts        *artifactResolver
+	notifier         alerts.Notifier
+}
+
+// SetNotifier wires the alerts notifier used by agent-API event hooks (patch
+// failures, attestation failures, compliance drift).
+func (h *Handler) SetNotifier(n alerts.Notifier) { h.notifier = n }
+
+// notify raises an alert if a notifier is wired.
+func (h *Handler) notify(ctx context.Context, ev alerts.Event) {
+	if h.notifier != nil {
+		h.notifier.Notify(ctx, ev)
+	}
 }
 
 // NewHandler creates a new API Handler.
@@ -38,6 +53,7 @@ func NewHandler(repo *db.Repository) *Handler {
 	return &Handler{
 		repo:             repo,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
+		artifacts:        newArtifactResolver("dist"),
 	}
 }
 
@@ -47,6 +63,15 @@ func NewHandlerWithHub(repo *db.Repository, hub *gateway.GatewayHub) *Handler {
 		repo:             repo,
 		hub:              hub,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
+		artifacts:        newArtifactResolver("dist"),
+	}
+}
+
+// SetDistDir configures the directory holding the agent .deb packages the server serves and
+// hashes for self-update. Defaults to "dist" (CWD-relative, matching ServeDebPackage).
+func (h *Handler) SetDistDir(dir string) {
+	if trimmed := strings.TrimSpace(dir); trimmed != "" {
+		h.artifacts = newArtifactResolver(trimmed)
 	}
 }
 
@@ -137,6 +162,7 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 			DeviceID: dev.ID,
 			Status:   dev.Status,
 			Token:    token,
+			WipeSigningPublicKey: h.repo.WipeSigningPublicKeyBase64(),
 		})
 		return
 	}
@@ -189,19 +215,31 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reported := types.ReportedState{
-		Packages:       req.Packages,
-		Flatpaks:       req.Flatpaks,
-		ActiveSession:  req.ActiveSession,
-		RebootRequired: req.RebootRequired,
-		OSName:         truncate(strings.TrimSpace(req.OSName), 128),
-		KernelVersion:  truncate(strings.TrimSpace(req.KernelVersion), 128),
-		CheckedInAt:    time.Now().UTC(),
+		Packages:        req.Packages,
+		Flatpaks:        req.Flatpaks,
+		ActiveSession:   req.ActiveSession,
+		RebootRequired:  req.RebootRequired,
+		OSName:          truncate(strings.TrimSpace(req.OSName), 128),
+		KernelVersion:   truncate(strings.TrimSpace(req.KernelVersion), 128),
+		CheckedInAt:     time.Now().UTC(),
+		SourcePackages:  capSourcePackages(req.SourcePackages),
+		ReleaseCodename: truncate(strings.ToLower(strings.TrimSpace(req.ReleaseCodename)), 64),
 	}
 	if err := h.repo.RecordCheckin(r.Context(), hwUUID, reported); err != nil {
 		log.Printf("[api] failed to record check-in for %s: %v", hwUUID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record check-in"})
 		return
 	}
+
+	// Incrementally recompute this device's CVE matches from its freshly reported
+	// inventory. Best-effort: a matching failure must not fail the check-in.
+	if len(reported.SourcePackages) > 0 && reported.ReleaseCodename != "" {
+		if err := h.repo.RecomputeDeviceCVEsFromState(r.Context(), dev.ID, reported); err != nil {
+			log.Printf("[api] warning: CVE rematch failed for device %s: %v", dev.ID, err)
+		}
+	}
+	// Agent version tracking + self-update result (best-effort; never blocks check-in).
+	h.handleAgentVersionReporting(r, dev, &req)
 
 	if req.PatchStatus != nil {
 		req.PatchStatus.DeviceID = dev.ID
@@ -213,6 +251,7 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		} else if err := h.repo.RefreshFleetPatchDaily(r.Context()); err != nil {
 			log.Printf("[api] warning: failed to refresh daily fleet patch totals: %v", err)
 		}
+		h.maybeAlertPatchFailed(r.Context(), dev, req.PatchStatus)
 	}
 
 	policies, err := h.repo.GetActivePoliciesForDevice(r.Context(), dev.ID)
@@ -221,6 +260,10 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to fetch active policies"})
 		return
 	}
+
+	// policy-types-b: unseal payload secrets (e.g. NETWORK_PROFILE PSK / EAP password) just-in-time
+	// so only the agent receives plaintext, over the deployment's TLS-terminating proxy.
+	h.unsealPolicyPayloadSecrets(policies)
 
 	revokedPolicies, err := h.repo.GetRevokedPoliciesForDevice(r.Context(), dev.ID)
 	if err != nil {
@@ -231,6 +274,17 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[api] warning: failed to claim queued commands for %s: %v", dev.ID, err)
 	}
+
+	// Record the location-ish facts the server already has: the IP this check-in came from
+	// and the last active user the agent reported. Shown on the device page when LOST.
+	seenIP := clientIP(r)
+	_ = h.repo.UpdateDeviceSeenFacts(r.Context(), dev.ID, seenIP, strings.TrimSpace(req.ActiveSession))
+
+	// Append lost-device action directives to this check-in's command list. These are
+	// synthetic (not persisted command rows): the lost directive is re-delivered every
+	// check-in until the agent acknowledges applying/reverting it, and the wipe order is
+	// claimed atomically so its cancellation window closes exactly once.
+	queuedCommands = append(queuedCommands, h.pendingActionDirectives(r.Context(), dev)...)
 
 	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d",
 		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands))
@@ -243,6 +297,8 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		RevokedPolicies:         revokedPolicies,
 		QueuedCommands:          queuedCommands,
 		ServerKEKPublicPEM:      h.repo.KEKPublicPEM(),
+		AgentUpdate:             h.computeAgentUpdateDirective(r, dev, req.AgentVersion),
+		WipeSigningPublicKey:    h.repo.WipeSigningPublicKeyBase64(),
 	})
 }
 
@@ -332,6 +388,7 @@ func (h *Handler) Report(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[api] HTTP 200 compliance report processed for device id=%s items=%d", dev.ID, len(req.Results))
+	h.maybeAlertComplianceDrift(r.Context(), dev, req.Results)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"updated": len(req.Results),
@@ -595,6 +652,20 @@ func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[api] HTTP 200 TPM 2.0 attestation device=%s status=%s secure_boot=%v simulated=%v", dev.ID, status, secureBoot, req.Simulated)
+	if status == types.AttestationFailed || status == types.AttestationPolicyViolation {
+		sev := alerts.SeverityWarning
+		if status == types.AttestationPolicyViolation {
+			sev = alerts.SeverityCritical
+		}
+		h.notify(r.Context(), alerts.Event{
+			Kind:     alerts.EventAttestationFailed,
+			Severity: sev,
+			Subject:  "TPM attestation " + string(status) + " for device " + dev.Hostname,
+			DeviceID: dev.ID,
+			Hostname: dev.Hostname,
+			Details:  map[string]any{"hostname": dev.Hostname, "status": string(status), "reason": reason},
+		})
+	}
 	writeJSON(w, http.StatusOK, types.AttestationVerifyResponse{
 		Status:            status,
 		SecureBootEnabled: secureBoot,
@@ -1075,4 +1146,16 @@ func truncate(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+
+// maxReportedSourcePackages matches the agent's own cap (internal/inventory/srcpackages.go). A
+// client that sends more is truncated so one device cannot inflate its CVE match on check-in.
+const maxReportedSourcePackages = 6000
+
+func capSourcePackages[T any](pkgs []T) []T {
+	if len(pkgs) > maxReportedSourcePackages {
+		return pkgs[:maxReportedSourcePackages]
+	}
+	return pkgs
 }

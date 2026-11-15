@@ -37,7 +37,8 @@ func (r *Repository) RefreshFleetPatchDaily(ctx context.Context) error {
 
 // fillPatchTelemetry sets the dashboard's update figures from what agents actually
 // reported in device_patch_status, plus the reported OS and kernel and the 30-day trend.
-func (r *Repository) fillPatchTelemetry(ctx context.Context, m *types.DashboardMetrics) error {
+func (r *Repository) fillPatchTelemetry(ctx context.Context, m *types.DashboardMetrics, scope DeviceScope) error {
+	scoped, tags := scope.sqlArgs()
 	const patchQuery = `
 		SELECT
 			COUNT(*),
@@ -50,8 +51,9 @@ func (r *Repository) fillPatchTelemetry(ctx context.Context, m *types.DashboardM
 		FROM device_patch_status ps
 		JOIN devices d ON d.id = ps.device_id
 		WHERE d.status = 'APPROVED'
+		  AND (NOT $1::bool OR d.tags && $2::text[])
 	`
-	if err := r.pool.QueryRow(ctx, patchQuery).Scan(
+	if err := r.pool.QueryRow(ctx, patchQuery, scoped, tags).Scan(
 		&m.PatchReportingHosts,
 		&m.UpToDateHosts,
 		&m.NeedsUpdates,
@@ -70,11 +72,12 @@ func (r *Repository) fillPatchTelemetry(ctx context.Context, m *types.DashboardM
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT COALESCE(NULLIF(reported_state->>'os_name', ''), 'Not reported') AS os, COUNT(*)
-		FROM devices
+		FROM devices d
 		WHERE status = 'APPROVED'
+		  AND (NOT $1::bool OR d.tags && $2::text[])
 		GROUP BY 1
 		ORDER BY 2 DESC, 1
-	`)
+	`, scoped, tags)
 	if err != nil {
 		return fmt.Errorf("get dashboard os distribution: %w", err)
 	}
@@ -95,16 +98,23 @@ func (r *Repository) fillPatchTelemetry(ctx context.Context, m *types.DashboardM
 	if err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE((
 			SELECT reported_state->>'kernel_version'
-			FROM devices
+			FROM devices d
 			WHERE status = 'APPROVED' AND COALESCE(reported_state->>'kernel_version', '') <> ''
+			  AND (NOT $1::bool OR d.tags && $2::text[])
 			GROUP BY 1
 			ORDER BY COUNT(*) DESC, 1
 			LIMIT 1
 		), '')
-	`).Scan(&m.MostCommonKernel); err != nil {
+	`, scoped, tags).Scan(&m.MostCommonKernel); err != nil {
 		return fmt.Errorf("get dashboard kernel: %w", err)
 	}
 
+	m.PatchTrend = make([]types.PatchTrendPoint, 0, 30)
+	if scope.Scoped {
+		// fleet_patch_daily stores fleet totals only; showing it would leak the size of
+		// the rest of the fleet to a tag-scoped admin.
+		return nil
+	}
 	trend, err := r.pool.Query(ctx, `
 		SELECT to_char(day, 'YYYY-MM-DD'), pending_updates, security_updates
 		FROM fleet_patch_daily
@@ -115,7 +125,6 @@ func (r *Repository) fillPatchTelemetry(ctx context.Context, m *types.DashboardM
 		return fmt.Errorf("get dashboard patch trend: %w", err)
 	}
 	defer trend.Close()
-	m.PatchTrend = make([]types.PatchTrendPoint, 0, 30)
 	for trend.Next() {
 		var p types.PatchTrendPoint
 		if err := trend.Scan(&p.Day, &p.PendingUpdates, &p.SecurityUpdates); err != nil {

@@ -53,6 +53,9 @@ func IsSecurityBaselinePolicy(pt PolicyType) bool {
 	case PolicyTypeSysctlSetting,
 		PolicyTypeDconfSetting,
 		PolicyTypeAptConfig,
+		PolicyTypeFirewallRuleset,
+		PolicyTypeLocalAccountPolicy,
+		PolicyTypeTrustedCACerts,
 		PolicyTypePackageAbsence,
 		PolicyTypeSystemdService:
 		return true

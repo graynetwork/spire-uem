@@ -56,27 +56,85 @@ type Service struct {
 	verifier     *oidc.IDTokenVerifier
 	verifierFor  *OIDCDiscoveryResponse
 	settings     types.SSOSettings
-	stateStore   map[string]authState
+	states       StateStore
 	stateTimeout time.Duration
 }
 
-type authState struct {
-	codeVerifier string
-	redirectURI  string
-	nonce        string
-	createdAt    time.Time
+// AuthState is one in-flight authorization request's PKCE/nonce/redirect binding.
+type AuthState struct {
+	CodeVerifier string
+	RedirectURI  string
+	Nonce        string
+	CreatedAt    time.Time
 }
 
-// NewService creates a new OIDC authentication service.
+// StateStore persists the short-lived, single-use OIDC authorization state. The default
+// implementation keeps it in process memory; the Postgres-backed implementation
+// (PostgresStateStore) shares it across instances so a login started on one instance can be
+// completed by a callback that lands on another.
+type StateStore interface {
+	// Put stores the state for the given key with the given TTL.
+	Put(ctx context.Context, state string, s AuthState, ttl time.Duration) error
+	// Pop atomically fetches and deletes the state (single use). found is false if the key
+	// is unknown or already consumed.
+	Pop(ctx context.Context, state string) (s AuthState, found bool, err error)
+}
+
+// memoryStateStore is the default in-memory StateStore (single-instance deployments).
+type memoryStateStore struct {
+	mu     sync.Mutex
+	states map[string]AuthState
+}
+
+func newMemoryStateStore() *memoryStateStore {
+	return &memoryStateStore{states: make(map[string]AuthState)}
+}
+
+func (m *memoryStateStore) Put(_ context.Context, state string, s AuthState, ttl time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Opportunistic cleanup of expired entries.
+	now := time.Now()
+	for k, v := range m.states {
+		if now.Sub(v.CreatedAt) > ttl {
+			delete(m.states, k)
+		}
+	}
+	m.states[state] = s
+	return nil
+}
+
+func (m *memoryStateStore) Pop(_ context.Context, state string) (AuthState, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.states[state]
+	if ok {
+		delete(m.states, state)
+	}
+	return s, ok, nil
+}
+
+// NewService creates a new OIDC authentication service with an in-memory state store.
 func NewService(settings types.SSOSettings) *Service {
 	return &Service{
 		client: &http.Client{
 			Timeout: 15 * time.Second,
 		},
 		settings:     settings,
-		stateStore:   make(map[string]authState),
+		states:       newMemoryStateStore(),
 		stateTimeout: 10 * time.Minute,
 	}
+}
+
+// SetStateStore replaces the state store (e.g. with a Postgres-backed one for HA). It is
+// safe to call during setup before the service handles any request.
+func (s *Service) SetStateStore(store StateStore) {
+	if store == nil {
+		return
+	}
+	s.mu.Lock()
+	s.states = store
+	s.mu.Unlock()
 }
 
 // UpdateSettings refreshes the in-memory SSO configuration and invalidates discovery cache.
@@ -179,17 +237,21 @@ func (s *Service) GenerateAuthURL(ctx context.Context, redirectURI string) (stri
 	}
 	nonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 
-	s.mu.Lock()
-	s.cleanOldStates()
-	s.stateStore[state] = authState{
-		codeVerifier: codeVerifier,
-		redirectURI:  redirectURI,
-		nonce:        nonce,
-		createdAt:    time.Now(),
-	}
+	s.mu.RLock()
+	store := s.states
 	clientID := s.settings.ClientID
 	scopes := s.settings.Scopes
-	s.mu.Unlock()
+	timeout := s.stateTimeout
+	s.mu.RUnlock()
+
+	if err := store.Put(ctx, state, AuthState{
+		CodeVerifier: codeVerifier,
+		RedirectURI:  redirectURI,
+		Nonce:        nonce,
+		CreatedAt:    time.Now(),
+	}, timeout); err != nil {
+		return "", "", fmt.Errorf("persist oidc state: %w", err)
+	}
 
 	if scopes == "" {
 		scopes = "openid profile email groups"
@@ -217,17 +279,19 @@ func (s *Service) GenerateAuthURL(ctx context.Context, redirectURI string) (stri
 // ExchangeCode exchanges an authorization code and PKCE verifier for tokens.
 // It returns the nonce that was bound to this state, for VerifyIDToken.
 func (s *Service) ExchangeCode(ctx context.Context, code, state string) (*TokenResponse, string, error) {
-	s.mu.Lock()
-	st, found := s.stateStore[state]
-	if found {
-		delete(s.stateStore, state)
-	}
+	s.mu.RLock()
+	store := s.states
 	disc := s.discovery
 	clientID := s.settings.ClientID
 	clientSecret := s.settings.ClientSecret
-	s.mu.Unlock()
+	timeout := s.stateTimeout
+	s.mu.RUnlock()
 
-	if !found || time.Since(st.createdAt) > s.stateTimeout {
+	st, found, err := store.Pop(ctx, state)
+	if err != nil {
+		return nil, "", fmt.Errorf("load oidc state: %w", err)
+	}
+	if !found || time.Since(st.CreatedAt) > timeout {
 		return nil, "", errors.New("invalid or expired OIDC state parameter")
 	}
 
@@ -242,10 +306,10 @@ func (s *Service) ExchangeCode(ctx context.Context, code, state string) (*TokenR
 	data := url.Values{}
 	data.Set("grant_type", "authorization_code")
 	data.Set("code", code)
-	data.Set("redirect_uri", st.redirectURI)
+	data.Set("redirect_uri", st.RedirectURI)
 	data.Set("client_id", clientID)
 	data.Set("client_secret", clientSecret)
-	data.Set("code_verifier", st.codeVerifier)
+	data.Set("code_verifier", st.CodeVerifier)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, disc.TokenEndpoint, strings.NewReader(data.Encode()))
 	if err != nil {
@@ -270,7 +334,7 @@ func (s *Service) ExchangeCode(ctx context.Context, code, state string) (*TokenR
 		return nil, "", fmt.Errorf("decode token response: %w", err)
 	}
 
-	return &tok, st.nonce, nil
+	return &tok, st.Nonce, nil
 }
 
 // idTokenVerifier returns a go-oidc verifier for the current issuer, built from our own
@@ -396,13 +460,4 @@ func extractGroupsClaim(rawMap map[string]interface{}, claimName string) []strin
 		}
 	}
 	return result
-}
-
-func (s *Service) cleanOldStates() {
-	now := time.Now()
-	for k, v := range s.stateStore {
-		if now.Sub(v.createdAt) > s.stateTimeout {
-			delete(s.stateStore, k)
-		}
-	}
 }

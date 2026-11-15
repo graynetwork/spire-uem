@@ -27,6 +27,7 @@ import (
 type Repository struct {
 	pool          *pgxpool.Pool
 	kekMgr        crypto.KeyEnvelopeManager
+	wipeSigner    *crypto.WipeSigner
 }
 
 // NewRepository creates a new Repository and initializes the server's 4096-bit RSA KEK.
@@ -166,7 +167,7 @@ func (r *Repository) Pool() *pgxpool.Pool {
 	return r.pool
 }
 
-const deviceSelectColumns = `id, hardware_uuid, hostname, status, tags, patch_ring, reboot_required, auth_token_hash, reported_state, last_checkin_at, has_tpm2, attestation_status, secure_boot_enabled, last_attested_at, ws_connected, last_ws_seen_at, created_at, updated_at`
+const deviceSelectColumns = `id, hardware_uuid, hostname, status, tags, patch_ring, reboot_required, auth_token_hash, reported_state, last_checkin_at, has_tpm2, attestation_status, secure_boot_enabled, last_attested_at, ws_connected, last_ws_seen_at, created_at, updated_at, agent_version, update_status, update_message, update_target, last_update_at`
 
 const deviceJoinedSelectColumns = `
 	d.id, d.hardware_uuid, d.hostname, d.status, d.tags, d.patch_ring,
@@ -176,7 +177,8 @@ const deviceJoinedSelectColumns = `
 	d.ws_connected, d.last_ws_seen_at, d.created_at, d.updated_at,
 	COALESCE(ps.pending_updates_count, 0) AS pending_updates_count,
 	COALESCE(ps.security_updates_count, 0) AS security_updates_count,
-	COALESCE(ps.reboot_required_pkgs, '{}') AS reboot_required_pkgs
+	COALESCE(ps.reboot_required_pkgs, '{}') AS reboot_required_pkgs,
+	d.agent_version, d.update_status, d.update_message, d.update_target, d.last_update_at
 `
 
 func scanDevice(row pgx.Row) (*types.Device, error) {
@@ -200,6 +202,11 @@ func scanDevice(row pgx.Row) (*types.Device, error) {
 		&d.LastWSSeenAt,
 		&d.CreatedAt,
 		&d.UpdatedAt,
+		&d.AgentVersion,
+		&d.UpdateStatus,
+		&d.UpdateMessage,
+		&d.UpdateTarget,
+		&d.LastUpdateAt,
 	)
 	if err != nil {
 		return nil, err
@@ -243,6 +250,11 @@ func scanDeviceWithPatch(row pgx.Row) (*types.Device, error) {
 		&d.PendingUpdatesCount,
 		&d.SecurityUpdatesCount,
 		&d.RebootRequiredPkgs,
+		&d.AgentVersion,
+		&d.UpdateStatus,
+		&d.UpdateMessage,
+		&d.UpdateTarget,
+		&d.LastUpdateAt,
 	)
 	if err != nil {
 		return nil, err
@@ -440,16 +452,23 @@ func (r *Repository) ListDevicesFilteredByRing(ctx context.Context, search, tag,
 
 // GetFleetSummary returns fleet-wide enrollment and compliance metrics.
 func (r *Repository) GetFleetSummary(ctx context.Context) (*types.FleetSummary, error) {
+	return r.GetFleetSummaryScoped(ctx, Unscoped)
+}
+
+// GetFleetSummaryScoped is GetFleetSummary limited to the devices in scope.
+func (r *Repository) GetFleetSummaryScoped(ctx context.Context, scope DeviceScope) (*types.FleetSummary, error) {
+	scoped, tags := scope.sqlArgs()
 	const countsQuery = `
 		SELECT
 			COUNT(*) AS total,
 			COUNT(*) FILTER (WHERE status = 'APPROVED') AS approved,
 			COUNT(*) FILTER (WHERE status = 'PENDING_APPROVAL') AS pending,
 			COUNT(*) FILTER (WHERE status = 'REVOKED' OR status = 'REJECTED') AS revoked
-		FROM devices
+		FROM devices d
+		WHERE (NOT $1::bool OR d.tags && $2::text[])
 	`
 	var summary types.FleetSummary
-	if err := r.pool.QueryRow(ctx, countsQuery).Scan(
+	if err := r.pool.QueryRow(ctx, countsQuery, scoped, tags).Scan(
 		&summary.TotalDevices,
 		&summary.ApprovedDevices,
 		&summary.PendingDevices,
@@ -462,11 +481,13 @@ func (r *Repository) GetFleetSummary(ctx context.Context) (*types.FleetSummary, 
 		SELECT COUNT(DISTINCT dp.device_id)
 		FROM device_policies dp
 		JOIN policies p ON p.id = dp.policy_id
+		JOIN devices d ON d.id = dp.device_id
 		WHERE dp.compliance_status IN ('NON_COMPLIANT', 'FAILED')
 		  AND COALESCE(p.assignment_type, 'REQUIRED') = 'REQUIRED'
 		  AND p.is_self_service = false
+		  AND (NOT $1::bool OR d.tags && $2::text[])
 	`
-	if err := r.pool.QueryRow(ctx, nonCompliantQuery).Scan(&summary.NonCompliantDevices); err != nil {
+	if err := r.pool.QueryRow(ctx, nonCompliantQuery, scoped, tags).Scan(&summary.NonCompliantDevices); err != nil {
 		return nil, fmt.Errorf("get non-compliant device count: %w", err)
 	}
 
@@ -476,11 +497,13 @@ func (r *Repository) GetFleetSummary(ctx context.Context) (*types.FleetSummary, 
 			COUNT(*) FILTER (WHERE dp.compliance_status != 'REVOKED')
 		FROM device_policies dp
 		JOIN policies p ON p.id = dp.policy_id
+		JOIN devices d ON d.id = dp.device_id
 		WHERE COALESCE(p.assignment_type, 'REQUIRED') = 'REQUIRED'
 		  AND p.is_self_service = false
+		  AND (NOT $1::bool OR d.tags && $2::text[])
 	`
 	var compliantPairs, totalActivePairs int
-	if err := r.pool.QueryRow(ctx, complianceRatioQuery).Scan(&compliantPairs, &totalActivePairs); err != nil {
+	if err := r.pool.QueryRow(ctx, complianceRatioQuery, scoped, tags).Scan(&compliantPairs, &totalActivePairs); err != nil {
 		return nil, fmt.Errorf("get compliance ratio: %w", err)
 	}
 
@@ -495,11 +518,21 @@ func (r *Repository) GetFleetSummary(ctx context.Context) (*types.FleetSummary, 
 
 // GetDashboardMetrics aggregates fleet health, 6-metric summary, attestation, and recent activity.
 func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardMetrics, error) {
+	return r.GetDashboardMetricsScoped(ctx, Unscoped)
+}
+
+// GetDashboardMetricsScoped is GetDashboardMetrics limited to the devices in scope. For a
+// scoped admin the fleet-wide daily trend is left empty, because fleet_patch_daily holds
+// only fleet totals and cannot be split by tag.
+func (r *Repository) GetDashboardMetricsScoped(ctx context.Context, scope DeviceScope) (*types.DashboardMetrics, error) {
 	metrics := &types.DashboardMetrics{
 		OSDistribution: make(map[string]int),
 		RecentHosts:    make([]types.RecentHostActivity, 0),
 		RecentUsers:    make([]types.RecentUserActivity, 0),
+		Scoped:         scope.Scoped,
+		ScopeTags:      scope.Tags,
 	}
+	scoped, tags := scope.sqlArgs()
 
 	const countsQuery = `
 		SELECT
@@ -511,9 +544,10 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 			COUNT(*) FILTER (WHERE attestation_status = 'ATTESTED') AS attested,
 			COUNT(*) FILTER (WHERE attestation_status = 'UNATTESTED') AS unattested,
 			COUNT(*) FILTER (WHERE attestation_status = 'FAILED' OR attestation_status = 'POLICY_VIOLATION') AS attestation_failed
-		FROM devices
+		FROM devices d
+		WHERE (NOT $1::bool OR d.tags && $2::text[])
 	`
-	if err := r.pool.QueryRow(ctx, countsQuery).Scan(
+	if err := r.pool.QueryRow(ctx, countsQuery, scoped, tags).Scan(
 		&metrics.TotalHosts,
 		&metrics.ApprovedHosts,
 		&metrics.PendingHosts,
@@ -533,11 +567,13 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 			COUNT(*) FILTER (WHERE dp.compliance_status = 'FAILED')
 		FROM device_policies dp
 		JOIN policies p ON p.id = dp.policy_id
+		JOIN devices d ON d.id = dp.device_id
 		WHERE COALESCE(p.assignment_type, 'REQUIRED') = 'REQUIRED'
 		  AND p.is_self_service = false
+		  AND (NOT $1::bool OR d.tags && $2::text[])
 	`
 	var nonCompliantDevices, compliantDevices, failedPolicies int
-	if err := r.pool.QueryRow(ctx, policyCountsQuery).Scan(
+	if err := r.pool.QueryRow(ctx, policyCountsQuery, scoped, tags).Scan(
 		&nonCompliantDevices,
 		&compliantDevices,
 		&failedPolicies,
@@ -550,18 +586,19 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 	metrics.CriticalHosts = metrics.FailedHosts + failedPolicies
 
 	// Update counts, OS, kernel and the trend come from agent-reported telemetry.
-	if err := r.fillPatchTelemetry(ctx, metrics); err != nil {
+	if err := r.fillPatchTelemetry(ctx, metrics, scope); err != nil {
 		return nil, err
 	}
 
 	// Query top 5 most recently active endpoints
 	const recentHostsQuery = `
 		SELECT id, hostname, updated_at
-		FROM devices
+		FROM devices d
+		WHERE (NOT $1::bool OR d.tags && $2::text[])
 		ORDER BY updated_at DESC
 		LIMIT 5
 	`
-	rows, err := r.pool.Query(ctx, recentHostsQuery)
+	rows, err := r.pool.Query(ctx, recentHostsQuery, scoped, tags)
 	if err == nil {
 		defer rows.Close()
 		now := time.Now().UTC()
@@ -575,15 +612,18 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 	}
 
 	// Query recent users from system_audit_events
+	// For a scoped admin, only admins who acted on in-scope devices (plus the admin
+	// themself) are listed, the same rule as the scoped audit log.
 	const recentUsersQuery = `
-		SELECT actor, MAX(created_at) AS last_active
-		FROM system_audit_events
-		WHERE actor <> ''
-		GROUP BY actor
+		SELECT e.actor, MAX(e.created_at) AS last_active
+		FROM system_audit_events e
+		WHERE e.actor <> ''
+		  AND ` + auditScopePredicate + `
+		GROUP BY e.actor
 		ORDER BY last_active DESC
 		LIMIT 5
 	`
-	uRows, uErr := r.pool.Query(ctx, recentUsersQuery)
+	uRows, uErr := r.pool.Query(ctx, recentUsersQuery, scoped, tags, scope.Actor)
 	if uErr == nil {
 		defer uRows.Close()
 		now := time.Now().UTC()
@@ -597,7 +637,7 @@ func (r *Repository) GetDashboardMetrics(ctx context.Context) (*types.DashboardM
 	}
 
 	// Benchmark Telemetry
-	if benchSummary, bErr := r.GetLatestFleetBenchmarkSummary(ctx); bErr == nil {
+	if benchSummary, bErr := r.GetLatestFleetBenchmarkSummaryScoped(ctx, scope); bErr == nil {
 		metrics.BenchmarkSummary = benchSummary
 		metrics.ActiveScans = benchSummary.ActiveScans
 	}
@@ -1822,16 +1862,32 @@ func (r *Repository) RecordSystemAuditEvent(
 
 // ListSystemAuditEvents returns the most recent rows from system_audit_events.
 func (r *Repository) ListSystemAuditEvents(ctx context.Context, limit int) ([]types.SystemAuditEvent, error) {
+	return r.ListSystemAuditEventsScoped(ctx, limit, Unscoped)
+}
+
+// auditScopePredicate keeps an audit event (alias e) visible to a scoped admin when it
+// targets an in-scope device, or when the admin performed it. Parameters: $1 scoped bool,
+// $2 allowed tags, $3 the admin's username.
+const auditScopePredicate = `(NOT $1::bool
+		OR e.actor = $3
+		OR EXISTS (SELECT 1 FROM devices d WHERE d.id::text = e.target_id AND d.tags && $2::text[]))`
+
+// ListSystemAuditEventsScoped is ListSystemAuditEvents limited to events a scoped admin may
+// see: events on their in-scope devices and their own actions. Events about other admins'
+// changes to policies, settings or out-of-scope devices are excluded.
+func (r *Repository) ListSystemAuditEventsScoped(ctx context.Context, limit int, scope DeviceScope) ([]types.SystemAuditEvent, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	scoped, tags := scope.sqlArgs()
 	const query = `
-		SELECT id, actor, action, target_id, details, ip_address, created_at
-		FROM system_audit_events
-		ORDER BY created_at DESC
-		LIMIT $1
+		SELECT e.id, e.actor, e.action, e.target_id, e.details, e.ip_address, e.created_at
+		FROM system_audit_events e
+		WHERE ` + auditScopePredicate + `
+		ORDER BY e.created_at DESC
+		LIMIT $4
 	`
-	rows, err := r.pool.Query(ctx, query, limit)
+	rows, err := r.pool.Query(ctx, query, scoped, tags, scope.Actor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list system audit events: %w", err)
 	}
@@ -2299,6 +2355,11 @@ func (r *Repository) RecordBenchmarkResultsForDevice(ctx context.Context, device
 
 // GetActiveBenchmarkScans returns currently PENDING or RUNNING benchmark scans.
 func (r *Repository) GetActiveBenchmarkScans(ctx context.Context) ([]*types.BenchmarkScan, error) {
+	return r.getActiveBenchmarkScans(ctx, Unscoped)
+}
+
+func (r *Repository) getActiveBenchmarkScans(ctx context.Context, scope DeviceScope) ([]*types.BenchmarkScan, error) {
+	scoped, tags := scope.sqlArgs()
 	const query = `
 		SELECT s.id, s.device_id, d.hostname, s.benchmark_type, s.profile, s.status,
 		       s.score, s.rules_passed, s.rules_failed, s.rules_other, s.failed_rules,
@@ -2306,10 +2367,11 @@ func (r *Repository) GetActiveBenchmarkScans(ctx context.Context) ([]*types.Benc
 		FROM benchmark_scans s
 		LEFT JOIN devices d ON s.device_id = d.id
 		WHERE s.status IN ('PENDING', 'RUNNING')
+		  AND (NOT $1::bool OR d.tags && $2::text[])
 		ORDER BY s.created_at DESC
 		LIMIT 20
 	`
-	rows, err := r.pool.Query(ctx, query)
+	rows, err := r.pool.Query(ctx, query, scoped, tags)
 	if err != nil {
 		return nil, fmt.Errorf("query active benchmark scans: %w", err)
 	}
@@ -2405,11 +2467,18 @@ func (r *Repository) ListDeviceBenchmarkScans(ctx context.Context, deviceID stri
 
 // GetLatestFleetBenchmarkSummary returns aggregated benchmark metrics across the fleet.
 func (r *Repository) GetLatestFleetBenchmarkSummary(ctx context.Context) (*types.BenchmarkSummary, error) {
+	return r.GetLatestFleetBenchmarkSummaryScoped(ctx, Unscoped)
+}
+
+// GetLatestFleetBenchmarkSummaryScoped is GetLatestFleetBenchmarkSummary limited to the
+// devices in scope.
+func (r *Repository) GetLatestFleetBenchmarkSummaryScoped(ctx context.Context, scope DeviceScope) (*types.BenchmarkSummary, error) {
 	summary := &types.BenchmarkSummary{
 		ActiveScans: make([]*types.BenchmarkScan, 0),
 	}
+	scoped, tags := scope.sqlArgs()
 
-	activeScans, err := r.GetActiveBenchmarkScans(ctx)
+	activeScans, err := r.getActiveBenchmarkScans(ctx, scope)
 	if err == nil {
 		summary.ActiveScans = activeScans
 		summary.ActiveScansCount = len(activeScans)
@@ -2422,15 +2491,17 @@ func (r *Repository) GetLatestFleetBenchmarkSummary(ctx context.Context) (*types
 		       COALESCE(SUM(rules_failed), 0),
 		       COALESCE(SUM(rules_other), 0),
 		       MAX(completed_at)
-		FROM benchmark_scans
-		WHERE status = 'COMPLETED'
+		FROM benchmark_scans s
+		LEFT JOIN devices d ON d.id = s.device_id
+		WHERE s.status = 'COMPLETED'
+		  AND (NOT $1::bool OR d.tags && $2::text[])
 	`
 	var totalScans int
 	var avgScore float64
 	var totalPassed, totalFailed, totalOther int
 	var maxCompleted *time.Time
 
-	err = r.pool.QueryRow(ctx, statsQuery).Scan(
+	err = r.pool.QueryRow(ctx, statsQuery, scoped, tags).Scan(
 		&totalScans,
 		&avgScore,
 		&totalPassed,
@@ -2454,15 +2525,17 @@ func (r *Repository) GetLatestFleetBenchmarkSummary(ctx context.Context) (*types
 
 	// Fetch latest completed scan score and failed rules
 	const latestScanQuery = `
-		SELECT device_id, score, failed_rules FROM benchmark_scans
-		WHERE status = 'COMPLETED'
-		ORDER BY completed_at DESC
+		SELECT s.device_id, s.score, s.failed_rules FROM benchmark_scans s
+		LEFT JOIN devices d ON d.id = s.device_id
+		WHERE s.status = 'COMPLETED'
+		  AND (NOT $1::bool OR d.tags && $2::text[])
+		ORDER BY s.completed_at DESC
 		LIMIT 1
 	`
 	var latestDeviceID string
 	var latestScore float64
 	var failedRulesJSON []byte
-	if err := r.pool.QueryRow(ctx, latestScanQuery).Scan(&latestDeviceID, &latestScore, &failedRulesJSON); err == nil {
+	if err := r.pool.QueryRow(ctx, latestScanQuery, scoped, tags).Scan(&latestDeviceID, &latestScore, &failedRulesJSON); err == nil {
 		summary.LatestScore = latestScore
 		summary.LatestDeviceID = latestDeviceID
 		if len(failedRulesJSON) > 0 {
@@ -3489,13 +3562,13 @@ func roleRank(role types.AdminRole) int {
 // GetAdminUserByUsername retrieves an active or inactive admin user by username.
 func (r *Repository) GetAdminUserByUsername(ctx context.Context, username string) (*types.AdminUser, error) {
 	const query = `
-		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 		FROM admin_users
 		WHERE LOWER(username) = LOWER($1)
 	`
 	var u types.AdminUser
 	err := r.pool.QueryRow(ctx, query, strings.TrimSpace(username)).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -3549,13 +3622,13 @@ func (r *Repository) GetAdminUserByOIDCSubject(ctx context.Context, sub string) 
 // GetAdminUserByID retrieves an admin user by UUID.
 func (r *Repository) GetAdminUserByID(ctx context.Context, id string) (*types.AdminUser, error) {
 	const query = `
-		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 		FROM admin_users
 		WHERE id = $1
 	`
 	var u types.AdminUser
 	err := r.pool.QueryRow(ctx, query, id).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrAdminUserNotFound
@@ -3569,7 +3642,7 @@ func (r *Repository) GetAdminUserByID(ctx context.Context, id string) (*types.Ad
 // ListAdminUsers returns all admin users ordered by creation date.
 func (r *Repository) ListAdminUsers(ctx context.Context) ([]types.AdminUser, error) {
 	const query = `
-		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		SELECT id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 		FROM admin_users
 		ORDER BY created_at ASC
 	`
@@ -3583,7 +3656,7 @@ func (r *Repository) ListAdminUsers(ctx context.Context) ([]types.AdminUser, err
 	for rows.Next() {
 		var u types.AdminUser
 		if err := rows.Scan(
-			&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+			&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 		); err != nil {
 			return nil, fmt.Errorf("scan admin user: %w", err)
 		}
@@ -3611,14 +3684,18 @@ func (r *Repository) CreateLocalAdminUser(ctx context.Context, req types.CreateU
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
 
+	allowedTags := req.AllowedTags
+	if allowedTags == nil {
+		allowedTags = []string{}
+	}
 	const query = `
-		INSERT INTO admin_users (username, email, display_name, password_hash, role, auth_provider, is_active, created_at)
-		VALUES ($1, $2, $3, $4, $5, 'LOCAL', TRUE, NOW())
-		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		INSERT INTO admin_users (username, email, display_name, password_hash, role, auth_provider, is_active, created_at, allowed_tags)
+		VALUES ($1, $2, $3, $4, $5, 'LOCAL', TRUE, NOW(), $6)
+		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 	`
 	var u types.AdminUser
-	err = r.pool.QueryRow(ctx, query, username, email, displayName, string(hash), string(role)).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+	err = r.pool.QueryRow(ctx, query, username, email, displayName, string(hash), string(role), allowedTags).Scan(
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create admin user: %w", err)
@@ -3656,6 +3733,15 @@ func (r *Repository) UpdateAdminUser(ctx context.Context, id string, req types.U
 		args = append(args, string(hash))
 		argIdx++
 	}
+	if req.AllowedTags != nil {
+		tags := *req.AllowedTags
+		if tags == nil {
+			tags = []string{}
+		}
+		setClauses = append(setClauses, fmt.Sprintf("allowed_tags = $%d", argIdx))
+		args = append(args, tags)
+		argIdx++
+	}
 
 	if len(setClauses) == 0 {
 		return r.GetAdminUserByID(ctx, id)
@@ -3665,13 +3751,13 @@ func (r *Repository) UpdateAdminUser(ctx context.Context, id string, req types.U
 		UPDATE admin_users
 		SET %s
 		WHERE id = $%d
-		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at
+		RETURNING id, username, email, display_name, password_hash, role, auth_provider, oidc_subject, is_active, created_at, last_login_at, COALESCE(allowed_tags, '{}')
 	`, strings.Join(setClauses, ", "), argIdx)
 	args = append(args, id)
 
 	var u types.AdminUser
 	err := r.pool.QueryRow(ctx, query, args...).Scan(
-		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt,
+		&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.PasswordHash, &u.Role, &u.AuthProvider, &u.OIDCSubject, &u.IsActive, &u.CreatedAt, &u.LastLoginAt, &u.AllowedTags,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrAdminUserNotFound

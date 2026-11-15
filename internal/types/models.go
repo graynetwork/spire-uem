@@ -29,6 +29,14 @@ const (
 	PolicyFlatpakBundle       PolicyType = "FLATPAK_BUNDLE"
 	PolicyTypeSysctlSetting   PolicyType = "SYSCTL_SETTING"
 	PolicyTypeAptConfig       PolicyType = "APT_CONFIG"
+	// Policy types A: declarative host-hardening policies.
+	PolicyTypeFirewallRuleset   PolicyType = "FIREWALL_RULESET"
+	PolicyTypeLocalAccountPolicy PolicyType = "LOCAL_ACCOUNT_POLICY"
+	PolicyTypeTrustedCACerts     PolicyType = "TRUSTED_CA_CERTIFICATES"
+	// Appended by policy-types-b worker (network/USB/auditd declarative types).
+	PolicyTypeNetworkProfile    PolicyType = "NETWORK_PROFILE"
+	PolicyTypeUSBDeviceControl  PolicyType = "USB_DEVICE_CONTROL"
+	PolicyTypeAuditdRules       PolicyType = "AUDITD_RULES"
 )
 
 // DeploymentRing represents the phased patch deployment ring of a device or policy.
@@ -69,6 +77,12 @@ type ReportedState struct {
 	OSName         string    `json:"os_name,omitempty"`
 	KernelVersion  string    `json:"kernel_version,omitempty"`
 	CheckedInAt    time.Time `json:"checked_in_at"`
+
+	// SourcePackages carries the source-package name/version per installed binary, used
+	// for CVE matching against Debian security data. Optional for backward compatibility
+	// with older agents that report only Packages.
+	SourcePackages  []ReportedPackage `json:"source_packages,omitempty"`
+	ReleaseCodename string            `json:"release_codename,omitempty"` // VERSION_CODENAME, e.g. "bookworm"
 }
 
 // Device represents a managed Debian desktop endpoint in the devices table.
@@ -97,6 +111,17 @@ type Device struct {
 	PendingUpdatesCount  int                `db:"pending_updates_count" json:"pending_updates_count"`
 	SecurityUpdatesCount int                `db:"security_updates_count" json:"security_updates_count"`
 	RebootRequiredPkgs   []string           `db:"reboot_required_pkgs" json:"reboot_required_pkgs,omitempty"`
+
+	// Agent self-update tracking (migration 000025)
+	AgentVersion  string     `db:"agent_version" json:"agent_version"`
+	UpdateStatus  string     `db:"update_status" json:"update_status,omitempty"`
+	UpdateMessage string     `db:"update_message" json:"update_message,omitempty"`
+	UpdateTarget  string     `db:"update_target" json:"update_target,omitempty"`
+	LastUpdateAt  *time.Time `db:"last_update_at" json:"last_update_at,omitempty"`
+	// Lost-device fields, populated on demand (not part of the shared joined scan).
+	IsLost         bool   `db:"-" json:"is_lost"`
+	LastSeenIP     string `db:"-" json:"last_seen_ip,omitempty"`
+	LastActiveUser string `db:"-" json:"last_active_user,omitempty"`
 }
 
 // PendingPkg represents an upgradeable Debian package identified via apt simulation.
@@ -305,6 +330,242 @@ type AptConfigPayload struct {
 	Content  string `json:"content"`
 }
 
+// FirewallInboundRule is a single allowed inbound rule inside a FIREWALL_RULESET policy.
+// Port and PortEnd express either a single port (PortEnd == 0) or an inclusive range.
+type FirewallInboundRule struct {
+	Proto     string `json:"proto"`                // "tcp" | "udp"
+	Port      int    `json:"port"`                 // 1-65535
+	PortEnd   int    `json:"port_end,omitempty"`   // optional range end; >= Port when set
+	SourceCIDR string `json:"source_cidr,omitempty"` // optional IPv4/IPv6 CIDR scoping the rule
+	Comment   string `json:"comment,omitempty"`
+}
+
+// FirewallRulesetPayload defines the payload for FIREWALL_RULESET (nftables) policies. The agent
+// renders a dedicated `table inet spire`, never touching other tables, validated with `nft -c`
+// and applied with `nft -f`. Outbound traffic is always left open so the agent keeps its server link.
+type FirewallRulesetPayload struct {
+	DefaultInbound    string                `json:"default_inbound"`               // "accept" | "drop"
+	AllowEstablished  bool                  `json:"allow_established"`             // allow ct state established,related
+	AllowLoopback     bool                  `json:"allow_loopback"`               // allow iif lo
+	AllowICMP         bool                  `json:"allow_icmp,omitempty"`         // allow icmp + icmpv6
+	InboundRules      []FirewallInboundRule `json:"inbound_rules,omitempty"`
+}
+
+// LocalAccountSudoersPayload is the managed /etc/sudoers.d/90-spire drop-in specification.
+type LocalAccountSudoersPayload struct {
+	Groups   []string `json:"groups,omitempty"` // group names granted sudo (prefixed with %)
+	Users    []string `json:"users,omitempty"`  // user names granted sudo
+	NoPasswd bool     `json:"nopasswd,omitempty"`
+}
+
+// LocalAccountPolicyPayload defines the payload for LOCAL_ACCOUNT_POLICY policies. It configures
+// pam_pwquality (password quality), pam_faillock (lockout), PASS_MAX_DAYS (login.defs), and a
+// managed sudoers drop-in. The agent uses Debian drop-in config files, never blind sed on pam.d.
+type LocalAccountPolicyPayload struct {
+	// Password quality (written to /etc/security/pwquality.conf.d/90-spire.conf).
+	PwqualityMinLen  int `json:"pwquality_minlen,omitempty"`  // minimum length; 0 = unset
+	PwqualityMinClass int `json:"pwquality_minclass,omitempty"` // minimum character classes 0-4
+
+	// Account lockout (written to /etc/security/faillock.conf).
+	FaillockDeny       int `json:"faillock_deny,omitempty"`        // failed attempts before lock; 0 = unset
+	FaillockUnlockTime int `json:"faillock_unlock_time,omitempty"` // seconds before auto-unlock; 0 = unset
+
+	// Password ageing for local users (written to /etc/login.defs drop-in semantics).
+	PassMaxDays int `json:"pass_max_days,omitempty"` // PASS_MAX_DAYS; 0 = unset
+
+	// Managed sudoers drop-in (/etc/sudoers.d/90-spire).
+	Sudoers *LocalAccountSudoersPayload `json:"sudoers,omitempty"`
+}
+
+// TrustedCACertificate is one PEM CA cert managed by a TRUSTED_CA_CERTIFICATES policy.
+type TrustedCACertificate struct {
+	Name string `json:"name"` // logical file base name (becomes spire/<name>.crt)
+	PEM  string `json:"pem"`  // PEM-encoded CA certificate
+}
+
+// TrustedCACertificatesPayload defines the payload for TRUSTED_CA_CERTIFICATES policies. The agent
+// writes each cert to /usr/local/share/ca-certificates/spire/<name>.crt, runs update-ca-certificates,
+// and removes spire-managed certs no longer listed. Compliance is reported by SHA-256 fingerprint.
+type TrustedCACertificatesPayload struct {
+	Certificates []TrustedCACertificate `json:"certificates"`
+}
+
+// ---------------------------------------------------------------------------
+// policy-types-b: NETWORK_PROFILE / USB_DEVICE_CONTROL / AUDITD_RULES payloads
+// ---------------------------------------------------------------------------
+
+// SecretEnvelope carries a server-KEK-sealed secret inside a policy payload. The admin UI
+// submits a plaintext secret; the server seals it (RSA-OAEP-4096 + AES-256-GCM, same envelope
+// scheme as LUKS escrow) before persisting the payload, so the stored payload and the admin UI
+// never hold plaintext. The server unseals just-in-time when building the device check-in
+// response, so only the agent (over the deployment's TLS-terminating proxy) receives plaintext.
+// A zero/empty envelope means "no secret".
+type SecretEnvelope struct {
+	// Ciphertext is base64-std of the AES-256-GCM ciphertext of the secret.
+	Ciphertext string `json:"ciphertext,omitempty"`
+	// EncryptedDEK is base64-std of the RSA-OAEP-4096 wrapped 32-byte DEK.
+	EncryptedDEK string `json:"encrypted_dek,omitempty"`
+	// Nonce is base64-std of the AES-256-GCM nonce.
+	Nonce string `json:"nonce,omitempty"`
+	// Plaintext is NEVER persisted. It is populated transiently only (a) as admin input before
+	// sealing and (b) after the server unseals the envelope for delivery to the agent.
+	Plaintext string `json:"plaintext,omitempty"`
+}
+
+// IsSealed reports whether this envelope carries sealed ciphertext fields.
+func (s SecretEnvelope) IsSealed() bool {
+	return s.Ciphertext != "" && s.EncryptedDEK != "" && s.Nonce != ""
+}
+
+// HasValue reports whether the envelope carries either a sealed secret or transient plaintext.
+func (s SecretEnvelope) HasValue() bool {
+	return s.IsSealed() || s.Plaintext != ""
+}
+
+// NetworkProfileKind enumerates the supported NetworkManager connection kinds.
+type NetworkProfileKind string
+
+const (
+	NetworkProfileWifi      NetworkProfileKind = "wifi"
+	NetworkProfileWiredDot1x NetworkProfileKind = "wired_8021x"
+	NetworkProfileWireGuard NetworkProfileKind = "wireguard"
+)
+
+// WifiSecurity enumerates supported Wi-Fi security modes.
+type WifiSecurity string
+
+const (
+	WifiWPA2Personal   WifiSecurity = "wpa2-personal"
+	WifiWPA3Personal   WifiSecurity = "wpa3-personal"
+	WifiWPA2Enterprise WifiSecurity = "wpa2-enterprise"
+	WifiWPA3Enterprise WifiSecurity = "wpa3-enterprise"
+)
+
+// EAPMethod enumerates supported 802.1X EAP methods.
+type EAPMethod string
+
+const (
+	EAPTLS          EAPMethod = "tls"
+	EAPPEAPMSCHAPv2 EAPMethod = "peap-mschapv2"
+)
+
+// WireGuardPeer describes a single WireGuard peer the device should connect to.
+type WireGuardPeer struct {
+	PublicKey    string   `json:"public_key"`
+	Endpoint     string   `json:"endpoint,omitempty"`
+	AllowedIPs   []string `json:"allowed_ips"`
+	PresharedKey string   `json:"-"` // optional PSK handled as a SecretEnvelope below, never JSON-exposed raw
+}
+
+// NetworkProfilePayload defines the payload for NETWORK_PROFILE policies (NetworkManager keyfiles).
+// Exactly one of the kind-specific sub-structs is populated, chosen by Kind.
+//
+// Secrets (Wi-Fi PSK, EAP password, WireGuard peer PSK) are carried as SecretEnvelope values:
+// sealed at rest, unsealed only for the agent at check-in, never displayed back in the UI.
+//
+// WireGuard private keys are NEVER sent by the server. The agent generates the X25519 private
+// key on the device, writes it into the keyfile, and reports the derived public key back in its
+// compliance ExecutionOutput so an admin can register the device as a peer upstream.
+type NetworkProfilePayload struct {
+	Kind NetworkProfileKind `json:"kind"`
+	// ConnID is the stable NetworkManager connection id suffix; the keyfile is written to
+	// /etc/NetworkManager/system-connections/spire-<policy_id>.nmconnection.
+	Autoconnect bool `json:"autoconnect"`
+
+	Wifi      *WifiProfile      `json:"wifi,omitempty"`
+	Wired     *WiredDot1xProfile `json:"wired_8021x,omitempty"`
+	WireGuard *WireGuardProfile `json:"wireguard,omitempty"`
+}
+
+// WifiProfile holds Wi-Fi connection settings.
+type WifiProfile struct {
+	SSID     string       `json:"ssid"`
+	Hidden   bool         `json:"hidden,omitempty"`
+	Security WifiSecurity `json:"security"`
+	// Personal (WPA2/WPA3-Personal): PSK.
+	PSK SecretEnvelope `json:"psk,omitempty"`
+	// Enterprise (WPA2/WPA3-Enterprise, 802.1X):
+	EAP      EAPMethod      `json:"eap,omitempty"`
+	Identity string         `json:"identity,omitempty"`
+	CACert   string         `json:"ca_cert,omitempty"`   // PEM text of the CA certificate
+	ClientCert string       `json:"client_cert,omitempty"` // PEM text (EAP-TLS)
+	ClientKey  string       `json:"client_key,omitempty"`  // PEM text (EAP-TLS); treated as a secret
+	Password SecretEnvelope `json:"password,omitempty"`  // PEAP-MSCHAPv2 password (and EAP-TLS key passphrase)
+}
+
+// WiredDot1xProfile holds wired 802.1X connection settings.
+type WiredDot1xProfile struct {
+	EAP        EAPMethod      `json:"eap"`
+	Identity   string         `json:"identity,omitempty"`
+	CACert     string         `json:"ca_cert,omitempty"`
+	ClientCert string         `json:"client_cert,omitempty"`
+	ClientKey  string         `json:"client_key,omitempty"`
+	Password   SecretEnvelope `json:"password,omitempty"`
+}
+
+// WireGuardProfile holds a WireGuard VPN interface definition. No private key is ever present.
+type WireGuardProfile struct {
+	Address []string        `json:"address"` // interface addresses, e.g. ["10.0.0.5/32"]
+	DNS     []string        `json:"dns,omitempty"`
+	Peers   []WireGuardPeer `json:"peers"`
+	// PeerPSKs maps peer index (as decimal string) to an optional preshared-key SecretEnvelope.
+	PeerPSKs map[string]SecretEnvelope `json:"peer_psks,omitempty"`
+}
+
+// USBMode enumerates the usbguard enforcement modes.
+type USBMode string
+
+const (
+	// USBModeAllowAll permits every device (implicit allow). Used to disable control while keeping the policy.
+	USBModeAllowAll USBMode = "allow_all"
+	// USBModeBlockNew blocks devices not matching an allow-list entry; present-at-apply devices are grandfathered in.
+	USBModeBlockNew USBMode = "block_new"
+)
+
+// USBAllowEntry is one usbguard allow-list rule.
+type USBAllowEntry struct {
+	// VendorID / ProductID are 4-hex-digit lowercase ids, e.g. "046d" / "c52b". ProductID may be
+	// empty to allow any product of the vendor.
+	VendorID    string `json:"vendor_id,omitempty"`
+	ProductID   string `json:"product_id,omitempty"`
+	Serial      string `json:"serial,omitempty"`
+	DeviceClass string `json:"device_class,omitempty"` // usbguard "with-interface" class prefix, e.g. "03" (HID)
+	Comment     string `json:"comment,omitempty"`
+}
+
+// USBDeviceControlPayload defines the payload for USB_DEVICE_CONTROL policies (usbguard).
+type USBDeviceControlPayload struct {
+	Mode USBMode `json:"mode"`
+	// AllowHID keeps HID (keyboards/mice, class 03) always allowed so admins cannot lock users out.
+	AllowHID  bool            `json:"allow_hid"`
+	AllowList []USBAllowEntry `json:"allow_list,omitempty"`
+}
+
+// AuditdWatchRule is a filesystem watch (-w <path> -p <perms> -k <key>).
+type AuditdWatchRule struct {
+	Path  string `json:"path"`
+	Perms string `json:"perms"` // subset of r,w,x,a
+	Key   string `json:"key"`
+}
+
+// AuditdSyscallRule is a syscall rule (-a <action,filter> -S <syscall>... [-F ...] -k <key>).
+type AuditdSyscallRule struct {
+	Action   string   `json:"action"`   // "always" | "never"
+	Filter   string   `json:"filter"`   // "exit" | "entry" | "task" | "user" | "exclude"
+	Syscalls []string `json:"syscalls"`
+	Fields   []string `json:"fields,omitempty"` // raw -F field expressions, validated
+	Key      string   `json:"key"`
+}
+
+// AuditdRulesPayload defines the payload for AUDITD_RULES policies.
+type AuditdRulesPayload struct {
+	// Presets are named CIS-style rule bundles expanded server/agent-side (e.g. "identity",
+	// "sudoers", "time_change", "module_loading").
+	Presets  []string            `json:"presets,omitempty"`
+	Watches  []AuditdWatchRule   `json:"watches,omitempty"`
+	Syscalls []AuditdSyscallRule `json:"syscalls,omitempty"`
+}
+
 // SystemdServicePayload defines the payload for SYSTEMD_SERVICE policies.
 type SystemdServicePayload struct {
 	ServiceName string `json:"service_name"`
@@ -406,6 +667,9 @@ type EnrollResponse struct {
 	DeviceID string       `json:"device_id"`
 	Status   DeviceStatus `json:"status"`
 	Token    string       `json:"token,omitempty"`
+	// WipeSigningPublicKey lets the agent pin the server's Ed25519 wipe-order signing key
+	// at enrollment (base64). Present only when a token is issued.
+	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
 }
 
 // AssignedPolicy is returned to a device during check-in.
@@ -438,6 +702,14 @@ type CheckinRequest struct {
 	PatchStatus    *DevicePatchStatus `json:"patch_status,omitempty"`
 	OSName         string             `json:"os_name,omitempty"`
 	KernelVersion  string             `json:"kernel_version,omitempty"`
+
+	// SourcePackages and ReleaseCodename feed CVE matching; optional for old agents.
+	SourcePackages  []ReportedPackage `json:"source_packages,omitempty"`
+	ReleaseCodename string            `json:"release_codename,omitempty"`
+	// AgentVersion is the build version of the reporting spired binary (internal/version.Version).
+	AgentVersion string `json:"agent_version,omitempty"`
+	// UpdateResult, when set, reports the outcome of the agent's most recent self-update attempt.
+	UpdateResult *AgentUpdateResult `json:"update_result,omitempty"`
 }
 
 // CheckinResponse is returned by POST /api/v1/desktop/checkin.
@@ -450,6 +722,14 @@ type CheckinResponse struct {
 	RevokedPolicies         []AssignedPolicy `json:"revoked_policies,omitempty"`
 	QueuedCommands          []CommandDTO     `json:"queued_commands,omitempty"`
 	ServerKEKPublicPEM      string           `json:"server_kek_public_pem,omitempty"`
+	// AgentUpdate tells the agent the target version and artifact to install, when the
+	// rollout engine has decided this device should update. Nil / Action=="none" means
+	// no update is pending.
+	AgentUpdate *AgentUpdateDirective `json:"agent_update,omitempty"`
+	// WipeSigningPublicKey is the server's Ed25519 wipe-order signing public key (base64).
+	// The agent pins it once and persists it next to its token, then refuses any wipe order
+	// not signed by it.
+	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
 }
 
 // PolicyExecutionItem represents a single policy enforcement outcome reported by spired.
@@ -677,6 +957,9 @@ type AdminUser struct {
 	IsActive     bool             `json:"is_active" db:"is_active"`
 	CreatedAt    time.Time        `json:"created_at" db:"created_at"`
 	LastLoginAt  *time.Time       `json:"last_login_at,omitempty" db:"last_login_at"`
+	// AllowedTags restricts an OPERATOR or SECURITY_ADMIN to devices carrying any of these
+	// tags. Empty means unrestricted. SUPER_ADMIN and AUDITOR are never tag-scoped.
+	AllowedTags []string `json:"allowed_tags" db:"allowed_tags"`
 }
 
 // OIDCGroupMapping maps an Identity Provider group claim to an administrative SpireUEM role.
@@ -705,6 +988,7 @@ type CreateUserRequest struct {
 	DisplayName string    `json:"display_name"`
 	Password    string    `json:"password"`
 	Role        AdminRole `json:"role"`
+	AllowedTags []string  `json:"allowed_tags,omitempty"`
 }
 
 // UpdateUserRequest defines payload to update an existing admin user.
@@ -713,6 +997,9 @@ type UpdateUserRequest struct {
 	Role        *AdminRole `json:"role,omitempty"`
 	IsActive    *bool      `json:"is_active,omitempty"`
 	Password    *string    `json:"password,omitempty"`
+	// AllowedTags, when non-nil, replaces the user's device-tag scope. A non-nil empty
+	// slice clears the scope (unrestricted).
+	AllowedTags *[]string `json:"allowed_tags,omitempty"`
 }
 
 

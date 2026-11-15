@@ -8,8 +8,8 @@ services:
       POSTGRES_DB: spire_uem
     ports:
       - "127.0.0.1:5433:5432"
-    volumes:
-      - ./migrations:/docker-entrypoint-initdb.d:ro
+    # The migrations directory is intentionally NOT mounted into /docker-entrypoint-initdb.d;
+    # the spire-server container applies migrations via the tracked runner.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U spire -d spire_uem"]
       interval: 2s
@@ -35,6 +35,8 @@ services:
       SPIRE_ADMIN_PASSWORD: "${SPIRE_ADMIN_PASSWORD:-spire-e2e-breakglass-pw}"
       # Test harness only: enables the unauthenticated mock-claims /auth/oidc/test-callback
       SPIRE_ENABLE_TEST_ENDPOINTS: "1"
+      # Test network only: the server refuses plain HTTP on a reachable address without this.
+      SPIRE_ALLOW_INSECURE_HTTP: "1"
       SPIRE_APT_REPO_DIR: "/var/www/apt/spire"
     ports:
       - "127.0.0.1:18080:8080"
@@ -61,10 +63,20 @@ services:
     hostname: debian12-sim-01
     environment:
       SPIRE_SERVER_URL: "http://spire-server:8080"
+      SPIRE_AGENT_ALLOW_INSECURE_HTTP: "1"
       SPIRE_TOKEN_PATH: "/etc/spire/token"
       SPIRE_POLL_INTERVAL: "2s"
       SPIRE_CHECKIN_INTERVAL: "3s"
       SPIRE_SIMULATE_TPM2: "1"
+    # This client runs privileged (needed for dconf/dbus/flatpak), which leaks the HOST's
+    # real TPM nodes (/dev/tpm0, /dev/tpmrm0) into the container when the host has a TPM.
+    # DetectTPM2Device() would then find hardware and send Simulated=false, bypassing
+    # SPIRE_SIMULATE_TPM2=1 and forcing the real EK-cert path (which has no manufacturer
+    # roots in-test). Mask the two device paths with empty directories so detection fails
+    # and the simulated-TPM attestation path runs deterministically on any host.
+    volumes:
+      - ./test/tpm-mask:/dev/tpmrm0:ro
+      - ./test/tpm-mask:/dev/tpm0:ro
     ulimits:
       nofile:
         soft: 65536

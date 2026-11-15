@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"context"
 	"flag"
 	"log"
@@ -14,19 +15,39 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/spire-uem/spire-uem/internal/api"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/crypto"
+	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/web"
 )
 
 func main() {
+	// Subcommand dispatch: `spire-server migrate <status|up|down>` manages the schema and
+	// exits without booting the server.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		runMigrateSubcommand(os.Args[2:])
+		return
+	}
+
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	flag.Parse()
 
 	cfg := config.Load(*configPath)
+
+	transport, err := config.ResolveServerTransport(cfg.Server, web.TrustProxyEnabled())
+	if err != nil {
+		log.Fatalf("[spire-server] refusing to start: %v", err)
+	}
+	switch transport {
+	case config.TransportInsecure:
+		log.Printf("[spire-server] WARNING: serving plain HTTP on %s (SPIRE_ALLOW_INSECURE_HTTP). Device tokens, network secrets and the wipe-signing key travel unencrypted; lab use only", cfg.Server.ListenAddr)
+	case config.TransportLoopback:
+		log.Printf("[spire-server] serving plain HTTP on loopback %s only; put a TLS proxy in front before exposing it", cfg.Server.ListenAddr)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -43,6 +64,12 @@ func main() {
 	log.Printf("[spire-server] connected to PostgreSQL and verified schema migrations")
 
 	repo := db.NewRepositoryWithKEK(pool, cfg.Server.KEKPath)
+	if signer, err := crypto.NewWipeSigner(cfg.Server.WipeSigningKeyPath); err != nil {
+		log.Fatalf("[spire-server] failed to initialize Ed25519 wipe-signing key (%s): %v", cfg.Server.WipeSigningKeyPath, err)
+	} else {
+		repo.SetWipeSigner(signer)
+		log.Printf("[spire-server] loaded Ed25519 wipe-signing key (agents pin this public key at enrollment)")
+	}
 	if err := enforceAdminCredentials(ctx, repo, cfg.Server); err != nil {
 		log.Fatalf("[spire-server] refusing to start: %v", err)
 	}
@@ -55,11 +82,30 @@ func main() {
 	} else {
 		log.Printf("[spire-server] WARNING: SPIRE_TPM_EK_ROOTS not set; hardware TPM attestations will be reported FAILED because EK certificates cannot be anchored")
 	}
-	if len(strings.TrimSpace(os.Getenv("SPIRE_SESSION_SECRET"))) < 32 {
+	sessionSecret := strings.TrimSpace(os.Getenv("SPIRE_SESSION_SECRET"))
+	if cfg.Server.MultiInstance && len(sessionSecret) < 32 {
+		log.Fatalf("[spire-server] refusing to start in multi-instance mode: SPIRE_SESSION_SECRET must be set to a shared value of at least 32 characters so sessions and CSRF tokens validate across instances")
+	}
+	if len(sessionSecret) < 32 {
 		log.Printf("[spire-server] WARNING: SPIRE_SESSION_SECRET is unset or shorter than 32 characters; using a random per-process key, so every restart signs all admins out")
 	}
 	hub := gateway.NewGatewayHub(repo)
+	if cfg.Server.MultiInstance {
+		instanceID := cfg.Server.InstanceID
+		if instanceID == "" {
+			host, _ := os.Hostname()
+			instanceID = host + cfg.Server.ListenAddr
+		}
+		hub.EnableCluster(instanceID)
+		hub.StartClusterRouting(ctx, cfg.Server.ListenAddr)
+		log.Printf("[spire-server] multi-instance mode active (instance_id=%s)", instanceID)
+	}
 	auditor := audit.NewForwarder(repo, cfg.Server.SIEMSyslogAddr)
+
+	// Alerting: durable queue + channels, offline ticker, event fan-out.
+	alertStore := repo.AlertStore()
+	alertMgr := alerts.NewManager(alertStore, repo.LoadAlertConfig(ctx))
+	go alertMgr.RunWorkers(ctx)
 
 	r := chi.NewRouter()
 	r.Use(web.TrustedProxyRealIPMiddleware)
@@ -67,15 +113,15 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(web.SecureHeadersMiddleware)
 	if cfg.Server.EnforceHTTPS {
-		// The server itself serves plain HTTP, so HTTPS can only be detected from a trusted
-		// proxy's X-Forwarded-Proto. Without one every request would redirect forever.
-		if !web.TrustProxyEnabled() {
-			log.Fatalf("[spire-server] enforce_https requires a TLS-terminating reverse proxy: set SPIRE_TRUST_PROXY=true, or disable enforce_https")
+		// Without built-in TLS, HTTPS can only be detected from a trusted proxy's
+		// X-Forwarded-Proto. Without either, every request would redirect forever.
+		if transport != config.TransportBuiltinTLS && !web.TrustProxyEnabled() {
+			log.Fatalf("[spire-server] enforce_https requires TLS: set SPIRE_TLS_CERT_FILE/SPIRE_TLS_KEY_FILE, or put a TLS-terminating reverse proxy in front and set SPIRE_TRUST_PROXY=true")
 		}
 		r.Use(web.EnforceHTTPSMiddleware(true))
 	}
 
-	api.RegisterRoutesWithStorage(r, repo, hub, cfg.Server.BundleStorageDir)
+	api.RegisterRoutesWithAlerts(r, repo, hub, cfg.Server.BundleStorageDir, alertMgr)
 
 	webHandler, err := web.NewHandler(repo, hub, auditor)
 	if err != nil {
@@ -84,6 +130,7 @@ func main() {
 	webHandler.SetEnforceHTTPS(cfg.Server.EnforceHTTPS)
 	webHandler.SetAptRepoDir(cfg.Server.AptRepoDir)
 	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
+	webHandler.SetAlerting(alertStore, alertMgr)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 
 	srv := &http.Server{
@@ -93,13 +140,26 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	if transport == config.TransportBuiltinTLS {
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 
 	go func() {
-		log.Printf("[spire-server] listening on %s (Admin UI: http://localhost%s/admin/devices)", cfg.Server.ListenAddr, cfg.Server.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("[spire-server] listening on %s (transport=%s)", cfg.Server.ListenAddr, transport)
+		var err error
+		if transport == config.TransportBuiltinTLS {
+			err = srv.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[spire-server] server error: %v", err)
 		}
 	}()
+
+	// Debian Security Tracker CVE feed importer: periodic online import + fleet rematch.
+	// Honours cve.feed_* settings and SPIRE_CVE_FEED_URL / _FILE / _INTERVAL / _ENABLED.
+	go cvefeed.New(repo).Schedule(ctx)
 
 	<-ctx.Done()
 	log.Printf("[spire-server] shutting down...")

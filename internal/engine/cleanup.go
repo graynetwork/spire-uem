@@ -232,6 +232,87 @@ func CleanupOrphanedPolicies(
 				ExecutionOutput:  meta,
 			})
 
+		case types.PolicyTypeFirewallRuleset:
+			_ = RemoveFirewallRuleset(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "firewall_ruleset_revoked_cleaned",
+				"policy_id":  polID,
+				"note":       "deleted spire ruleset file and flushed table inet spire; other tables untouched",
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
+		case types.PolicyTypeLocalAccountPolicy:
+			_ = RemoveLocalAccountPolicy(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "local_account_policy_revoked_cleaned",
+				"policy_id":  polID,
+				"note":       "removed spire pwquality/faillock drop-ins, login.defs block, and sudoers drop-in",
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
+		case types.PolicyTypeTrustedCACerts:
+			_ = RemoveTrustedCACertificates(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "trusted_ca_certificates_revoked_cleaned",
+				"policy_id":  polID,
+				"note":       "removed all spire-managed CA certs and refreshed the trust store",
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
+		case types.PolicyTypeNetworkProfile:
+			_ = RemoveNetworkProfile(ctx, polID)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "network_profile_revoked_cleaned",
+				"policy_id":  polID,
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
+		case types.PolicyTypeUSBDeviceControl:
+			_ = RemoveUSBDeviceControl(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "usb_device_control_revoked_cleaned",
+				"policy_id":  polID,
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
+		case types.PolicyTypeAuditdRules:
+			_ = RemoveAuditdRules(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "auditd_rules_revoked_cleaned",
+				"policy_id":  polID,
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
 		case types.PolicyTypePackagePresence:
 			// Do not forcibly purge packages when PACKAGE_PRESENCE is revoked.
 			meta, _ := json.Marshal(map[string]any{

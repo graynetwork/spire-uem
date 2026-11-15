@@ -1,0 +1,218 @@
+{{define "alerts_content"}}
+<div class="space-y-6 max-w-6xl mx-auto">
+    <!-- Header -->
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+        <div>
+            <h1 class="text-lg font-semibold text-white tracking-tight">Alerting</h1>
+            <p class="text-xs text-slate-400 mt-0.5">Outbound alert channels, per-event routing, and recent delivery log. Channel configuration is restricted to Super Administrators.</p>
+        </div>
+    </div>
+
+    {{if .FlashMessage}}
+    <div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-xs text-emerald-400 font-mono flex items-center space-x-2">
+        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+        <span>{{.FlashMessage}}</span>
+    </div>
+    {{end}}
+
+    <!-- SSRF warning -->
+    <div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-md text-[11px] text-amber-300 leading-relaxed">
+        <strong>Security note:</strong> webhook and Slack URLs are fetched by the server and can reach internal hosts (SSRF).
+        Only configure destinations you trust. Outbound requests use a 10s timeout, refuse redirects, and allow only
+        <code>http</code>/<code>https</code> schemes. Generic-webhook deliveries are signed with HMAC-SHA256 over the
+        request body (header <code>X-Spire-Signature: sha256=…</code>) plus a <code>X-Spire-Timestamp</code> to let
+        receivers reject replays.
+    </div>
+
+    <!-- Existing channels -->
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234] flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-white">Channels</h2>
+        </div>
+        <div class="divide-y divide-[#1a2234]">
+            {{if not .Channels}}
+            <div class="px-4 py-6 text-xs text-slate-500">No channels configured yet. Add one below.</div>
+            {{end}}
+            {{range .Channels}}
+            <details class="group">
+                <summary class="px-4 py-3 flex items-center justify-between cursor-pointer list-none">
+                    <div class="flex items-center space-x-3 min-w-0">
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-[#141b2a] border border-[#25334d] text-slate-300 uppercase">{{.Kind}}</span>
+                        <span class="text-sm text-white truncate">{{.Name}}</span>
+                        {{if .Enabled}}<span class="text-[10px] text-emerald-400">enabled</span>{{else}}<span class="text-[10px] text-slate-500">disabled</span>{{end}}
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <form method="POST" action="/admin/alerts/channels/{{.ID}}/test" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="px-2 py-1 text-[11px] rounded bg-blue-600/20 border border-blue-600/40 text-blue-300 hover:bg-blue-600/30">Send test</button>
+                        </form>
+                        <form method="POST" action="/admin/alerts/channels/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete channel {{.Name}}?');">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="px-2 py-1 text-[11px] rounded bg-rose-600/20 border border-rose-600/40 text-rose-300 hover:bg-rose-600/30">Delete</button>
+                        </form>
+                    </div>
+                </summary>
+                <div class="px-4 pb-4">
+                    <form method="POST" action="/admin/alerts/channels/{{.ID}}" class="space-y-3">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <input type="hidden" name="kind" value="{{.Kind}}">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label class="text-xs text-slate-400">Name
+                                <input name="name" value="{{.Name}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                            </label>
+                            <label class="text-xs text-slate-400 flex items-center space-x-2 mt-5">
+                                <input type="checkbox" name="enabled" value="true" {{if .Enabled}}checked{{end}}>
+                                <span>Enabled</span>
+                            </label>
+                        </div>
+
+                        {{if eq (printf "%s" .Kind) "webhook"}}
+                        <label class="text-xs text-slate-400 block">Webhook URL
+                            <input name="webhook_url" value="{{.Webhook.URL}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                        </label>
+                        <label class="text-xs text-slate-400 block">HMAC secret <span class="text-slate-500">({{if .HasSecret}}set — leave blank to keep{{else}}not set{{end}})</span>
+                            <input name="webhook_secret" type="password" autocomplete="new-password" placeholder="•••••••• (unchanged)" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                        </label>
+                        {{else if eq (printf "%s" .Kind) "slack"}}
+                        <label class="text-xs text-slate-400 block">Slack incoming webhook URL <span class="text-slate-500">({{if .HasSecret}}set — leave blank to keep{{else}}not set{{end}})</span>
+                            <input name="slack_url" type="password" autocomplete="new-password" placeholder="https://hooks.slack.com/… (unchanged)" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                        </label>
+                        {{else if eq (printf "%s" .Kind) "email"}}
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label class="text-xs text-slate-400">SMTP host<input name="smtp_host" value="{{.Email.Host}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                            <label class="text-xs text-slate-400">Port<input name="smtp_port" value="{{.Email.Port}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                            <label class="text-xs text-slate-400">TLS mode
+                                <select name="smtp_tls" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                                    <option value="starttls" {{if eq .Email.TLSMode "starttls"}}selected{{end}}>STARTTLS</option>
+                                    <option value="implicit" {{if eq .Email.TLSMode "implicit"}}selected{{end}}>Implicit TLS</option>
+                                    <option value="none" {{if eq .Email.TLSMode "none"}}selected{{end}}>None (test only)</option>
+                                </select>
+                            </label>
+                            <label class="text-xs text-slate-400">Username<input name="smtp_username" value="{{.Email.Username}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                            <label class="text-xs text-slate-400">Password <span class="text-slate-500">({{if .HasSecret2}}set — leave blank to keep{{else}}not set{{end}})</span>
+                                <input name="smtp_password" type="password" autocomplete="new-password" placeholder="•••••••• (unchanged)" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                            </label>
+                            <label class="text-xs text-slate-400">From<input name="smtp_from" value="{{.Email.From}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                            <label class="text-xs text-slate-400 sm:col-span-2">To (comma-separated)<input name="smtp_to" value="{{range $i,$e := .Email.To}}{{if $i}}, {{end}}{{$e}}{{end}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                        </div>
+                        {{end}}
+
+                        {{template "alerts_routing_matrix" (dict "Kinds" $.EventKinds "Routes" .Routes)}}
+
+                        <button type="submit" class="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500">Save changes</button>
+                    </form>
+                </div>
+            </details>
+            {{end}}
+        </div>
+    </section>
+
+    <!-- Add channel -->
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234]"><h2 class="text-sm font-semibold text-white">Add channel</h2></div>
+        <form method="POST" action="/admin/alerts/channels" class="p-4 space-y-3">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label class="text-xs text-slate-400">Name<input name="name" required class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                <label class="text-xs text-slate-400">Kind
+                    <select name="kind" id="new-kind" onchange="spireAlertKind()" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                        <option value="webhook">Generic webhook (HMAC)</option>
+                        <option value="slack">Slack incoming webhook</option>
+                        <option value="email">Email (SMTP)</option>
+                    </select>
+                </label>
+                <label class="text-xs text-slate-400 flex items-center space-x-2 mt-5"><input type="checkbox" name="enabled" value="true" checked><span>Enabled</span></label>
+            </div>
+
+            <div id="new-webhook" class="space-y-3">
+                <label class="text-xs text-slate-400 block">Webhook URL<input name="webhook_url" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                <label class="text-xs text-slate-400 block">HMAC secret<input name="webhook_secret" type="password" autocomplete="new-password" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+            </div>
+            <div id="new-slack" class="space-y-3 hidden">
+                <label class="text-xs text-slate-400 block">Slack incoming webhook URL<input name="slack_url" type="password" autocomplete="new-password" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+            </div>
+            <div id="new-email" class="space-y-3 hidden">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label class="text-xs text-slate-400">SMTP host<input name="smtp_host" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                    <label class="text-xs text-slate-400">Port<input name="smtp_port" value="587" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                    <label class="text-xs text-slate-400">TLS mode
+                        <select name="smtp_tls" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                            <option value="starttls">STARTTLS</option><option value="implicit">Implicit TLS</option><option value="none">None (test only)</option>
+                        </select>
+                    </label>
+                    <label class="text-xs text-slate-400">Username<input name="smtp_username" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                    <label class="text-xs text-slate-400">Password<input name="smtp_password" type="password" autocomplete="new-password" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                    <label class="text-xs text-slate-400">From<input name="smtp_from" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                    <label class="text-xs text-slate-400 sm:col-span-2">To (comma-separated)<input name="smtp_to" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                </div>
+            </div>
+
+            {{template "alerts_routing_matrix" (dict "Kinds" .EventKinds)}}
+
+            <button type="submit" class="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500">Add channel</button>
+        </form>
+    </section>
+
+    <!-- Delivery log -->
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234]"><h2 class="text-sm font-semibold text-white">Recent delivery log</h2></div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead class="text-slate-500"><tr class="text-left">
+                    <th class="px-4 py-2 font-medium">Time</th><th class="px-4 py-2 font-medium">Channel</th>
+                    <th class="px-4 py-2 font-medium">Event</th><th class="px-4 py-2 font-medium">Status</th>
+                    <th class="px-4 py-2 font-medium">Attempts</th><th class="px-4 py-2 font-medium">Last error</th>
+                </tr></thead>
+                <tbody class="divide-y divide-[#1a2234]">
+                    {{if not .Deliveries}}<tr><td colspan="6" class="px-4 py-6 text-slate-500">No deliveries yet.</td></tr>{{end}}
+                    {{range .Deliveries}}
+                    <tr class="text-slate-300">
+                        <td class="px-4 py-2 font-mono text-slate-400">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+                        <td class="px-4 py-2">{{.ChannelName}}</td>
+                        <td class="px-4 py-2 font-mono">{{.EventKind}}</td>
+                        <td class="px-4 py-2">{{if eq .Status "SENT"}}<span class="text-emerald-400">SENT</span>{{else}}<span class="text-rose-400">{{.Status}}</span>{{end}}</td>
+                        <td class="px-4 py-2">{{.Attempts}}</td>
+                        <td class="px-4 py-2 text-rose-300/80 max-w-xs truncate">{{.LastError}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+<script>
+function spireAlertKind() {
+    var k = document.getElementById('new-kind').value;
+    document.getElementById('new-webhook').classList.toggle('hidden', k !== 'webhook');
+    document.getElementById('new-slack').classList.toggle('hidden', k !== 'slack');
+    document.getElementById('new-email').classList.toggle('hidden', k !== 'email');
+}
+spireAlertKind();
+</script>
+{{end}}
+
+{{define "alerts_routing_matrix"}}
+<fieldset class="border border-[#1a2234] rounded p-3">
+    <legend class="text-xs text-slate-400 px-1">Events &amp; minimum severity</legend>
+    <div class="space-y-2">
+        {{$routes := .Routes}}
+        {{range .Kinds}}
+        {{$k := .}}
+        {{$enabled := false}}{{$sev := "INFO"}}
+        {{range $routes}}{{if eq (printf "%s" .Kind) (printf "%s" $k)}}{{$enabled = .Enabled}}{{$sev = printf "%s" .MinSeverity}}{{end}}{{end}}
+        <div class="flex items-center justify-between">
+            <label class="text-xs text-slate-300 flex items-center space-x-2">
+                <input type="checkbox" name="evt_{{$k}}" value="true" {{if $enabled}}checked{{end}}>
+                <span>{{$k.Label}}</span>
+            </label>
+            <select name="sev_{{$k}}" class="bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                <option value="INFO" {{if eq $sev "INFO"}}selected{{end}}>INFO+</option>
+                <option value="WARNING" {{if eq $sev "WARNING"}}selected{{end}}>WARNING+</option>
+                <option value="CRITICAL" {{if eq $sev "CRITICAL"}}selected{{end}}>CRITICAL</option>
+            </select>
+        </div>
+        {{end}}
+    </div>
+</fieldset>
+{{end}}

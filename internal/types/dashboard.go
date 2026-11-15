@@ -33,6 +33,11 @@ type PatchTrendPoint struct {
 
 // DashboardMetrics holds the aggregated 6-metric summary ribbon and telemetry cards.
 type DashboardMetrics struct {
+	// Scoped is true when the figures cover only the devices carrying ScopeTags (a
+	// tag-limited admin), not the whole fleet.
+	Scoped    bool     `json:"scoped"`
+	ScopeTags []string `json:"scope_tags,omitempty"`
+
 	// 6-Metric Stat Ribbon
 	TotalHosts       int `json:"total_hosts"`
 	UpToDateHosts    int `json:"up_to_date_hosts"`
@@ -80,4 +85,9 @@ type DashboardMetrics struct {
 	// Benchmark Telemetry
 	BenchmarkSummary *BenchmarkSummary `json:"benchmark_summary,omitempty"`
 	ActiveScans      []*BenchmarkScan  `json:"active_scans,omitempty"`
+
+	// CVE Telemetry: distinct CVEs the fleet is currently exposed to, and how many are
+	// high urgency. Real counts from device_cve_matches; 0 when the feed is unimported.
+	OpenCVEs        int `json:"open_cves"`
+	HighUrgencyCVEs int `json:"high_urgency_cves"`
 }

@@ -1,0 +1,47 @@
+{
+  "openssl": {
+    "CVE-2024-0001": {
+      "description": "Test: buffer overflow in openssl TLS handshake.",
+      "scope": "remote",
+      "releases": {
+        "bookworm": {
+          "status": "resolved",
+          "fixed_version": "3.0.11-1~deb12u2",
+          "urgency": "high"
+        },
+        "bullseye": {
+          "status": "open",
+          "urgency": "medium"
+        }
+      }
+    },
+    "CVE-2024-0002": {
+      "description": "Test: undetermined issue in openssl.",
+      "releases": {
+        "bookworm": {
+          "status": "undetermined",
+          "urgency": "not yet assigned"
+        }
+      }
+    }
+  },
+  "bash": {
+    "CVE-2024-0003": {
+      "description": "Test: no-fix-yet issue in bash.",
+      "releases": {
+        "bookworm": {
+          "status": "open",
+          "urgency": "low"
+        }
+      }
+    }
+  },
+  "TEMP-0000000-ABCDEF": {
+    "TEMP-0000000-ABCDEF": {
+      "description": "Should be skipped: non-CVE grouping key.",
+      "releases": {
+        "bookworm": { "status": "open" }
+      }
+    }
+  }
+}

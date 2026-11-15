@@ -16,9 +16,24 @@ type ServerConfig struct {
 	AdminPassword    string
 	SIEMSyslogAddr   string
 	KEKPath          string
+	WipeSigningKeyPath string
 	AptRepoDir       string
 	BundleStorageDir string
 	EnforceHTTPS     bool
+	// MultiInstance signals this server runs as one of several instances behind a load
+	// balancer sharing one database. It turns on gateway cross-instance routing and makes
+	// a shared SPIRE_SESSION_SECRET mandatory.
+	MultiInstance bool
+	// InstanceID uniquely identifies this process in a multi-instance deployment. Defaults
+	// to "<hostname>:<listen_addr>" when unset.
+	InstanceID string
+	// TLSCertFile / TLSKeyFile make spire-server terminate TLS itself (SPIRE_TLS_CERT_FILE /
+	// SPIRE_TLS_KEY_FILE). See ResolveServerTransport for when plain HTTP is allowed.
+	TLSCertFile string
+	TLSKeyFile  string
+	// AllowInsecureHTTP permits plain HTTP on a reachable address (SPIRE_ALLOW_INSECURE_HTTP=1).
+	// Lab and test networks only.
+	AllowInsecureHTTP bool
 }
 
 // AgentConfig holds configuration for the spired client daemon.
@@ -27,6 +42,9 @@ type AgentConfig struct {
 	TokenPath       string
 	CheckinInterval time.Duration
 	PollInterval    time.Duration
+	// AllowInsecureHTTP lets the agent talk to a non-loopback server over plain HTTP
+	// (allow_insecure_http / SPIRE_AGENT_ALLOW_INSECURE_HTTP=1). Lab networks only.
+	AllowInsecureHTTP bool
 }
 
 // Config aggregates server and agent configurations.
@@ -45,6 +63,7 @@ func Load(configPath string) *Config {
 			AdminUsername:    "admin",
 			AdminPassword:    "", // static break-glass account disabled unless explicitly configured
 			KEKPath:          "internal/crypto/kek.pem",
+			WipeSigningKeyPath: "internal/crypto/wipe-signing.pem",
 			AptRepoDir:       "/var/www/apt/spire",
 			BundleStorageDir: "/var/lib/spire/storage/bundles",
 			EnforceHTTPS:     false,
@@ -89,6 +108,9 @@ func Load(configPath string) *Config {
 	if v := os.Getenv("SPIRE_KEK_PATH"); v != "" {
 		cfg.Server.KEKPath = strings.TrimSpace(v)
 	}
+	if v := os.Getenv("SPIRE_WIPE_SIGNING_KEY_PATH"); v != "" {
+		cfg.Server.WipeSigningKeyPath = strings.TrimSpace(v)
+	}
 	if v := os.Getenv("SPIRE_APT_REPO_DIR"); v != "" {
 		cfg.Server.AptRepoDir = strings.TrimSpace(v)
 	}
@@ -97,6 +119,25 @@ func Load(configPath string) *Config {
 	}
 	if v := os.Getenv("SPIRE_ENFORCE_HTTPS"); v != "" {
 		cfg.Server.EnforceHTTPS = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := os.Getenv("SPIRE_MULTI_INSTANCE"); v != "" {
+		cfg.Server.MultiInstance = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_INSTANCE_ID")); v != "" {
+		cfg.Server.InstanceID = v
+		cfg.Server.MultiInstance = true // an explicit instance id implies multi-instance
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_TLS_CERT_FILE")); v != "" {
+		cfg.Server.TLSCertFile = v
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_TLS_KEY_FILE")); v != "" {
+		cfg.Server.TLSKeyFile = v
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_ALLOW_INSECURE_HTTP")); v != "" {
+		cfg.Server.AllowInsecureHTTP = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_ALLOW_INSECURE_HTTP")); v != "" {
+		cfg.Agent.AllowInsecureHTTP = strings.EqualFold(v, "true") || v == "1"
 	}
 	if v := os.Getenv("SPIRE_SERVER_URL"); v != "" {
 		cfg.Agent.ServerURL = strings.TrimRight(v, "/")
@@ -181,6 +222,12 @@ func parseSimpleYAML(path string, cfg *Config) {
 				}
 			case "enforce_https":
 				cfg.Server.EnforceHTTPS = strings.EqualFold(val, "true") || val == "1"
+			case "tls_cert_file":
+				cfg.Server.TLSCertFile = val
+			case "tls_key_file":
+				cfg.Server.TLSKeyFile = val
+			case "allow_insecure_http":
+				cfg.Server.AllowInsecureHTTP = strings.EqualFold(val, "true") || val == "1"
 			}
 		case "agent":
 			switch key {
@@ -192,6 +239,8 @@ func parseSimpleYAML(path string, cfg *Config) {
 				if val != "" {
 					cfg.Agent.TokenPath = val
 				}
+			case "allow_insecure_http":
+				cfg.Agent.AllowInsecureHTTP = strings.EqualFold(val, "true") || val == "1"
 			case "checkin_interval":
 				if d, err := time.ParseDuration(val); err == nil {
 					cfg.Agent.CheckinInterval = d

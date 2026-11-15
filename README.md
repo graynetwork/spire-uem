@@ -136,11 +136,11 @@ curl -s -u "admin:${SPIRE_ADMIN_PASSWORD:-spire-e2e-breakglass-pw}" -X POST http
 ### 3. Enroll a Linux Endpoint
 On the target Debian endpoint, run the single-command zero-touch bootstrap:
 ```bash
-curl -sSL http://<spire-server>:18080/install.sh | sudo bash -s -- \
-  --server http://<spire-server>:18080 \
+curl -sSL https://<spire-server>/install.sh | sudo bash -s -- \
+  --server-url https://<spire-server> \
   --token <ENROLLMENT_TOKEN>
 ```
-The agent automatically registers hardware UUID, extracts TPM capabilities, initializes `/run/spire/agent.sock`, and connects the duplex WebSocket stream.
+The server and agent require TLS outside loopback; see "TLS is required" in `docs/ADMIN_RUNBOOK.md` (lab-only plain HTTP needs `SPIRE_ALLOW_INSECURE_HTTP=1` on the server and `--allow-insecure-http` on the bootstrap). The agent automatically registers hardware UUID, extracts TPM capabilities, initializes `/run/spire/agent.sock`, and connects the duplex WebSocket stream.
 
 ---
 

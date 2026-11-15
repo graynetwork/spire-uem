@@ -1223,7 +1223,7 @@ echo "  -> Published spire-agent_0.1.0_amd64.deb via publish_deb.sh"
 
 # 4. Inside spire-test-debian-client: test bootstrap --use-apt-repo, configure Deb822 source, fetch keyring, run apt-get update, and verify apt-cache policy spire-agent
 BOOTSTRAP_OUTPUT=$(${DOCKER_CMD} exec spire-test-debian-client bash -c '
-curl -fsSL http://spire-server:8080/install.sh | bash -s -- --use-apt-repo http://spire-server:8080/apt
+curl -fsSL http://spire-server:8080/install.sh | bash -s -- --allow-insecure-http --use-apt-repo http://spire-server:8080/apt
 ')
 echo "  -> Client bootstrap via APT repository output:"
 echo "${BOOTSTRAP_OUTPUT}"

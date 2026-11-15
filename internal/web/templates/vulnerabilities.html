@@ -1,0 +1,152 @@
+{{define "vulnerabilities_content"}}
+<div class="space-y-5">
+    {{if .FlashMessage}}
+    <div class="p-3 rounded-md bg-[#141b2a] border border-blue-500/30 text-xs text-slate-200">{{.FlashMessage}}</div>
+    {{end}}
+
+    <!-- Header -->
+    <div class="flex items-start justify-between">
+        <div>
+            <h1 class="text-lg font-semibold text-white">Fleet Vulnerabilities</h1>
+            <p class="text-xs text-slate-500 mt-0.5">CVEs matched from installed source packages against the Debian Security Tracker feed</p>
+            {{if .Scoped}}
+            <p class="text-[11px] text-amber-400 mt-1">Showing only devices tagged {{range $i, $t := .ScopeTags}}{{if $i}}, {{end}}<span class="font-mono">{{$t}}</span>{{end}}.</p>
+            {{end}}
+        </div>
+    </div>
+
+    <!-- Feed freshness + import controls -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-xs font-semibold text-white">Security Feed Status</h2>
+            <span class="text-[11px] text-slate-500">Debian Security Tracker</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+            <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                <div class="text-[10px] text-slate-500">Last import</div>
+                <div class="text-xs font-mono text-slate-200 mt-1">
+                    {{if .FeedState.LastImportedAt}}{{timeAgo .FeedState.LastImportedAt}}{{else}}<span class="text-amber-400">never imported</span>{{end}}
+                </div>
+            </div>
+            <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                <div class="text-[10px] text-slate-500">Records</div>
+                <div class="text-xs font-mono text-slate-200 mt-1 tabular-nums">{{.FeedState.RecordCount}}</div>
+            </div>
+            <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                <div class="text-[10px] text-slate-500">Distinct CVEs</div>
+                <div class="text-xs font-mono text-slate-200 mt-1 tabular-nums">{{.FeedState.CVECount}}</div>
+            </div>
+            <div class="p-2.5 rounded bg-[#141b2a] border border-[#1a2234]">
+                <div class="text-[10px] text-slate-500">Source</div>
+                <div class="text-xs font-mono text-slate-400 mt-1 truncate" title="{{.FeedState.Source}}">{{if .FeedState.Source}}{{.FeedState.Source}}{{else}}—{{end}}</div>
+            </div>
+        </div>
+        {{if .FeedState.LastError}}
+        <div class="mt-3 p-2.5 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-400">
+            Last error: {{.FeedState.LastError}}
+        </div>
+        {{end}}
+
+        <div class="mt-3 flex flex-wrap items-center gap-3 text-[11px]">
+            <span class="text-slate-400">Automatic import (every 24h by default):</span>
+            {{if .AutoImport}}<span class="font-medium text-emerald-400">On</span>{{else}}<span class="font-medium text-slate-300">Off</span>{{end}}
+            {{if .AutoImportEnv}}
+            <span class="text-slate-500">Set by <span class="font-mono">SPIRE_CVE_FEED_ENABLED</span> on the server.</span>
+            {{else if .CanSetAutoImport}}
+            <form action="/admin/vulnerabilities/auto-import" method="POST">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="enabled" value="{{if .AutoImport}}false{{else}}true{{end}}">
+                <button type="submit" class="px-2.5 py-1 rounded-md bg-[#162035] hover:bg-[#1a2234] text-slate-200 border border-[#1a2234] transition">
+                    {{if .AutoImport}}Turn off{{else}}Turn on{{end}}
+                </button>
+            </form>
+            {{else}}
+            <span class="text-slate-500">A super-admin can change this.</span>
+            {{end}}
+            {{if not .AutoImport}}<span class="text-slate-500">The server downloads nothing until it is turned on.</span>{{end}}
+        </div>
+
+        <div class="mt-4 flex flex-col sm:flex-row gap-3">
+            <form action="/admin/vulnerabilities/import" method="POST">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white transition">
+                    Import feed now (online)
+                </button>
+            </form>
+            <form action="/admin/vulnerabilities/upload" method="POST" enctype="multipart/form-data" class="flex items-center gap-2">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="file" name="feed" accept="application/json,.json" required
+                       class="text-[11px] text-slate-400 file:mr-2 file:px-2 file:py-1 file:rounded file:border-0 file:text-[11px] file:bg-[#1c263c] file:text-slate-200 hover:file:bg-[#25334d]">
+                <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-md bg-[#162035] hover:bg-[#1a2234] text-slate-200 border border-[#1a2234] transition">
+                    Offline upload (air-gapped)
+                </button>
+            </form>
+        </div>
+        <p class="text-[10px] text-slate-600 mt-2">
+            Offline path: upload the JSON from
+            <span class="font-mono">security-tracker.debian.org/tracker/data/json</span>, or set
+            <span class="font-mono">SPIRE_CVE_FEED_FILE</span> on the server.
+        </p>
+    </div>
+
+    <!-- Fleet CVE table -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4">
+        <div class="flex items-center justify-between">
+            <h2 class="text-xs font-semibold text-white">Open CVEs across the fleet</h2>
+            <span class="text-[11px] text-slate-500">{{len .FleetCVEs}} CVE{{if ne (len .FleetCVEs) 1}}s{{end}}</span>
+        </div>
+        {{if and .FeedState (not .FeedState.LastImportedAt)}}
+        <div class="mt-3 p-3 rounded bg-[#141b2a] border border-amber-500/20 text-[11px] text-amber-400">
+            The CVE feed has never been imported, so no matching has run. Import it above to populate this list.
+        </div>
+        {{else if .FleetCVEs}}
+        <div class="mt-3 overflow-x-auto">
+            <table class="min-w-full text-left">
+                <thead>
+                    <tr class="text-[11px] font-medium text-slate-500 border-b border-[#1a2234]">
+                        <th class="pb-2 pr-3 font-normal">CVE</th>
+                        <th class="pb-2 pr-3 font-normal">Urgency</th>
+                        <th class="pb-2 pr-3 font-normal text-right">Affected hosts</th>
+                        <th class="pb-2 pr-3 font-normal">Fix</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-[#1a2234]/60 text-xs">
+                    {{range .FleetCVEs}}
+                    <tr class="hover:bg-[#141b2a]/40 transition">
+                        <td class="py-2 pr-3 font-mono text-[11px]">
+                            <a href="https://security-tracker.debian.org/tracker/{{.CVEID}}" target="_blank" rel="noopener noreferrer"
+                               class="text-blue-400 hover:underline">{{.CVEID}}</a>
+                        </td>
+                        <td class="py-2 pr-3">
+                            {{if or (eq .Urgency "high") (eq .Urgency "high**")}}
+                                <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">high</span>
+                            {{else if or (eq .Urgency "medium") (eq .Urgency "medium**")}}
+                                <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">medium</span>
+                            {{else if or (eq .Urgency "low") (eq .Urgency "low**")}}
+                                <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-500/10 text-slate-400 border border-slate-500/20">low</span>
+                            {{else}}
+                                <span class="text-[10px] font-mono text-slate-500">{{if .Urgency}}{{.Urgency}}{{else}}—{{end}}</span>
+                            {{end}}
+                        </td>
+                        <td class="py-2 pr-3 text-right font-mono tabular-nums text-slate-200">{{.AffectedHosts}}</td>
+                        <td class="py-2 pr-3">
+                            {{if .NoFixAvailable}}
+                                <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">no fix available</span>
+                            {{else}}
+                                <span class="text-[10px] font-mono text-emerald-400">fix available</span>
+                            {{end}}
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{else}}
+        <div class="mt-3 p-3 rounded bg-[#141b2a] border border-emerald-500/20 text-[11px] text-emerald-400">
+            No CVE matches across the fleet for the current feed. Either no device reports a vulnerable
+            source package, or devices have not checked in since the last import.
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}

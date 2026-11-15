@@ -81,6 +81,13 @@ func atomicWriteFile(targetPath string, data []byte, perm os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("open temp file %s: %w", tmpPath, err)
 	}
+	// Set the mode explicitly: OpenFile's perm is masked by the umask, and some of these files
+	// (NetworkManager keyfiles with secrets) must never be looser than requested.
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod temp file %s: %w", tmpPath, err)
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmpPath)

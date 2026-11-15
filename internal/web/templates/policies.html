@@ -138,7 +138,7 @@
     <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-5">
         <div class="mb-4">
             <h2 class="text-xs font-semibold text-white">Custom Baseline Policy Creator</h2>
-            <p class="text-[11px] text-slate-400 mt-0.5">Author declarative PACKAGE_PRESENCE, PACKAGE_ABSENCE, DCONF_SETTING, SYSTEMD_SERVICE, or FLATPAK_APP policies.</p>
+            <p class="text-[11px] text-slate-400 mt-0.5">Author declarative PACKAGE_PRESENCE, PACKAGE_ABSENCE, DCONF_SETTING, SYSTEMD_SERVICE, FLATPAK_APP, NETWORK_PROFILE, USB_DEVICE_CONTROL, or AUDITD_RULES policies.</p>
         </div>
 
         <form action="/admin/policies" method="POST" enctype="multipart/form-data" class="space-y-4">
@@ -161,6 +161,12 @@
                         <option value="FLATPAK_APP">FLATPAK_APP (Flatpak Application)</option>
                         <option value="DCONF_SETTING">DCONF_SETTING (Desktop gsettings/dconf)</option>
                         <option value="SYSTEMD_SERVICE">SYSTEMD_SERVICE (Systemd Unit)</option>
+                        <option value="FIREWALL_RULESET">FIREWALL_RULESET (nftables inbound firewall)</option>
+                        <option value="LOCAL_ACCOUNT_POLICY">LOCAL_ACCOUNT_POLICY (password/lockout/sudoers)</option>
+                        <option value="TRUSTED_CA_CERTIFICATES">TRUSTED_CA_CERTIFICATES (system trust anchors)</option>
+                        <option value="NETWORK_PROFILE">NETWORK_PROFILE (NetworkManager Wi-Fi / 802.1X / WireGuard)</option>
+                        <option value="USB_DEVICE_CONTROL">USB_DEVICE_CONTROL (usbguard)</option>
+                        <option value="AUDITD_RULES">AUDITD_RULES (auditd / augenrules)</option>
                     </select>
                 </div>
                 <div>
@@ -304,6 +310,314 @@
                 </div>
             </div>
 
+            <!-- Firewall Ruleset Fields (nftables, table inet spire) -->
+            <div id="fields-firewall" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <p class="text-[11px] text-slate-500">Renders a dedicated <code class="text-slate-400 font-mono">table inet spire</code> only. Outbound traffic is always left open so the agent keeps its control-plane link.</p>
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Default Inbound Policy</label>
+                        <select name="fw_default_inbound" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                            <option value="drop">drop (deny by default)</option>
+                            <option value="accept">accept (allow by default)</option>
+            <!-- Network Profile (NetworkManager) Fields -->
+            <div id="fields-network" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Profile Kind</label>
+                        <select name="np_kind" onchange="toggleNetworkKind(this.value)"
+                            class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                            <option value="wifi">Wi-Fi</option>
+                            <option value="wired_8021x">Wired 802.1X</option>
+                            <option value="wireguard">WireGuard VPN</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="fw_allow_established" value="true" checked class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>Allow established/related</span>
+                        </label>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="fw_allow_loopback" value="true" checked class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>Allow loopback</span>
+                        </label>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="fw_allow_icmp" value="true" class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>Allow ICMP / ICMPv6</span>
+                        </label>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Allowed Inbound Rules</label>
+                    <textarea name="fw_rules" rows="4" placeholder="One rule per line: &lt;tcp|udp&gt; &lt;port[-portEnd]&gt; [source_cidr] [# comment]&#10;tcp 22 10.0.0.0/8 # ssh from mgmt&#10;udp 51820&#10;tcp 8000-8010"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"></textarea>
+                    <p class="text-[10px] text-slate-500 mt-1">Ports and CIDRs are validated server-side before the policy is saved.</p>
+                </div>
+            </div>
+
+            <!-- Local Account Policy Fields -->
+            <div id="fields-local-account" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <p class="text-[11px] text-slate-500">Uses Debian drop-in config (<code class="text-slate-400 font-mono">pwquality.conf.d</code>, <code class="text-slate-400 font-mono">faillock.conf</code>, <code class="text-slate-400 font-mono">login.defs</code>, <code class="text-slate-400 font-mono">sudoers.d/90-spire</code>). Leave a field blank to leave it unmanaged.</p>
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Password min length</label>
+                        <input type="number" name="la_minlen" min="0" max="255" placeholder="14" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Min char classes</label>
+                        <input type="number" name="la_minclass" min="0" max="4" placeholder="3" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Lockout after (fails)</label>
+                        <input type="number" name="la_faillock_deny" min="0" max="1000" placeholder="5" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Unlock after (sec)</label>
+                        <input type="number" name="la_faillock_unlock" min="0" placeholder="900" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Password max age (days)</label>
+                        <input type="number" name="la_pass_max_days" min="0" max="99999" placeholder="365" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Sudo groups (comma/space)</label>
+                        <input type="text" name="la_sudo_groups" placeholder="sudo, admins" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Sudo users (comma/space)</label>
+                        <input type="text" name="la_sudo_users" placeholder="ops" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="la_sudo_nopasswd" value="true" class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                            <span>NOPASSWD (no password for sudo)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trusted CA Certificates Fields -->
+            <div id="fields-trusted-ca" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <p class="text-[11px] text-slate-500">Each PEM is validated as a CA certificate server-side, installed to <code class="text-slate-400 font-mono">/usr/local/share/ca-certificates/spire/</code>, and converged with <code class="text-slate-400 font-mono">update-ca-certificates</code>.</p>
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <div class="sm:col-span-1">
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Certificate name</label>
+                        <input type="text" name="ca_name" placeholder="corp-root" class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                    </div>
+                    <div class="sm:col-span-3">
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">PEM certificate</label>
+                        <textarea name="ca_pem" rows="5" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                            class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white focus:outline-none focus:border-blue-500"></textarea>
+                    </div>
+                </div>
+                <p class="text-[10px] text-slate-500">For multiple CAs, use the Raw JSON Payload Override below with <code class="text-slate-400 font-mono">{"certificates":[{"name":"...","pem":"..."}]}</code>.</p>
+                            <input type="checkbox" name="np_autoconnect" value="true" checked
+                                class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600 focus:ring-blue-500">
+                            <span>Autoconnect</span>
+                        </label>
+                    </div>
+                </div>
+                <p class="text-[10px] text-slate-500">Secrets (Wi-Fi PSK, 802.1X password) are sealed with the server KEK at save and never shown again. The agent writes keyfiles to <code class="font-mono text-slate-400">/etc/NetworkManager/system-connections/spire-&lt;id&gt;.nmconnection</code> (0600, root).</p>
+
+                <!-- Wi-Fi sub-form -->
+                <div id="np-wifi" class="space-y-3 border-t border-[#1a2234] pt-3">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">SSID</label>
+                            <input type="text" name="np_wifi_ssid" placeholder="CorpWifi"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Security</label>
+                            <select name="np_wifi_security" onchange="toggleWifiSecurity(this.value)"
+                                class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                                <option value="wpa2-personal">WPA2-Personal (PSK)</option>
+                                <option value="wpa3-personal">WPA3-Personal (PSK/SAE)</option>
+                                <option value="wpa2-enterprise">WPA2-Enterprise (802.1X)</option>
+                                <option value="wpa3-enterprise">WPA3-Enterprise (802.1X)</option>
+                            </select>
+                        </div>
+                        <div class="flex items-end pb-1.5">
+                            <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                                <input type="checkbox" name="np_wifi_hidden" value="true"
+                                    class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600">
+                                <span>Hidden network</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div id="np-wifi-personal" class="grid grid-cols-1 gap-3">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Pre-Shared Key (8–63 chars)</label>
+                            <input type="password" name="np_wifi_psk" autocomplete="new-password" placeholder="PSK (sealed at save, never shown again)"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                    </div>
+                    <div id="np-wifi-enterprise" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">EAP Method</label>
+                            <select name="np_wifi_eap" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                                <option value="peap-mschapv2">PEAP-MSCHAPv2</option>
+                                <option value="tls">EAP-TLS</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Identity</label>
+                            <input type="text" name="np_wifi_identity" placeholder="user@corp or host/workstation"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">CA Certificate (PEM)</label>
+                            <textarea name="np_wifi_ca_cert" rows="2" placeholder="-----BEGIN CERTIFICATE-----"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">PEAP Password</label>
+                            <input type="password" name="np_wifi_password" autocomplete="new-password" placeholder="PEAP-MSCHAPv2 password (sealed)"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-[11px] font-medium text-slate-300 mb-1">Client Cert (PEM, EAP-TLS)</label>
+                                <textarea name="np_wifi_client_cert" rows="2" placeholder="-----BEGIN CERTIFICATE-----"
+                                    class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-medium text-slate-300 mb-1">Client Key (PEM, EAP-TLS)</label>
+                                <textarea name="np_wifi_client_key" rows="2" placeholder="-----BEGIN PRIVATE KEY-----"
+                                    class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Wired 802.1X sub-form -->
+                <div id="np-wired" class="hidden space-y-3 border-t border-[#1a2234] pt-3">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">EAP Method</label>
+                            <select name="np_wired_eap" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                                <option value="peap-mschapv2">PEAP-MSCHAPv2</option>
+                                <option value="tls">EAP-TLS</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Identity</label>
+                            <input type="text" name="np_wired_identity" placeholder="host/workstation"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">CA Certificate (PEM)</label>
+                            <textarea name="np_wired_ca_cert" rows="2" placeholder="-----BEGIN CERTIFICATE-----"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Password (PEAP)</label>
+                            <input type="password" name="np_wired_password" autocomplete="new-password" placeholder="sealed at save"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Client Cert (PEM, EAP-TLS)</label>
+                            <textarea name="np_wired_client_cert" rows="2"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Client Key (PEM, EAP-TLS)</label>
+                            <textarea name="np_wired_client_key" rows="2"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- WireGuard sub-form -->
+                <div id="np-wireguard" class="hidden space-y-3 border-t border-[#1a2234] pt-3">
+                    <p class="text-[10px] text-emerald-400/80">The device generates its own WireGuard private key locally and reports the derived <strong>public key</strong> back in its compliance output — register that as the device's peer upstream. The server never holds the private key.</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Interface Address(es) (CIDR, comma-sep)</label>
+                            <input type="text" name="np_wg_address" placeholder="10.7.0.5/32"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">DNS (comma-sep, optional)</label>
+                            <input type="text" name="np_wg_dns" placeholder="10.7.0.1"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Peer Public Key</label>
+                            <input type="text" name="np_wg_peer_public_key" placeholder="base64 server/peer public key"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Peer Endpoint</label>
+                            <input type="text" name="np_wg_peer_endpoint" placeholder="vpn.corp:51820"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Allowed IPs (CIDR, comma-sep)</label>
+                            <input type="text" name="np_wg_peer_allowed_ips" placeholder="0.0.0.0/0"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Peer Preshared Key (optional)</label>
+                            <input type="password" name="np_wg_peer_psk" autocomplete="new-password" placeholder="optional, sealed at save"
+                                class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- USB Device Control (usbguard) Fields -->
+            <div id="fields-usb" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Mode</label>
+                        <select name="usb_mode" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                            <option value="block_new">Block new devices except allow-list</option>
+                            <option value="allow_all">Allow all (control disabled)</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
+                            <input type="checkbox" name="usb_allow_hid" value="true" checked onchange="warnHIDRemoval(this)"
+                                class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600 focus:ring-blue-500">
+                            <span>Always allow HID (keyboards/mice)</span>
+                        </label>
+                    </div>
+                </div>
+                <p id="usb-hid-warning" class="hidden text-[11px] text-rose-400">Warning: with HID allow disabled, a device with no other allow-list match can lock out its keyboard and mouse. Only disable this if you understand the lockout risk.</p>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Allow-list (one per line: <code class="font-mono text-slate-400">vendor:product</code>, <code class="font-mono text-slate-400">vendor:*</code>, <code class="font-mono text-slate-400">class:03</code>, <code class="font-mono text-slate-400">serial:ABC123</code>; <code class="font-mono text-slate-400"># comment</code>)</label>
+                    <textarea name="usb_allow_list" rows="4" placeholder="046d:c52b  # Logitech receiver&#10;0781:*&#10;class:08  # mass storage"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                    <p class="text-[10px] text-slate-500 mt-1">On first apply in block-new mode, devices currently plugged in are grandfathered so nothing already connected breaks.</p>
+                </div>
+            </div>
+
+            <!-- Auditd Rules Fields -->
+            <div id="fields-auditd" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">CIS Presets (comma-sep: <code class="font-mono text-slate-400">identity, sudoers, time_change, module_loading</code>)</label>
+                    <input type="text" name="auditd_presets" placeholder="identity, sudoers, time_change"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Watch rules (one per line: <code class="font-mono text-slate-400">&lt;path&gt; &lt;perms rwxa&gt; &lt;key&gt;</code>)</label>
+                    <textarea name="auditd_watches" rows="3" placeholder="/etc/ssh/sshd_config wa sshd&#10;/var/log/auth.log wa authlog"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Syscall rules (one per line: <code class="font-mono text-slate-400">&lt;action,filter&gt; &lt;syscall[,syscall]&gt; &lt;key&gt;</code>)</label>
+                    <textarea name="auditd_syscalls" rows="3" placeholder="always,exit execve mounts&#10;always,exit mount,umount2 mounts"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                    <p class="text-[10px] text-slate-500 mt-1">Agent writes <code class="font-mono text-slate-400">/etc/audit/rules.d/90-spire.rules</code>, validates with <code class="font-mono text-slate-400">augenrules --check</code>, loads with <code class="font-mono text-slate-400">augenrules --load</code>; other rules files are never touched.</p>
+                </div>
+            </div>
+
             <!-- Optional Raw JSON Payload Override -->
             <div>
                 <label class="block text-[11px] font-medium text-slate-500 mb-1">Raw JSON Payload Override (Optional)</label>
@@ -400,10 +714,20 @@ function togglePolicyFields(policyType) {
     const flatpak = document.getElementById('fields-flatpak');
     const dconf = document.getElementById('fields-dconf');
     const sysd = document.getElementById('fields-systemd');
+    const firewall = document.getElementById('fields-firewall');
+    const localAccount = document.getElementById('fields-local-account');
+    const trustedCA = document.getElementById('fields-trusted-ca');
     pkg.classList.add('hidden');
     flatpak.classList.add('hidden');
     dconf.classList.add('hidden');
     sysd.classList.add('hidden');
+    firewall.classList.add('hidden');
+    localAccount.classList.add('hidden');
+    trustedCA.classList.add('hidden');
+    const net = document.getElementById('fields-network');
+    const usb = document.getElementById('fields-usb');
+    const auditd = document.getElementById('fields-auditd');
+    [pkg, flatpak, dconf, sysd, net, usb, auditd].forEach(function (el) { if (el) el.classList.add('hidden'); });
 
     if (policyType === 'PACKAGE_ABSENCE' || policyType === 'PACKAGE_PRESENCE') {
         pkg.classList.remove('hidden');
@@ -413,7 +737,43 @@ function togglePolicyFields(policyType) {
         dconf.classList.remove('hidden');
     } else if (policyType === 'SYSTEMD_SERVICE') {
         sysd.classList.remove('hidden');
+    } else if (policyType === 'FIREWALL_RULESET') {
+        firewall.classList.remove('hidden');
+    } else if (policyType === 'LOCAL_ACCOUNT_POLICY') {
+        localAccount.classList.remove('hidden');
+    } else if (policyType === 'TRUSTED_CA_CERTIFICATES') {
+        trustedCA.classList.remove('hidden');
+    } else if (policyType === 'NETWORK_PROFILE') {
+        net.classList.remove('hidden');
+        toggleNetworkKind(document.querySelector('[name="np_kind"]').value);
+    } else if (policyType === 'USB_DEVICE_CONTROL') {
+        usb.classList.remove('hidden');
+    } else if (policyType === 'AUDITD_RULES') {
+        auditd.classList.remove('hidden');
     }
+}
+
+function toggleNetworkKind(kind) {
+    const wifi = document.getElementById('np-wifi');
+    const wired = document.getElementById('np-wired');
+    const wg = document.getElementById('np-wireguard');
+    [wifi, wired, wg].forEach(function (el) { if (el) el.classList.add('hidden'); });
+    if (kind === 'wifi') { wifi.classList.remove('hidden'); toggleWifiSecurity(document.querySelector('[name="np_wifi_security"]').value); }
+    else if (kind === 'wired_8021x') wired.classList.remove('hidden');
+    else if (kind === 'wireguard') wg.classList.remove('hidden');
+}
+
+function toggleWifiSecurity(sec) {
+    const personal = document.getElementById('np-wifi-personal');
+    const enterprise = document.getElementById('np-wifi-enterprise');
+    const isEnt = (sec === 'wpa2-enterprise' || sec === 'wpa3-enterprise');
+    if (personal) personal.classList.toggle('hidden', isEnt);
+    if (enterprise) enterprise.classList.toggle('hidden', !isEnt);
+}
+
+function warnHIDRemoval(cb) {
+    const warn = document.getElementById('usb-hid-warning');
+    if (warn) warn.classList.toggle('hidden', cb.checked);
 }
 
 async function uploadWallpaperAsset(fileInput, mode) {

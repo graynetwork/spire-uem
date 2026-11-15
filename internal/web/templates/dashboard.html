@@ -5,6 +5,9 @@
         <div>
             <h1 class="text-lg font-semibold tracking-tight text-white">Fleet Operations Overview</h1>
             <p class="text-xs text-slate-400 mt-0.5">Desired-state compliance, live patch telemetry, and CIS benchmark audit.</p>
+            {{if .Metrics.Scoped}}
+            <p class="text-[11px] text-amber-400 mt-1">Showing only devices tagged {{range $i, $t := .Metrics.ScopeTags}}{{if $i}}, {{end}}<span class="font-mono">{{$t}}</span>{{end}}.</p>
+            {{end}}
         </div>
         <div class="flex items-center space-x-2.5">
             <button hx-get="/admin/dashboard/metrics" hx-target="#metric-cards" hx-swap="outerHTML" class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 border border-[#1a2234] transition">
@@ -99,6 +102,8 @@
             <div class="relative my-3 flex items-center justify-center h-48">
                 {{if .Metrics.PatchTrend}}
                 <canvas id="packageTrendsChart" data-trend="{{toJSON .Metrics.PatchTrend}}"></canvas>
+                {{else if .Metrics.Scoped}}
+                <p class="text-xs text-slate-500 text-center px-4">The daily trend is recorded for the whole fleet only, so it is not shown to accounts limited to device tags.</p>
                 {{else}}
                 <p class="text-xs text-slate-500 text-center px-4">No patch data yet. The trend starts with the first agent check-in that reports pending updates.</p>
                 {{end}}
@@ -471,6 +476,12 @@
         <div class="text-[11px] font-medium text-slate-400">Security Updates</div>
         <div class="text-xl font-semibold font-mono text-rose-400 mt-1.5 tabular-nums">{{.Metrics.SecurityUpdates}}</div>
         <div class="text-[10px] text-slate-500 mt-1">Pending security updates, fleet total</div>
+        <a href="/admin/vulnerabilities" class="mt-2 pt-2 border-t border-[#1a2234] flex items-center justify-between text-[10px] group">
+            <span class="text-slate-400 group-hover:text-slate-200 transition">Open CVEs</span>
+            <span class="font-mono {{if .Metrics.OpenCVEs}}text-rose-400{{else}}text-emerald-400{{end}}">
+                {{.Metrics.OpenCVEs}}{{if .Metrics.HighUrgencyCVEs}} <span class="text-rose-500">({{.Metrics.HighUrgencyCVEs}} high)</span>{{end}}
+            </span>
+        </a>
     </div>
 </div>
 {{end}}

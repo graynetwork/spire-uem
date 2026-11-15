@@ -115,22 +115,27 @@ func TestRepository_ClaimApprovedToken_Transaction(t *testing.T) {
 		t.Fatalf("failed to create test device: %v", err)
 	}
 
-	// Approve device to stage pending token
+	// Approval only marks the token as claimable; no token exists yet.
 	approvedDev, rawToken, err := repo.ApproveDevice(ctx, dev.ID)
 	if err != nil {
 		t.Fatalf("failed to approve device: %v", err)
 	}
-	if rawToken == "" {
-		t.Fatalf("expected non-empty rawToken")
+	if rawToken != "" {
+		t.Fatalf("ApproveDevice must not return or stage a raw token, got %q", rawToken)
 	}
 
-	// First claim: must succeed atomically
-	claimedToken, err := repo.ClaimApprovedToken(ctx, approvedDev)
+	// A fresh Repository (as after a server restart) can still issue the token, because
+	// the pending claim lives in the database rather than in process memory.
+	restarted := db.NewRepository(pool)
+	claimedToken, err := restarted.ClaimApprovedToken(ctx, approvedDev)
 	if err != nil {
 		t.Fatalf("first ClaimApprovedToken failed: %v", err)
 	}
-	if claimedToken != rawToken {
-		t.Errorf("claimedToken (%s) != staged rawToken (%s)", claimedToken, rawToken)
+	if len(claimedToken) != 64 {
+		t.Fatalf("expected a 64-char hex token, got %q", claimedToken)
+	}
+	if got, err := repo.GetDeviceByTokenHash(ctx, db.HashToken(claimedToken)); err != nil || got == nil || got.ID != dev.ID {
+		t.Fatalf("issued token does not authenticate the device: dev=%v err=%v", got, err)
 	}
 
 	// Second claim: must return ErrTokenAlreadyClaimed

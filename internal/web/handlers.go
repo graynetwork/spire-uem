@@ -27,6 +27,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/auth"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -46,6 +47,22 @@ type Handler struct {
 	aptRepoDir       string
 	bundleStorageDir string
 	enforceHTTPS     bool
+	alertStore       *db.AlertStore
+	alertMgr         *alerts.Manager
+}
+
+// SetAlerting wires the alert store and manager used by the Alerts admin page and
+// by the event hooks in the web and agent-API handlers.
+func (h *Handler) SetAlerting(store *db.AlertStore, mgr *alerts.Manager) {
+	h.alertStore = store
+	h.alertMgr = mgr
+}
+
+// notify raises an alert if alerting is wired; a no-op otherwise.
+func (h *Handler) notify(ctx context.Context, ev alerts.Event) {
+	if h.alertMgr != nil {
+		h.alertMgr.Notify(ctx, ev)
+	}
 }
 
 // SetEnforceHTTPS configures HTTPS cookie security enforcement on the web handler.
@@ -168,6 +185,12 @@ func NewHandler(repo *db.Repository, hub *gateway.GatewayHub, auditor *audit.For
 		}
 	}
 	oidcSvc := auth.NewService(ssoSettings)
+	// In a multi-instance deployment the OIDC authorization-code flow's /login and
+	// /callback requests can land on different instances. Back the login state with
+	// Postgres so any instance can complete a sign-in started elsewhere.
+	if repo != nil {
+		oidcSvc.SetStateStore(auth.NewPostgresStateStore(repo))
+	}
 
 	return &Handler{
 		repo:             repo,
@@ -187,12 +210,16 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	csrfToken := CSRFTokenFromContext(r.Context())
 
-	metrics, err := h.repo.GetDashboardMetrics(r.Context())
+	metrics, err := h.repo.GetDashboardMetricsScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] failed to get dashboard metrics: %v", err)
 		metrics = &types.DashboardMetrics{
 			OSDistribution: make(map[string]int),
 		}
+	}
+	if total, high, err := h.repo.CountOpenCVEsByUrgencyScoped(r.Context(), h.deviceScope(r)); err == nil {
+		metrics.OpenCVEs = total
+		metrics.HighUrgencyCVEs = high
 	}
 
 	data := map[string]any{
@@ -214,12 +241,16 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 
 // DashboardMetricsPartial renders the #metric-cards HTML partial for HTMX auto-refreshing.
 func (h *Handler) DashboardMetricsPartial(w http.ResponseWriter, r *http.Request) {
-	metrics, err := h.repo.GetDashboardMetrics(r.Context())
+	metrics, err := h.repo.GetDashboardMetricsScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] failed to get dashboard metrics partial: %v", err)
 		metrics = &types.DashboardMetrics{
 			OSDistribution: make(map[string]int),
 		}
+	}
+	if total, high, err := h.repo.CountOpenCVEsByUrgencyScoped(r.Context(), h.deviceScope(r)); err == nil {
+		metrics.OpenCVEs = total
+		metrics.HighUrgencyCVEs = high
 	}
 
 	data := map[string]any{
@@ -235,7 +266,7 @@ func (h *Handler) DashboardMetricsPartial(w http.ResponseWriter, r *http.Request
 
 // DashboardBenchmarkCardPartial renders the #active-benchmark-card HTML partial for HTMX auto-refreshing.
 func (h *Handler) DashboardBenchmarkCardPartial(w http.ResponseWriter, r *http.Request) {
-	metrics, err := h.repo.GetDashboardMetrics(r.Context())
+	metrics, err := h.repo.GetDashboardMetricsScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] failed to get metrics for benchmark card: %v", err)
 		metrics = &types.DashboardMetrics{}
@@ -313,6 +344,8 @@ func (h *Handler) TriggerFleetScan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to load devices", http.StatusInternalServerError)
 		return
 	}
+	// "Scan all" means all devices in the admin's tag scope.
+	devices = scopeDevices(r, devices)
 
 	profile := strings.TrimSpace(r.FormValue("profile"))
 	if profile == "" {
@@ -398,9 +431,16 @@ func (h *Handler) RemediateBenchmarkRule(w http.ResponseWriter, r *http.Request)
 
 	// If deviceID not specified, look up from latest scan
 	if deviceID == "" {
-		if summary, err := h.repo.GetLatestFleetBenchmarkSummary(r.Context()); err == nil && summary.LatestDeviceID != "" {
+		if summary, err := h.repo.GetLatestFleetBenchmarkSummaryScoped(r.Context(), h.deviceScope(r)); err == nil && summary.LatestDeviceID != "" {
 			deviceID = summary.LatestDeviceID
 		}
+	}
+
+	// A scoped admin may only remediate devices in their tag scope (device id comes from
+	// the body or the latest fleet scan, never from the URL path).
+	if deviceID != "" && !h.deviceInScope(r, deviceID) {
+		denyOutOfScope(w, r)
+		return
 	}
 
 	// Check if policy already exists; if not, create active policy from template
@@ -574,6 +614,7 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 		}
 
 		if authenticatedUsername == "" {
+			h.recordLoginFailure(r, user)
 			if strings.Contains(r.Header.Get("Accept"), "application/json") {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
@@ -591,6 +632,40 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 		}
 
 		secure := ShouldEnforceHTTPSCookie(h.enforceHTTPS, r)
+
+		// MFA second factor: a verified LOCAL account with MFA enabled does NOT get a
+		// session yet. Begin a short-lived, single-use pending-login challenge instead;
+		// the session is issued only after /login/mfa verifies the second factor.
+		if authenticatedUser != nil && authenticatedUser.AuthProvider == types.AuthProviderLocal {
+			enr, mfaErr := h.repo.GetMFAEnrollment(r.Context(), authenticatedUser.ID)
+			if mfaErr == nil && enr.Enabled {
+				h.beginMFAChallenge(w, r, authenticatedUser, secure)
+				return
+			}
+			// Mandatory-MFA policy: a local account without MFA is signed in but routed
+			// straight to enrollment, which it must complete.
+			if (mfaErr != nil || !enr.Enabled) && h.requireMFAEnabled(r) {
+				cookie, _, err := IssueSession(r.Context(), h.repo, authenticatedUsername, secure)
+				if err != nil {
+					http.Error(w, "Failed to create session", http.StatusInternalServerError)
+					return
+				}
+				http.SetCookie(w, cookie)
+				if h.auditor != nil {
+					_, _, _ = h.auditor.Emit(r.Context(), authenticatedUsername, "LOGIN_SUCCESS", authenticatedUser.ID, r.RemoteAddr, map[string]any{
+						"auth_provider":  "LOCAL",
+						"mfa_enrollment": "forced",
+					})
+				}
+				if strings.Contains(r.Header.Get("Accept"), "application/json") {
+					writeJSON(w, http.StatusOK, map[string]any{"status": "mfa_enrollment_required", "redirect": "/admin/account/mfa/setup"})
+					return
+				}
+				http.Redirect(w, r, "/admin/account/mfa/setup?forced=1", http.StatusSeeOther)
+				return
+			}
+		}
+
 		cookie, csrfToken, err := IssueSession(r.Context(), h.repo, authenticatedUsername, secure)
 		if err != nil {
 			http.Error(w, "Failed to create session", http.StatusInternalServerError)
@@ -642,6 +717,15 @@ func (h *Handler) ExportComplianceAudit(w http.ResponseWriter, r *http.Request) 
 		log.Printf("[web] get compliance audit snapshot error: %v", err)
 		http.Error(w, "Failed to generate compliance audit snapshot", http.StatusInternalServerError)
 		return
+	}
+	if allowed, scoped := AllowedTagsForContext(r); scoped {
+		kept := records[:0]
+		for _, rec := range records {
+			if tagsIntersect(rec.DeviceTags, allowed) {
+				kept = append(kept, rec)
+			}
+		}
+		records = kept
 	}
 
 	ts := time.Now().UTC().Format("20060102-150405")
@@ -792,7 +876,7 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	ring := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("ring")))
 
-	summary, err := h.repo.GetFleetSummary(r.Context())
+	summary, err := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] get fleet summary error: %v", err)
 		summary = &types.FleetSummary{CompliancePercent: 100}
@@ -803,6 +887,17 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[web] list devices filtered error: %v", err)
 		http.Error(w, "Failed to load devices", http.StatusInternalServerError)
 		return
+	}
+
+	// Operator tag scoping: a scoped operator only sees devices carrying one of their tags.
+	if allowed, scoped := AllowedTagsForContext(r); scoped {
+		filtered := devices[:0]
+		for _, d := range devices {
+			if tagsIntersect(d.Tags, allowed) {
+				filtered = append(filtered, d)
+			}
+		}
+		devices = filtered
 	}
 
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
@@ -905,9 +1000,25 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 
 	selfServiceCatalog, _ := h.repo.GetSelfServiceCatalogForDevice(r.Context(), dev.ID)
 	benchmarkScans, _ := h.repo.ListDeviceBenchmarkScans(r.Context(), dev.ID)
+	deviceCVEs, cveErr := h.repo.ListDeviceCVEMatches(r.Context(), dev.ID)
+	if cveErr != nil {
+		log.Printf("[web] list device CVE matches %s error: %v", id, cveErr)
+	}
+	cveFeedState, _ := h.repo.GetCVEFeedState(r.Context())
 	var latestBenchmark *types.BenchmarkScan
 	if len(benchmarkScans) > 0 {
 		latestBenchmark = benchmarkScans[0]
+	}
+
+	// Lost-device action state: LOST directive, wipe requests (two-person), and queued/past
+	// LUKS key rotations. Opportunistically expire stale wipe approvals on page load.
+	_ = h.repo.ExpireStaleWipeApprovals(r.Context())
+	lostState, _ := h.repo.GetDeviceLostState(r.Context(), dev.ID)
+	wipeRequests, _ := h.repo.ListWipeRequests(r.Context(), dev.ID)
+	openWipe, _ := h.repo.GetOpenWipeRequest(r.Context(), dev.ID)
+	luksRotations, _ := h.repo.ListLUKSRotations(r.Context(), dev.ID)
+	if isLost, seenIP, activeUser, err := h.repo.GetDeviceLostFacts(r.Context(), dev.ID); err == nil {
+		dev.IsLost, dev.LastSeenIP, dev.LastActiveUser = isLost, seenIP, activeUser
 	}
 
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
@@ -965,6 +1076,14 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"CompliantCount":     compliantCount,
 		"PendingCount":       pendingCount,
 		"FailedCount":        failedCount,
+		"DeviceCVEs":         deviceCVEs,
+		"DeviceCVECount":     len(deviceCVEs),
+		"CVEFeedState":       cveFeedState,
+		"LostState":          lostState,
+		"WipeRequests":       wipeRequests,
+		"OpenWipe":           openWipe,
+		"LUKSRotations":      luksRotations,
+		"AdminRole":          string(AdminRoleFromContext(r.Context())),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1030,6 +1149,13 @@ func (h *Handler) RevealLUKSRawRecoveryKey(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// The device id may come from the request body (/api/v1/auth/recovery-key), which
+	// DeviceScopeMiddleware cannot see, so check tag scope here.
+	if !h.deviceInScope(r, id) {
+		denyOutOfScope(w, r)
+		return
+	}
+
 	escrow, err := h.repo.GetLUKSEscrowByDeviceAndVolume(r.Context(), id, volumeUUID)
 	if err != nil {
 		log.Printf("[web] get luks escrow for device=%s volume=%s error: %v", id, volumeUUID, err)
@@ -1072,6 +1198,28 @@ func (h *Handler) RevealLUKSRawRecoveryKey(w http.ResponseWriter, r *http.Reques
 
 	log.Printf("[web] AUDIT: LUKS2 recovery key revealed device=%s volume=%s admin=%s reason=%q ip=%s",
 		id, escrow.VolumeUUID, adminUser, reason, r.RemoteAddr)
+
+	// Revealing a key puts it in an admin's hands, so automatically queue a rotation: the
+	// agent adds a fresh recovery key, re-escrows it, and removes the revealed slot on its
+	// next contact. Failure to queue must not fail the reveal itself.
+	if _, rotErr := h.repo.QueueLUKSRotation(r.Context(), id, escrow.VolumeUUID, adminUser, "auto-rotate after key reveal: "+reason); rotErr != nil {
+		log.Printf("[web] warning: failed to queue LUKS rotation after reveal device=%s volume=%s: %v", id, escrow.VolumeUUID, rotErr)
+	} else if h.hub != nil && h.hub.IsConnected(id) {
+		_ = h.hub.TriggerCheckin(id)
+	}
+	h.notify(r.Context(), alerts.Event{
+		Kind:     alerts.EventLUKSKeyRevealed,
+		Severity: alerts.SeverityCritical,
+		Subject:  fmt.Sprintf("LUKS recovery key revealed for device %s (volume %s) by %s", id, escrow.VolumeUUID, adminUser),
+		DeviceID: id,
+		Details: map[string]any{
+			"device_id":   id,
+			"volume_uuid": escrow.VolumeUUID,
+			"mount_point": escrow.MountPoint,
+			"admin":       adminUser,
+			"reason":      reason,
+		},
+	})
 
 	revealedResp := &types.RevealRecoveryKeyResponse{
 		DeviceID:    id,
@@ -1229,13 +1377,15 @@ func (h *Handler) DeviceLiveWS(w http.ResponseWriter, r *http.Request) {
 
 // ListSystemAuditEventsJSON handles GET /admin/audit/events, returning recent system_audit_events and RFC 5424 syslog frames.
 func (h *Handler) ListSystemAuditEventsJSON(w http.ResponseWriter, r *http.Request) {
-	events, err := h.repo.ListSystemAuditEvents(r.Context(), 50)
+	events, err := h.repo.ListSystemAuditEventsScoped(r.Context(), 50, h.deviceScope(r))
 	if err != nil {
 		http.Error(w, "Failed to list system audit events", http.StatusInternalServerError)
 		return
 	}
 	var rfc5424Lines []string
-	if h.auditor != nil {
+	// The in-memory syslog frames are fleet-wide and cannot be filtered by device tag,
+	// so a tag-scoped admin gets only the filtered events.
+	if h.auditor != nil && !h.deviceScope(r).Scoped {
 		rfc5424Lines = h.auditor.RecentRFC5424()
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -1268,6 +1418,14 @@ func (h *Handler) ApproveDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[web] device approved id=%s hostname=%s hw=%s", dev.ID, dev.Hostname, dev.HardwareUUID)
+	h.notify(r.Context(), alerts.Event{
+		Kind:     alerts.EventDeviceApproved,
+		Severity: alerts.SeverityInfo,
+		Subject:  fmt.Sprintf("Device %s was approved", dev.Hostname),
+		DeviceID: dev.ID,
+		Hostname: dev.Hostname,
+		Details:  map[string]any{"hostname": dev.Hostname, "hardware_uuid": dev.HardwareUUID},
+	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "device_row", dev); err != nil {
 		log.Printf("[web] render device_row error: %v", err)
@@ -1293,6 +1451,14 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[web] device revoked id=%s hostname=%s hw=%s", dev.ID, dev.Hostname, dev.HardwareUUID)
+	h.notify(r.Context(), alerts.Event{
+		Kind:     alerts.EventDeviceRevoked,
+		Severity: alerts.SeverityWarning,
+		Subject:  fmt.Sprintf("Device %s was revoked", dev.Hostname),
+		DeviceID: dev.ID,
+		Hostname: dev.Hostname,
+		Details:  map[string]any{"hostname": dev.Hostname, "hardware_uuid": dev.HardwareUUID},
+	})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "device_row", dev); err != nil {
 		log.Printf("[web] render device_row error: %v", err)
@@ -1319,6 +1485,14 @@ func (h *Handler) UpdateDeviceTags(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		tags = parseCommaSeparatedTags(r.FormValue("tags"))
+	}
+
+	// Tag-escape prevention: a scoped operator may not set a tag list that would move the
+	// device out of their own scope (the middleware already verified it is currently in
+	// scope). Unscoped admins are unaffected.
+	if ok, reason := ScopedUpdatedTagsAllowed(AdminUserObjFromContext(r.Context()), tags); !ok {
+		http.Error(w, reason, http.StatusForbidden)
+		return
 	}
 
 	dev, err := h.repo.UpdateDeviceTags(r.Context(), id, tags)
@@ -1515,7 +1689,7 @@ func (h *Handler) ListPoliciesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 	var totalHosts int
 	if summary != nil {
 		totalHosts = summary.TotalDevices
@@ -1527,8 +1701,12 @@ func (h *Handler) ListPoliciesPage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("[web] list devices error for policy inspector: %v", err)
 	}
+	devices = scopeDevices(r, devices)
 
 	selectedDeviceID := strings.TrimSpace(r.URL.Query().Get("device_id"))
+	if selectedDeviceID != "" && !h.deviceInScope(r, selectedDeviceID) {
+		selectedDeviceID = ""
+	}
 	var (
 		selectedDevice              *types.Device
 		selectedDevicePolicyDetails []types.DevicePolicyDetail
@@ -1588,6 +1766,9 @@ func (h *Handler) HostPoliciesCompliancePartial(w http.ResponseWriter, r *http.R
 	}
 
 	dev, err := h.repo.GetDeviceByID(r.Context(), deviceID)
+	if err == nil && dev != nil && !h.deviceInScope(r, dev.ID) {
+		dev = nil // out of scope reads exactly like "not found"
+	}
 	if err != nil || dev == nil {
 		_, _ = fmt.Fprint(w, `<div class="p-4 rounded-lg bg-rose-500/10 border border-rose-500/30 text-xs text-rose-400 font-mono">Host not found or invalid device ID.</div>`)
 		return
@@ -1698,6 +1879,12 @@ func (h *Handler) DeviceTerminalWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GatewayHub not initialized", http.StatusServiceUnavailable)
 		return
 	}
+	// PTY streaming is not routed across instances. If this device's socket is held by a
+	// different instance, tell the operator to reconnect to that instance (sticky routing).
+	if owner, elsewhere := h.hub.DeviceOwnerInstance(r.Context(), id); elsewhere {
+		http.Error(w, fmt.Sprintf("device is connected to instance %q; interactive terminal requires a session on that instance. Configure the load balancer to pin /admin/devices/%s/terminal to instance %q (sticky routing), or retry until the load balancer routes you there.", owner, id, owner), http.StatusConflict)
+		return
+	}
 	h.hub.ServeAdminTerminal(w, r, id, AdminUserFromContext(r.Context()), h.auditor)
 }
 
@@ -1709,6 +1896,11 @@ func (h *Handler) RequestRemoteAssist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adminUser := AdminUserFromContext(r.Context())
+
+	if owner, elsewhere := h.hub.DeviceOwnerInstance(r.Context(), id); elsewhere {
+		http.Error(w, fmt.Sprintf("device is connected to instance %q; remote assist requires a session on that instance. Pin this request to instance %q (sticky routing) — see docs/ADMIN_RUNBOOK.md.", owner, owner), http.StatusConflict)
+		return
+	}
 
 	resp, err := h.hub.RequestRemoteAssist(r.Context(), id, adminUser)
 	if err != nil {
@@ -1932,6 +2124,17 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 	if name == "" || policyType == "" || len(payloadRaw) == 0 || !json.Valid(payloadRaw) {
 		http.Error(w, "name, policy_type, and valid policy fields/JSON payload are required", http.StatusBadRequest)
 		return
+	}
+
+	// policy-types-b: seal any plaintext secrets in the payload (e.g. NETWORK_PROFILE PSK / EAP
+	// password) with the server KEK before persistence, so the stored payload and the admin UI
+	// never hold plaintext. No-op for policy types without secrets.
+	if sealed, serr := h.sealPolicyPayloadSecrets(policyType, payloadRaw); serr != nil {
+		log.Printf("[web] seal policy secrets error: %v", serr)
+		http.Error(w, "Failed to secure policy secrets", http.StatusInternalServerError)
+		return
+	} else {
+		payloadRaw = sealed
 	}
 
 	pol, err := h.repo.CreatePolicyWithAssignment(
@@ -2190,6 +2393,21 @@ func buildStructuredPolicyPayload(r *http.Request, policyType types.PolicyType) 
 		})
 		return b, err
 
+	case types.PolicyTypeFirewallRuleset:
+		return buildFirewallRulesetPayload(r)
+
+	case types.PolicyTypeLocalAccountPolicy:
+		return buildLocalAccountPolicyPayload(r)
+
+	case types.PolicyTypeTrustedCACerts:
+		return buildTrustedCACertificatesPayload(r)
+	case types.PolicyTypeNetworkProfile:
+		return buildNetworkProfilePayload(r)
+	case types.PolicyTypeUSBDeviceControl:
+		return buildUSBDeviceControlPayload(r)
+	case types.PolicyTypeAuditdRules:
+		return buildAuditdRulesPayload(r)
+
 	default:
 		return nil, fmt.Errorf("unsupported policy_type: %s", policyType)
 	}
@@ -2232,7 +2450,7 @@ func (h *Handler) ListApplications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 	data := map[string]any{
 		"Title":        "Application Catalog & Self-Service",
 		"ActiveNav":    "applications",
@@ -2902,7 +3120,7 @@ func (h *Handler) UpdateApplicationAssignment(w http.ResponseWriter, r *http.Req
 	h.dispatchPolicyCheckin(r.Context(), updatedPol)
 
 	// Recalculate fleet compliance metrics
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 
 	if h.auditor != nil {
 		adminUser := AdminUserFromContext(r.Context())
@@ -3296,11 +3514,23 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 
 	activeTab := strings.TrimSpace(r.URL.Query().Get("tab"))
 	if activeTab == "" {
 		activeTab = "general"
+	}
+
+	cveFeedState, _ := h.repo.GetCVEFeedState(r.Context())
+	// Agent self-update rollout control (SUPER_ADMIN). Resolved from system_settings into a
+	// flat map the template reads directly.
+	rolloutCfg, _ := h.repo.GetAgentRolloutConfig(r.Context())
+	rollout := map[string]string{
+		"MinimumVersion": rolloutCfg.MinimumVersion,
+		"CANARY":         rolloutCfg.TargetForRing(types.RingCanary),
+		"BETA":           rolloutCfg.TargetForRing(types.RingBeta),
+		"PILOT":          rolloutCfg.TargetForRing(types.RingPilot),
+		"PRODUCTION":     rolloutCfg.TargetForRing(types.RingProduction),
 	}
 
 	data := map[string]any{
@@ -3319,9 +3549,11 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		"Tokens":          tokens,
 		"Users":           users,
 		"GroupMappings":   mappings,
+		"Rollout":         rollout,
 		"ActiveTab":       activeTab,
 		"FlashMessage":    r.URL.Query().Get("msg"),
 		"TotalHostsCount": summary.TotalDevices,
+		"CVEFeedState":    cveFeedState,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -3341,6 +3573,8 @@ func (h *Handler) SaveSettingsCategory(w http.ResponseWriter, r *http.Request) {
 		"compliance": true,
 		"siem":       true,
 		"sso":        true,
+		"cve":        true,
+		"rollout":    true,
 	}
 	if !validCategories[category] {
 		http.Error(w, fmt.Sprintf("Invalid settings category: %s", category), http.StatusBadRequest)
@@ -3417,6 +3651,31 @@ func (h *Handler) SaveSettingsCategory(w http.ResponseWriter, r *http.Request) {
 			}
 			localLogin := r.FormValue("allow_local_login")
 			values["sso.allow_local_login"] = (localLogin == "true" || localLogin == "on" || localLogin == "1")
+		case "rollout":
+			// Full dotted keys so UpdateSettingsCategory stores them verbatim.
+			values["rollout.minimum_version"] = strings.TrimSpace(r.FormValue("minimum_version"))
+			for _, ring := range []string{"CANARY", "BETA", "PILOT", "PRODUCTION"} {
+				v := strings.TrimSpace(r.FormValue("target_version_" + ring))
+				if v == "" {
+					v = "none"
+				}
+				values["rollout.target_version."+ring] = v
+			}
+		}
+	}
+
+	// Keys must belong to the category in the URL, so a JSON body cannot overwrite another
+	// category's settings (for example sso.client_secret via /admin/settings/rollout).
+	for k := range values {
+		if strings.Contains(k, ".") && !strings.HasPrefix(k, category+".") {
+			http.Error(w, fmt.Sprintf("Setting %q does not belong to category %s", k, category), http.StatusBadRequest)
+			return
+		}
+	}
+	if category == "rollout" {
+		if err := validateRolloutValues(values); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
 	}
 
@@ -3935,6 +4194,7 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		req.DisplayName = strings.TrimSpace(r.FormValue("display_name"))
 		req.Password = strings.TrimSpace(r.FormValue("password"))
 		req.Role = types.AdminRole(strings.ToUpper(strings.TrimSpace(r.FormValue("role"))))
+		req.AllowedTags = parseCommaSeparatedTags(r.FormValue("allowed_tags"))
 	}
 
 	if req.Username == "" || req.Email == "" || req.Password == "" {
@@ -4011,6 +4271,12 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		if pass := strings.TrimSpace(r.FormValue("password")); pass != "" {
 			req.Password = &pass
 		}
+		// An explicit allowed_tags field (even empty) sets/clears the scope. We detect
+		// presence via Form so clearing all tags is possible.
+		if _, present := r.Form["allowed_tags"]; present {
+			tags := parseCommaSeparatedTags(r.FormValue("allowed_tags"))
+			req.AllowedTags = &tags
+		}
 	}
 
 	user, err := h.repo.UpdateAdminUser(r.Context(), id, req)
@@ -4022,9 +4288,10 @@ func (h *Handler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditor != nil {
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "USER_UPDATE", user.ID, r.RemoteAddr, map[string]any{
-			"username":  user.Username,
-			"role":      user.Role,
-			"is_active": user.IsActive,
+			"username":     user.Username,
+			"role":         user.Role,
+			"is_active":    user.IsActive,
+			"allowed_tags": user.AllowedTags,
 		})
 	}
 
@@ -4272,4 +4539,44 @@ var requestHostPattern = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:
 // IPv6 address with an optional port, and nothing else.
 func validRequestHost(host string) bool {
 	return requestHostPattern.MatchString(host)
+}
+
+
+// rolloutVersionRe accepts the version strings the agent build stamps: 1.2.3, optional
+// leading v, optional -prerelease.
+var rolloutVersionRe = regexp.MustCompile(`^v?[0-9]+(\.[0-9]+){0,3}(-[0-9A-Za-z.]+)?$`)
+
+// validateRolloutValues rejects rollout settings that would silently misbehave: a version
+// string that does not parse (it compares as 0 and disables the floor), or a minimum above a
+// ring's target.
+func validateRolloutValues(values map[string]interface{}) error {
+	str := func(k string) string {
+		v, _ := values[k].(string)
+		return strings.TrimSpace(v)
+	}
+	for k := range values {
+		if !strings.HasPrefix(k, "rollout.minimum_version") && !strings.HasPrefix(k, "rollout.target_version.") {
+			continue
+		}
+		v := str(k)
+		if version.IsDev(v) {
+			continue
+		}
+		if !rolloutVersionRe.MatchString(v) {
+			return fmt.Errorf("%s: %q is not a version like 1.4.0 (or none)", k, v)
+		}
+	}
+	minV := str("rollout.minimum_version")
+	if version.IsDev(minV) {
+		return nil
+	}
+	for k := range values {
+		if !strings.HasPrefix(k, "rollout.target_version.") {
+			continue
+		}
+		if t := str(k); !version.IsDev(t) && version.Compare(t, minV) < 0 {
+			return fmt.Errorf("%s (%s) is below the minimum version %s; agents in that ring would be refused", k, t, minV)
+		}
+	}
+	return nil
 }
