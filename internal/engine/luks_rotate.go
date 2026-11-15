@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -32,7 +33,9 @@ type LUKSRotateResult struct {
 // key: it adds a fresh random key to a free slot using the master keyfile, verifies it opens
 // the volume, escrows it, then removes the previously-revealed key's slot.
 type LUKSRotator struct {
-	Runner        ActionRunner
+	// Runner runs cryptsetup. stdin carries the new key for luksAddKey and the passphrase test;
+	// it is "" for commands that read nothing.
+	Runner        InputRunner
 	MasterKeyPath string
 	GenerateKey   func() (string, error)
 	// NewSlot picks the free keyslot to add the new key into (default 2, since slot 1 holds
@@ -40,11 +43,21 @@ type LUKSRotator struct {
 	NewSlot int
 }
 
-func (rt *LUKSRotator) runner() ActionRunner {
+// InputRunner runs a command with the given stdin and returns its combined output.
+type InputRunner func(ctx context.Context, stdin, name string, args ...string) (string, error)
+
+func execInputRunner(ctx context.Context, stdin, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func (rt *LUKSRotator) runner() InputRunner {
 	if rt.Runner != nil {
 		return rt.Runner
 	}
-	return execRunner
+	return execInputRunner
 }
 
 func (rt *LUKSRotator) masterKeyPath() string {
@@ -92,17 +105,19 @@ func (rt *LUKSRotator) Rotate(ctx context.Context, devicePath, volumeUUID string
 	}
 
 	// 1. Add the new key to a free slot using the master keyfile as the existing key.
-	if out, err := rt.runner()(ctx, "cryptsetup", "luksAddKey",
+	// cryptsetup reads the new passphrase from stdin up to the first newline, the same way
+	// EnrollLUKSKeySlot1 enrolls the original recovery key.
+	if out, err := rt.runner()(ctx, newKey+"\n", "cryptsetup", "luksAddKey",
 		"--key-slot", strconv.Itoa(newSlot),
 		"--key-file", rt.masterKeyPath(),
-		devicePath, "-", // read new key from the piped stdin surrogate; runner handles input
+		devicePath,
 	); err != nil {
 		res.Detail = fmt.Sprintf("luksAddKey slot %d: %v (%s)", newSlot, err, strings.TrimSpace(out))
 		return res
 	}
 
 	// 2. Verify the new key actually opens the volume before removing anything.
-	if out, err := rt.runner()(ctx, "cryptsetup", "open", "--test-passphrase",
+	if out, err := rt.runner()(ctx, newKey+"\n", "cryptsetup", "open", "--test-passphrase",
 		"--key-slot", strconv.Itoa(newSlot), devicePath); err != nil {
 		res.Detail = fmt.Sprintf("test-passphrase slot %d: %v (%s)", newSlot, err, strings.TrimSpace(out))
 		return res
@@ -118,7 +133,7 @@ func (rt *LUKSRotator) Rotate(ctx context.Context, devicePath, volumeUUID string
 
 	// 4. Remove the revealed key's slot now that a verified replacement exists.
 	if oldSlot >= 0 && oldSlot != newSlot {
-		if out, err := rt.runner()(ctx, "cryptsetup", "luksKillSlot", "--batch-mode",
+		if out, err := rt.runner()(ctx, "", "cryptsetup", "luksKillSlot", "--batch-mode",
 			"--key-file", rt.masterKeyPath(), devicePath, strconv.Itoa(oldSlot)); err != nil {
 			// The new key is live and escrowed; failing to remove the old slot is a partial
 			// success worth surfacing, not a reason to leave the volume without a known key.

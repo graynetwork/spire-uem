@@ -98,11 +98,15 @@ func TestLockSessions_CallsLoginctl(t *testing.T) {
 
 // fakeCryptsetup records cryptsetup invocations and fails nothing, so the rotation sequence
 // can be asserted without touching real disks.
-type fakeCryptsetup struct{ order []string }
+type fakeCryptsetup struct {
+	order []string
+	stdin []string
+}
 
-func (f *fakeCryptsetup) run(_ context.Context, name string, args ...string) (string, error) {
+func (f *fakeCryptsetup) run(_ context.Context, stdin, name string, args ...string) (string, error) {
 	if name == "cryptsetup" && len(args) > 0 {
 		f.order = append(f.order, args[0])
+		f.stdin = append(f.stdin, stdin)
 	}
 	return "", nil
 }
@@ -137,6 +141,12 @@ func TestLUKSRotate_Sequence(t *testing.T) {
 		if fc.order[i] != want[i] {
 			t.Fatalf("step %d: expected %s, got %s (full %v)", i, want[i], fc.order[i], fc.order)
 		}
+	}
+	// The new key must reach cryptsetup on stdin for both the add and the passphrase test;
+	// with no stdin, real cryptsetup fails with "Nothing to read on input".
+	newKeyLine := "NEWRECOVERYKEY48CHARSOFSOMETHINGRANDOMENOUGHXX\n"
+	if fc.stdin[0] != newKeyLine || fc.stdin[1] != newKeyLine || fc.stdin[2] != "" {
+		t.Fatalf("unexpected stdin per step: %q", fc.stdin)
 	}
 	if len(res.EncryptedRecoveryKey) == 0 || len(res.EncryptedDEK) == 0 || len(res.Nonce) == 0 {
 		t.Fatalf("expected the new key to be re-escrowed (envelope populated)")
