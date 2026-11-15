@@ -56,9 +56,22 @@ SQL
    SPIRE_DB_DSN=postgres://spire:CHANGE_ME_STRONG_DB_PASSWORD@127.0.0.1:5432/spire_uem?sslmode=disable
    SPIRE_ADMIN_USER=admin
    SPIRE_ADMIN_PASSWORD=CHANGE_ME_STRONG_ADMIN_PASSWORD
+   # PEM bundle of TPM manufacturer CA certificates (roots + intermediates).
+   # Without it, hardware TPM attestations are reported FAILED.
+   SPIRE_TPM_EK_ROOTS=/etc/spire/tpm-ca-bundle.pem
    EOF
    sudo chmod 0600 /etc/spire-server.env
    ```
+
+   Security-relevant settings:
+
+   | Variable | Effect |
+   |---|---|
+   | `SPIRE_ADMIN_PASSWORD` | Enables the static break-glass account `SPIRE_ADMIN_USER`. Must be at least 12 characters and not a known default. Unset = break-glass disabled. On first start it also replaces the seeded `changeme` password of the `admin` account; the server refuses to start while any active local account still uses `changeme`. |
+   | `SPIRE_TPM_EK_ROOTS` | TPM manufacturer CA bundle used to verify EK certificates. Required for hardware attestation to succeed. |
+   | `SPIRE_SIMULATE_TPM2` / `SPIRE_ALLOW_SIMULATED_TPM` | Accept software-simulated TPM attestations. **Test environments only**: a simulated attestation proves nothing about the device. |
+   | `SPIRE_ENABLE_TEST_ENDPOINTS` | Registers the unauthenticated `/auth/oidc/test-callback` used by the E2E suite. **Never set in production**: it lets any caller mint an admin session. |
+   | `general.server_base_url` (Settings → General) | Used to build the OIDC redirect URI. Set it to the server's public URL. |
 
 3. Create `/etc/systemd/system/spire-server.service`:
    ```ini
@@ -205,8 +218,8 @@ sudo /usr/local/bin/spired -config /etc/spire/config.yaml -once
 Administrators and auditors can export a complete compliance snapshot via the **Export Audit** buttons on `/admin/devices` or via CLI:
 ```bash
 # Export CSV Audit Report
-curl -sSL -u admin:changeme "http://<server-ip>:8080/admin/compliance/export?format=csv" -o compliance-audit.csv
+curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=csv" -o compliance-audit.csv
 
 # Export JSON Audit Report
-curl -sSL -u admin:changeme "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
+curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
 ```

@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: spirepassword
       POSTGRES_DB: spire_uem
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
@@ -32,9 +32,12 @@ services:
       SPIRE_MIGRATIONS_PATH: "/app/migrations/000001_init_schema.up.sql"
       SPIRE_SIMULATE_TPM2: "1"
       SPIRE_SESSION_SECRET: "spire-e2e-session-secret-key-32b-fixed"
+      SPIRE_ADMIN_PASSWORD: "${SPIRE_ADMIN_PASSWORD:-spire-e2e-breakglass-pw}"
+      # Test harness only: enables the unauthenticated mock-claims /auth/oidc/test-callback
+      SPIRE_ENABLE_TEST_ENDPOINTS: "1"
       SPIRE_APT_REPO_DIR: "/var/www/apt/spire"
     ports:
-      - "18080:8080"
+      - "127.0.0.1:18080:8080"
     volumes:
       - ./bin/spire-server:/app/spire-server:ro
       - ./migrations:/app/migrations:ro

@@ -7,7 +7,7 @@ cd "${REPO_ROOT}"
 
 SERVER_URL="http://localhost:18080"
 ADMIN_USER="${SPIRE_ADMIN_USER:-admin}"
-ADMIN_PASSWORD="${SPIRE_ADMIN_PASSWORD:-changeme}"
+ADMIN_PASSWORD="${SPIRE_ADMIN_PASSWORD:-spire-e2e-breakglass-pw}"
 DB_HOST="localhost"
 DB_PORT="5433"
 DB_USER="spire"

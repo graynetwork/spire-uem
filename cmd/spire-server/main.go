@@ -15,6 +15,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/api"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/config"
+	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/web"
@@ -41,6 +42,18 @@ func main() {
 	log.Printf("[spire-server] connected to PostgreSQL and verified schema migrations")
 
 	repo := db.NewRepositoryWithKEK(pool, cfg.Server.KEKPath)
+	if err := enforceAdminCredentials(ctx, repo, cfg.Server); err != nil {
+		log.Fatalf("[spire-server] refusing to start: %v", err)
+	}
+	if bundle := os.Getenv("SPIRE_TPM_EK_ROOTS"); bundle != "" {
+		n, err := crypto.LoadTPMTrustBundle(bundle)
+		if err != nil {
+			log.Fatalf("[spire-server] load TPM manufacturer CA bundle: %v", err)
+		}
+		log.Printf("[spire-server] loaded %d TPM manufacturer CA certificate(s) from %s", n, bundle)
+	} else {
+		log.Printf("[spire-server] WARNING: SPIRE_TPM_EK_ROOTS not set; hardware TPM attestations will be reported FAILED because EK certificates cannot be anchored")
+	}
 	hub := gateway.NewGatewayHub(repo)
 	auditor := audit.NewForwarder(repo, cfg.Server.SIEMSyslogAddr)
 

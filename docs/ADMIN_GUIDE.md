@@ -10,7 +10,7 @@ This guide provides step-by-step instructions for IT administrators and security
 When deploying SpireUEM for the first time via `docker compose`, an initial administrative account is seeded:
 - **URL**: `https://<spire-server-host>:18080/admin`
 - **Username**: `admin`
-- **Password**: `changeme`
+- **Password**: the value of `SPIRE_ADMIN_PASSWORD` (required on first start, minimum 12 characters; the server refuses to start while the seeded `changeme` password is still in use)
 
 > [!IMPORTANT]
 > Immediately upon initial login, navigate to **Settings** $\rightarrow$ **Users & Roles** and update the password for the `admin` account, or provision custom administrator accounts and disable default credentials.

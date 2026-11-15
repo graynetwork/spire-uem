@@ -241,6 +241,9 @@ func SessionAuthMiddleware(adminUser, adminPass string, enforceHTTPS bool) func(
 func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass string, enforceHTTPS bool) func(http.Handler) http.Handler {
 	expectedUserHash := sha256.Sum256([]byte(adminUser))
 	expectedPassHash := sha256.Sum256([]byte(adminPass))
+	// The static break-glass account exists only when a password is configured; an empty
+	// password must never authenticate anyone.
+	staticEnabled := adminPass != ""
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -261,13 +264,13 @@ func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass str
 						authenticatedRole = dbUser.Role
 						userObj = dbUser
 						valid = true
-					} else if user == adminUser {
+					} else if staticEnabled && user == adminUser {
 						valid = true
 						authenticatedRole = types.RoleSuperAdmin
 					}
 				} else {
 					userHash := sha256.Sum256([]byte(user))
-					if subtle.ConstantTimeCompare(userHash[:], expectedUserHash[:]) == 1 {
+					if staticEnabled && subtle.ConstantTimeCompare(userHash[:], expectedUserHash[:]) == 1 {
 						valid = true
 						authenticatedRole = types.RoleSuperAdmin
 					}
@@ -305,7 +308,7 @@ func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass str
 					}
 				}
 
-				if !authenticated {
+				if !authenticated && staticEnabled {
 					userHash := sha256.Sum256([]byte(user))
 					passHash := sha256.Sum256([]byte(pass))
 					userMatch := subtle.ConstantTimeCompare(userHash[:], expectedUserHash[:]) == 1

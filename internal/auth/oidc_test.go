@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	jose "github.com/go-jose/go-jose/v4"
 	"github.com/spire-uem/spire-uem/internal/types"
 )
 
@@ -83,11 +86,11 @@ func TestOIDCService_GenerateAuthURL_PKCE(t *testing.T) {
 	defer server.Close()
 
 	svc := NewService(types.SSOSettings{
-		OIDCEnabled:  true,
-		IssuerURL:    server.URL,
-		ClientID:     "spire-web-portal",
-		Scopes:       "openid,profile,email,custom_groups",
-		GroupsClaim:  "custom_groups",
+		OIDCEnabled: true,
+		IssuerURL:   server.URL,
+		ClientID:    "spire-web-portal",
+		Scopes:      "openid,profile,email,custom_groups",
+		GroupsClaim: "custom_groups",
 	})
 
 	redirectURI := "http://localhost:8080/auth/oidc/callback"
@@ -115,61 +118,159 @@ func TestOIDCService_GenerateAuthURL_PKCE(t *testing.T) {
 	}
 }
 
-func TestOIDCService_ParseIDTokenPayload(t *testing.T) {
-	claims := map[string]any{
-		"sub":    "oidc-user-12345",
-		"email":  "analyst@example.com",
-		"name":   "Security Analyst",
-		"groups": []string{"SOC-Level-2", "Spire-Operators"},
-	}
-	claimsBytes, _ := json.Marshal(claims)
-	b64Payload := base64.RawURLEncoding.EncodeToString(claimsBytes)
-	fakeJWT := "header." + b64Payload + ".signature"
+// fakeIdP serves discovery + JWKS for an RSA key and mints signed ID tokens.
+type fakeIdP struct {
+	server *httptest.Server
+	key    *rsa.PrivateKey
+	kid    string
+}
 
-	svc := NewService(types.SSOSettings{
-		OIDCEnabled: true,
-		GroupsClaim: "groups",
-	})
-
-	parsed, err := svc.ParseIDTokenClaims(fakeJWT)
+func newFakeIdP(t *testing.T) *fakeIdP {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatalf("failed to parse ID token payload: %v", err)
+		t.Fatal(err)
 	}
-
-	if parsed.Subject != "oidc-user-12345" {
-		t.Errorf("expected sub oidc-user-12345, got %s", parsed.Subject)
-	}
-	if parsed.Email != "analyst@example.com" {
-		t.Errorf("expected email analyst@example.com, got %s", parsed.Email)
-	}
-	if parsed.Name != "Security Analyst" {
-		t.Errorf("expected name Security Analyst, got %s", parsed.Name)
-	}
-	if len(parsed.Groups) != 2 || parsed.Groups[0] != "SOC-Level-2" || parsed.Groups[1] != "Spire-Operators" {
-		t.Errorf("unexpected groups: %v", parsed.Groups)
-	}
-
-	// Test single string group claim fallback
-	claimsSingle := map[string]any{
-		"sub":   "single-group-user",
-		"email": "user@test.org",
-		"roles": "Global-Admins",
-	}
-	claimsSingleBytes, _ := json.Marshal(claimsSingle)
-	b64Single := base64.RawURLEncoding.EncodeToString(claimsSingleBytes)
-	fakeJWTSingle := "header." + b64Single + ".signature"
-
-	svcSingle := NewService(types.SSOSettings{
-		OIDCEnabled: true,
-		GroupsClaim: "roles",
+	idp := &fakeIdP{key: key, kid: "test-key-1"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(OIDCDiscoveryResponse{
+			Issuer:                idp.server.URL,
+			AuthorizationEndpoint: idp.server.URL + "/authorize",
+			TokenEndpoint:         idp.server.URL + "/token",
+			JwksURI:               idp.server.URL + "/jwks.json",
+		})
 	})
+	mux.HandleFunc("/jwks.json", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &key.PublicKey, KeyID: idp.kid, Algorithm: "RS256", Use: "sig",
+		}}})
+	})
+	idp.server = httptest.NewServer(mux)
+	t.Cleanup(idp.server.Close)
+	return idp
+}
 
-	parsedSingle, err := svcSingle.ParseIDTokenClaims(fakeJWTSingle)
+func (idp *fakeIdP) sign(t *testing.T, key *rsa.PrivateKey, claims map[string]any) string {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
+		(&jose.SignerOptions{}).WithHeader("kid", idp.kid).WithType("JWT"))
 	if err != nil {
-		t.Fatalf("failed to parse single group token: %v", err)
+		t.Fatal(err)
 	}
-	if len(parsedSingle.Groups) != 1 || parsedSingle.Groups[0] != "Global-Admins" {
-		t.Errorf("expected Global-Admins group, got %v", parsedSingle.Groups)
+	payload, _ := json.Marshal(claims)
+	jws, err := signer.Sign(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := jws.CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestOIDCService_VerifyIDToken(t *testing.T) {
+	idp := newFakeIdP(t)
+	svc := NewService(types.SSOSettings{OIDCEnabled: true, IssuerURL: idp.server.URL, ClientID: "spire-client", GroupsClaim: "groups"})
+
+	base := func() map[string]any {
+		return map[string]any{
+			"iss": idp.server.URL, "aud": "spire-client", "sub": "oidc-user-12345",
+			"email": "analyst@example.com", "name": "Security Analyst",
+			"groups": []string{"SOC-Level-2", "Spire-Operators"},
+			"nonce":  "n-123", "iat": time.Now().Unix(), "exp": time.Now().Add(5 * time.Minute).Unix(),
+		}
+	}
+	ctx := context.Background()
+
+	claims, err := svc.VerifyIDToken(ctx, idp.sign(t, idp.key, base()), "n-123")
+	if err != nil {
+		t.Fatalf("valid token rejected: %v", err)
+	}
+	if claims.Subject != "oidc-user-12345" || claims.Email != "analyst@example.com" || len(claims.Groups) != 2 {
+		t.Errorf("unexpected claims: %+v", claims)
+	}
+
+	otherKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	cases := map[string]func() (string, string){
+		"forged signature": func() (string, string) { return idp.sign(t, otherKey, base()), "n-123" },
+		"wrong audience": func() (string, string) {
+			c := base()
+			c["aud"] = "someone-else"
+			return idp.sign(t, idp.key, c), "n-123"
+		},
+		"wrong issuer": func() (string, string) {
+			c := base()
+			c["iss"] = "https://evil.example"
+			return idp.sign(t, idp.key, c), "n-123"
+		},
+		"expired": func() (string, string) {
+			c := base()
+			c["exp"] = time.Now().Add(-time.Hour).Unix()
+			return idp.sign(t, idp.key, c), "n-123"
+		},
+		"nonce mismatch": func() (string, string) { return idp.sign(t, idp.key, base()), "other-nonce" },
+		"empty nonce":    func() (string, string) { return idp.sign(t, idp.key, base()), "" },
+		"unsigned payload": func() (string, string) {
+			return "eyJhbGciOiJub25lIn0." + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"x"}`)) + ".", "n-123"
+		},
+		"unverified email": func() (string, string) {
+			c := base()
+			c["email_verified"] = false
+			return idp.sign(t, idp.key, c), "n-123"
+		},
+	}
+	for name, mk := range cases {
+		tok, nonce := mk()
+		if _, err := svc.VerifyIDToken(ctx, tok, nonce); err == nil {
+			t.Errorf("%s: expected rejection, got success", name)
+		}
+	}
+}
+
+func TestOIDCService_ClaimsFromMap_GroupFallbacks(t *testing.T) {
+	svc := NewService(types.SSOSettings{OIDCEnabled: true, GroupsClaim: "roles"})
+	claims, err := svc.claimsFromMap(map[string]interface{}{"sub": "u1", "email": "user@test.org", "roles": "Global-Admins"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims.Groups) != 1 || claims.Groups[0] != "Global-Admins" {
+		t.Errorf("expected Global-Admins group, got %v", claims.Groups)
+	}
+	if _, err := svc.claimsFromMap(map[string]interface{}{"email": "nosub@test.org"}); err == nil {
+		t.Error("expected error for missing sub")
+	}
+}
+
+func TestOIDCService_AuthURLIncludesNonce(t *testing.T) {
+	idp := newFakeIdP(t)
+	svc := NewService(types.SSOSettings{OIDCEnabled: true, IssuerURL: idp.server.URL, ClientID: "c"})
+	authURL, state, err := svc.GenerateAuthURL(context.Background(), "http://localhost/cb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(authURL, "nonce=") {
+		t.Errorf("auth URL lacks nonce: %s", authURL)
+	}
+	svc.mu.RLock()
+	st := svc.stateStore[state]
+	svc.mu.RUnlock()
+	if st.nonce == "" || !strings.Contains(authURL, "nonce="+st.nonce) {
+		t.Errorf("stored nonce %q not in auth URL", st.nonce)
+	}
+}
+
+func TestOIDCService_DiscoveryIssuerMismatch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(OIDCDiscoveryResponse{Issuer: "https://attacker.example"})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	svc := NewService(types.SSOSettings{OIDCEnabled: true, IssuerURL: srv.URL})
+	if _, err := svc.Discover(context.Background()); err == nil {
+		t.Fatal("expected issuer mismatch error")
 	}
 }
 

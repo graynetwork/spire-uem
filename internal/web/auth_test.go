@@ -338,3 +338,41 @@ func TestRequireRole_Middleware(t *testing.T) {
 		})
 	}
 }
+
+// With no break-glass password configured, the static account must not exist at all:
+// an empty Basic Auth password and a signed cookie for the static username are both refused.
+func TestSessionAuthMiddleware_BreakGlassDisabledWhenPasswordEmpty(t *testing.T) {
+	handler := web.SessionAuthMiddleware("admin", "", false)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:8080/admin/devices", nil)
+	req.Header.Set("Accept", "application/json")
+	req.SetBasicAuth("admin", "")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("empty break-glass password must not authenticate, got %d", rec.Code)
+	}
+
+	cookie, _, _ := web.CreateSession("admin", false)
+	req = httptest.NewRequest(http.MethodGet, "http://localhost:8080/admin/devices", nil)
+	req.Header.Set("Accept", "application/json")
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("session for disabled static account must be rejected, got %d", rec.Code)
+	}
+}
+
+func TestOIDCTestCallbackNotRoutedByDefault(t *testing.T) {
+	t.Setenv("SPIRE_ENABLE_TEST_ENDPOINTS", "")
+	if web.TestEndpointsEnabled() {
+		t.Fatal("test endpoints must be disabled by default")
+	}
+	t.Setenv("SPIRE_ENABLE_TEST_ENDPOINTS", "1")
+	if !web.TestEndpointsEnabled() {
+		t.Fatal("expected test endpoints enabled with SPIRE_ENABLE_TEST_ENDPOINTS=1")
+	}
+}
