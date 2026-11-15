@@ -72,14 +72,32 @@ func TestEnforceHTTPSMiddleware(t *testing.T) {
 		t.Errorf("expected redirect to https, got %q", loc)
 	}
 
-	// 2. HTTP with X-Forwarded-Proto: https -> pass through
+	// 2. X-Forwarded-Proto: https is client-controlled, so without SPIRE_TRUST_PROXY it is ignored.
+	t.Setenv("SPIRE_TRUST_PROXY", "")
 	reqForwarded := httptest.NewRequest(http.MethodGet, "http://example.com/api/v1/desktop/checkin", nil)
 	reqForwarded.Header.Set("X-Forwarded-Proto", "https")
+	recUntrusted := httptest.NewRecorder()
+	handler.ServeHTTP(recUntrusted, reqForwarded)
+	if recUntrusted.Code != http.StatusMovedPermanently {
+		t.Errorf("expected HTTP 301 when X-Forwarded-Proto comes from an untrusted client, got %d", recUntrusted.Code)
+	}
+
+	// 2b. Behind a trusted proxy, X-Forwarded-Proto: https -> pass through
+	t.Setenv("SPIRE_TRUST_PROXY", "true")
 	recForwarded := httptest.NewRecorder()
 	handler.ServeHTTP(recForwarded, reqForwarded)
-
 	if recForwarded.Code != http.StatusOK {
-		t.Errorf("expected HTTP 200 when X-Forwarded-Proto is https, got %d", recForwarded.Code)
+		t.Errorf("expected HTTP 200 when a trusted proxy sets X-Forwarded-Proto: https, got %d", recForwarded.Code)
+	}
+
+	// 2c. A malformed Host is not reflected into the redirect.
+	t.Setenv("SPIRE_TRUST_PROXY", "")
+	reqBadHost := httptest.NewRequest(http.MethodGet, "http://example.com/x", nil)
+	reqBadHost.Host = "evil.example/foo"
+	recBadHost := httptest.NewRecorder()
+	handler.ServeHTTP(recBadHost, reqBadHost)
+	if recBadHost.Code != http.StatusBadRequest {
+		t.Errorf("expected HTTP 400 for a malformed Host, got %d", recBadHost.Code)
 	}
 
 	// 3. Disabled EnforceHTTPS -> pass through

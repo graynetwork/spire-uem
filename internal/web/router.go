@@ -39,6 +39,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Post("/auth/oidc/test-callback", h.OIDCTestCallback)
 	}
 
+	// Vendored front-end libraries, served from the binary so the CSP needs no CDN origins.
+	r.Handle("/static/*", http.StripPrefix("/static/", staticHandler()))
+
 	// Publicly accessible single-command onboarding endpoints (no Basic/Session Auth required)
 	r.Get("/install.sh", h.ServeBootstrapScript)
 	r.Head("/install.sh", h.ServeBootstrapScript)

@@ -463,7 +463,7 @@ func (h *Handler) RemediateBenchmarkRule(w http.ResponseWriter, r *http.Request)
 
 // LoginPage renders the login form or redirects to /admin/dashboard if already authenticated.
 func (h *Handler) LoginPage(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := ValidateSession(r); ok {
+	if user, _, sessionID, ok := validateSession(r); ok && sessionLive(r.Context(), h.repo, user, sessionID) {
 		http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
 		return
 	}
@@ -579,7 +579,7 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 		}
 
 		secure := ShouldEnforceHTTPSCookie(h.enforceHTTPS, r)
-		cookie, csrfToken, err := CreateSession(authenticatedUsername, secure)
+		cookie, csrfToken, err := IssueSession(r.Context(), h.repo, authenticatedUsername, secure)
 		if err != nil {
 			http.Error(w, "Failed to create session", http.StatusInternalServerError)
 			return
@@ -613,6 +613,7 @@ func (h *Handler) LoginSubmit(expectedUser, expectedPass string) http.HandlerFun
 
 // Logout handles POST /logout, clearing the session cookie and redirecting to /login.
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
+	RevokeRequestSession(r, h.repo)
 	http.SetCookie(w, ClearSessionCookie())
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
@@ -682,7 +683,8 @@ func (h *Handler) ExportComplianceAudit(w http.ResponseWriter, r *http.Request) 
 	cw.Flush()
 }
 
-// ServeBootstrapScript handles GET /install.sh, dynamically replacing __SERVER_URL__ with the incoming Host header.
+// ServeBootstrapScript handles GET /install.sh, replacing __SERVER_URL__ with this server's
+// public base URL (see installServerURL).
 func (h *Handler) ServeBootstrapScript(w http.ResponseWriter, r *http.Request) {
 	scriptBytes, err := os.ReadFile("packaging/bootstrap.sh")
 	if err != nil {
@@ -694,18 +696,18 @@ func (h *Handler) ServeBootstrapScript(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		scheme = "https"
+	serverURL, ok := h.installServerURL(r)
+	if !ok {
+		http.Error(w, "Invalid Host header", http.StatusBadRequest)
+		return
 	}
-	host := r.Host
-	if host == "" {
-		host = "localhost:8080"
-	}
-	serverURL := fmt.Sprintf("%s://%s", scheme, host)
 
 	rendered := strings.ReplaceAll(string(scriptBytes), "__SERVER_URL__", serverURL)
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	// The body can depend on the Host header, so no shared cache may store it or serve
+	// one client's copy to another.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Vary", "Host")
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = w.Write([]byte(rendered))
@@ -1039,10 +1041,7 @@ func (h *Handler) RevealLUKSRawRecoveryKey(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	adminUser, _, _ := r.BasicAuth()
-	if strings.TrimSpace(adminUser) == "" {
-		adminUser = "admin"
-	}
+	adminUser := AdminUserFromContext(r.Context())
 
 	if _, err := h.repo.RecordKeyAccessAudit(r.Context(), id, escrow.VolumeUUID, adminUser, reason, r.RemoteAddr); err != nil {
 		log.Printf("[web] failed to record LUKS recovery key audit log for device=%s: %v", id, err)
@@ -1124,10 +1123,7 @@ func (h *Handler) CreateDeviceCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditor != nil {
-		adminUser, _, _ := r.BasicAuth()
-		if strings.TrimSpace(adminUser) == "" {
-			adminUser = "admin"
-		}
+		adminUser := AdminUserFromContext(r.Context())
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "COMMAND_DISPATCH", id, r.RemoteAddr, map[string]any{
 			"command_id":  cmd.ID,
 			"command":     cmd.Command,
@@ -1162,14 +1158,8 @@ func (h *Handler) DeviceCommandsFragment(w http.ResponseWriter, r *http.Request)
 
 // DeviceLiveWS handles GET /admin/devices/{id}/ws for HTMX hx-ws live command output streaming.
 func (h *Handler) DeviceLiveWS(w http.ResponseWriter, r *http.Request) {
+	// Identity comes only from the auth middleware. r.BasicAuth() is unverified here.
 	adminUser := AdminUserFromContext(r.Context())
-	if adminUser == "" {
-		if u, _, ok := ValidateSession(r); ok {
-			adminUser = u
-		} else if u, _, ok := r.BasicAuth(); ok {
-			adminUser = u
-		}
-	}
 	if strings.TrimSpace(adminUser) == "" {
 		http.Error(w, "Unauthorized: admin session required", http.StatusUnauthorized)
 		return
@@ -1258,10 +1248,7 @@ func (h *Handler) ApproveDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.auditor != nil {
-		adminUser, _, _ := r.BasicAuth()
-		if strings.TrimSpace(adminUser) == "" {
-			adminUser = "admin"
-		}
+		adminUser := AdminUserFromContext(r.Context())
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "DEVICE_APPROVE", dev.ID, r.RemoteAddr, map[string]any{
 			"hostname":      dev.Hostname,
 			"hardware_uuid": dev.HardwareUUID,
@@ -1699,7 +1686,7 @@ func (h *Handler) DeviceTerminalWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GatewayHub not initialized", http.StatusServiceUnavailable)
 		return
 	}
-	h.hub.ServeAdminTerminal(w, r, id, h.auditor)
+	h.hub.ServeAdminTerminal(w, r, id, AdminUserFromContext(r.Context()), h.auditor)
 }
 
 // RequestRemoteAssist handles POST /admin/devices/{id}/remote-assist.
@@ -1709,10 +1696,7 @@ func (h *Handler) RequestRemoteAssist(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GatewayHub not initialized", http.StatusServiceUnavailable)
 		return
 	}
-	adminUser, _, _ := r.BasicAuth()
-	if strings.TrimSpace(adminUser) == "" {
-		adminUser = "admin"
-	}
+	adminUser := AdminUserFromContext(r.Context())
 
 	resp, err := h.hub.RequestRemoteAssist(r.Context(), id, adminUser)
 	if err != nil {
@@ -1962,10 +1946,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 	h.dispatchPolicyCheckin(r.Context(), pol)
 
 	if h.auditor != nil {
-		adminUser, _, _ := r.BasicAuth()
-		if strings.TrimSpace(adminUser) == "" {
-			adminUser = "admin"
-		}
+		adminUser := AdminUserFromContext(r.Context())
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "POLICY_CREATE", pol.ID, r.RemoteAddr, map[string]any{
 			"name":        pol.Name,
 			"policy_type": pol.PolicyType,
@@ -3830,7 +3811,7 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	secure := ShouldEnforceHTTPSCookie(h.enforceHTTPS, r)
-	cookie, _, err := CreateSession(user.Username, secure)
+	cookie, _, err := IssueSession(r.Context(), h.repo, user.Username, secure)
 	if err != nil {
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
@@ -3874,7 +3855,11 @@ func (h *Handler) OIDCTestCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	secure := ShouldEnforceHTTPSCookie(h.enforceHTTPS, r)
-	cookie, csrfToken, _ := CreateSession(user.Username, secure)
+	cookie, csrfToken, err := IssueSession(r.Context(), h.repo, user.Username, secure)
+	if err != nil {
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
 	http.SetCookie(w, cookie)
 
 	if h.auditor != nil {
@@ -4206,9 +4191,6 @@ func (h *Handler) DeleteOIDCGroupMapping(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-
-
-
 const oidcStateCookieName = "spire_oidc_state"
 
 // publicBaseURL returns the externally reachable base URL of this server. It prefers the
@@ -4229,5 +4211,53 @@ func (h *Handler) publicBaseURL(r *http.Request) string {
 	if ShouldEnforceHTTPSCookie(h.enforceHTTPS, r) {
 		scheme = "https"
 	}
-	return scheme + "://" + r.Host
+	host := r.Host
+	if !validRequestHost(host) {
+		host = "localhost:8080"
+	}
+	return scheme + "://" + host
+}
+
+// seedServerBaseURL is the general.server_base_url value shipped in migration 000015.
+const seedServerBaseURL = "http://localhost:8080"
+
+// installServerURL returns the URL /install.sh tells new devices to enroll against.
+// Once an administrator has set general.server_base_url, that value is used and the
+// request is ignored. Until then the request's own Host is used, so a fresh install
+// still works from whichever address the operator reached it on; the Host must be a
+// plain hostname or IP with an optional port, because it is written into a script that
+// is piped to a root shell. ok is false when the Host is rejected.
+func (h *Handler) installServerURL(r *http.Request) (string, bool) {
+	if h.repo != nil {
+		if st, err := h.repo.GetSetting(r.Context(), "general.server_base_url"); err == nil && st != nil {
+			var v string
+			if json.Unmarshal(st.Value, &v) == nil {
+				v = strings.TrimRight(strings.TrimSpace(v), "/")
+				if u, perr := url.Parse(v); perr == nil && v != seedServerBaseURL &&
+					(u.Scheme == "http" || u.Scheme == "https") && validRequestHost(u.Host) {
+					return v, true
+				}
+			}
+		}
+	}
+	host := r.Host
+	if host == "" {
+		host = "localhost:8080"
+	}
+	if !validRequestHost(host) {
+		return "", false
+	}
+	scheme := "http"
+	if ShouldEnforceHTTPSCookie(h.enforceHTTPS, r) {
+		scheme = "https"
+	}
+	return scheme + "://" + host, true
+}
+
+var requestHostPattern = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,252}))(?::[0-9]{1,5})?$`)
+
+// validRequestHost reports whether host is a bare DNS name, IPv4 address or bracketed
+// IPv6 address with an optional port, and nothing else.
+func validRequestHost(host string) bool {
+	return requestHostPattern.MatchString(host)
 }

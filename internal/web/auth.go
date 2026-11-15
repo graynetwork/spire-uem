@@ -59,13 +59,24 @@ func GenerateCSRFToken() (string, error) {
 
 // CreateSession generates an HMAC-signed session cookie and CSRF token for the authenticated user.
 func CreateSession(username string, secure bool) (*http.Cookie, string, error) {
+	cookie, csrfToken, _, err := createSession(username, secure)
+	return cookie, csrfToken, err
+}
+
+// createSession is CreateSession that also returns the session's random ID, which
+// the caller records server-side so the session can be revoked.
+func createSession(username string, secure bool) (*http.Cookie, string, string, error) {
 	csrfToken, err := GenerateCSRFToken()
 	if err != nil {
-		return nil, "", fmt.Errorf("generate csrf token: %w", err)
+		return nil, "", "", fmt.Errorf("generate csrf token: %w", err)
+	}
+	sessionID, err := GenerateCSRFToken()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("generate session id: %w", err)
 	}
 
 	expiresAt := time.Now().Add(SessionDuration).Unix()
-	payload := fmt.Sprintf("%s|%d|%s", username, expiresAt, csrfToken)
+	payload := fmt.Sprintf("%s|%d|%s|%s", username, expiresAt, csrfToken, sessionID)
 
 	mac := hmac.New(sha256.New, sessionSecretKey)
 	mac.Write([]byte(payload))
@@ -83,47 +94,89 @@ func CreateSession(username string, secure bool) (*http.Cookie, string, error) {
 		Secure:   secure,
 	}
 
-	return cookie, csrfToken, nil
+	return cookie, csrfToken, sessionID, nil
 }
 
 // ValidateSession verifies the HMAC-signed session cookie from the request.
-// Returns username, csrfToken, and valid bool.
+// Returns username, csrfToken, and valid bool. It checks only the signature and
+// expiry; SessionAuthMiddlewareWithRepo additionally checks revocation.
 func ValidateSession(r *http.Request) (string, string, bool) {
+	username, csrfToken, _, ok := validateSession(r)
+	return username, csrfToken, ok
+}
+
+func validateSession(r *http.Request) (string, string, string, bool) {
 	c, err := r.Cookie(SessionCookieName)
 	if err != nil || c.Value == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	raw, err := base64.URLEncoding.DecodeString(c.Value)
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	parts := strings.Split(string(raw), "|")
-	if len(parts) != 4 {
-		return "", "", false
+	if len(parts) != 5 {
+		return "", "", "", false
 	}
 
 	username := parts[0]
 	expStr := parts[1]
 	csrfToken := parts[2]
-	providedSig := parts[3]
+	sessionID := parts[3]
+	providedSig := parts[4]
 
-	payload := fmt.Sprintf("%s|%s|%s", username, expStr, csrfToken)
+	payload := fmt.Sprintf("%s|%s|%s|%s", username, expStr, csrfToken, sessionID)
 	mac := hmac.New(sha256.New, sessionSecretKey)
 	mac.Write([]byte(payload))
 	expectedSig := hex.EncodeToString(mac.Sum(nil))
 
 	if subtle.ConstantTimeCompare([]byte(providedSig), []byte(expectedSig)) != 1 {
-		return "", "", false
+		return "", "", "", false
 	}
 
 	expUnix, err := strconv.ParseInt(expStr, 10, 64)
 	if err != nil || time.Now().Unix() > expUnix {
-		return "", "", false
+		return "", "", "", false
 	}
 
-	return username, csrfToken, true
+	return username, csrfToken, sessionID, true
+}
+
+// sessionLive reports whether a signature-valid session is still open server-side.
+// Without a repository (unit tests, BasicAuthMiddleware) sessions are stateless.
+func sessionLive(ctx context.Context, repo *db.Repository, username, sessionID string) bool {
+	if repo == nil {
+		return true
+	}
+	active, err := repo.AdminSessionActive(ctx, db.HashToken(sessionID), username)
+	return err == nil && active
+}
+
+// IssueSession creates a session cookie and, when repo is set, records the session so
+// it can be revoked. Returns the cookie and its CSRF token.
+func IssueSession(ctx context.Context, repo *db.Repository, username string, secure bool) (*http.Cookie, string, error) {
+	cookie, csrfToken, sessionID, err := createSession(username, secure)
+	if err != nil {
+		return nil, "", err
+	}
+	if repo != nil {
+		if err := repo.CreateAdminSession(ctx, db.HashToken(sessionID), username, time.Now().Add(SessionDuration)); err != nil {
+			return nil, "", err
+		}
+	}
+	return cookie, csrfToken, nil
+}
+
+// RevokeRequestSession ends the session carried by the request's cookie, if any.
+func RevokeRequestSession(r *http.Request, repo *db.Repository) {
+	if repo == nil {
+		return
+	}
+	if _, _, sessionID, ok := validateSession(r); ok {
+		_ = repo.RevokeAdminSession(r.Context(), db.HashToken(sessionID))
+	}
 }
 
 // ClearSessionCookie returns an expired session cookie to remove it from the browser.
@@ -154,7 +207,10 @@ func AdminRoleFromContext(ctx context.Context) types.AdminRole {
 	if str, ok := ctx.Value(AdminRoleCtxKey).(string); ok && str != "" {
 		return types.AdminRole(str)
 	}
-	return types.RoleSuperAdmin
+	// No role in the context means the request was not authenticated by the session
+	// middleware. Return no role so RequireRole denies it, rather than granting the
+	// most privileged one.
+	return ""
 }
 
 // AdminUserObjFromContext retrieves the full AdminUser struct if present in the context.
@@ -166,6 +222,9 @@ func AdminUserObjFromContext(ctx context.Context) *types.AdminUser {
 }
 
 func hasRole(currentRole types.AdminRole, allowedRoles ...types.AdminRole) bool {
+	if currentRole == "" {
+		return false
+	}
 	if currentRole == types.RoleSuperAdmin {
 		return true
 	}
@@ -224,12 +283,27 @@ func ShouldEnforceHTTPSCookie(enforceHTTPS bool, r *http.Request) bool {
 	if enforceHTTPS {
 		return true
 	}
-	if r != nil {
-		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-			return true
-		}
+	return requestIsHTTPS(r)
+}
+
+// TrustProxyEnabled reports whether SPIRE_TRUST_PROXY is set, meaning a reverse proxy
+// in front of the server sets the X-Forwarded-* headers and clients cannot reach the
+// server directly.
+func TrustProxyEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("SPIRE_TRUST_PROXY"))
+	return strings.EqualFold(v, "true") || v == "1"
+}
+
+// requestIsHTTPS reports whether the client reached us over HTTPS. X-Forwarded-Proto is
+// a client-supplied header, so it counts only when a trusted proxy is configured.
+func requestIsHTTPS(r *http.Request) bool {
+	if r == nil {
+		return false
 	}
-	return false
+	if r.TLS != nil {
+		return true
+	}
+	return TrustProxyEnabled() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // SessionAuthMiddleware enforces authentication via session cookie or Basic Auth fallback.
@@ -248,8 +322,12 @@ func SessionAuthMiddlewareWithRepo(repo *db.Repository, adminUser, adminPass str
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// 1. Check session cookie
-			if user, csrfToken, ok := ValidateSession(r); ok {
-				var authenticatedRole types.AdminRole = types.RoleSuperAdmin
+			if user, csrfToken, sessionID, ok := validateSession(r); ok && !sessionLive(r.Context(), repo, user, sessionID) {
+				// Signed but revoked (logout, disabled account, password or role change).
+				// Clear it so /login does not bounce the browser straight back here.
+				http.SetCookie(w, ClearSessionCookie())
+			} else if ok {
+				var authenticatedRole types.AdminRole
 				var userObj *types.AdminUser
 				valid := false
 
@@ -372,15 +450,15 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// The token is accepted from the header or the request body only. A token in the
+		// URL leaks into logs, browser history and Referer headers.
 		submittedToken := r.Header.Get("X-CSRF-Token")
-		if submittedToken == "" {
-			submittedToken = r.URL.Query().Get("csrf_token")
-		}
 		if submittedToken == "" {
 			if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
 				r.Body = http.MaxBytesReader(w, r.Body, (500<<20)+(1<<20))
 			}
-			submittedToken = r.FormValue("csrf_token")
+			// PostFormValue reads the body only; FormValue would also read the query string.
+			submittedToken = r.PostFormValue("csrf_token")
 		}
 
 		if submittedToken == "" || subtle.ConstantTimeCompare([]byte(submittedToken), []byte(expectedToken)) != 1 {
@@ -430,8 +508,7 @@ func BasicAuthMiddleware(expectedUser, expectedPass string) func(http.Handler) h
 // TrustedProxyRealIPMiddleware resolves X-Real-IP / X-Forwarded-For only when SPIRE_TRUST_PROXY=true,
 // preventing unauthenticated clients from spoofing audit log IP addresses.
 func TrustedProxyRealIPMiddleware(next http.Handler) http.Handler {
-	trustProxy := strings.EqualFold(strings.TrimSpace(os.Getenv("SPIRE_TRUST_PROXY")), "true") ||
-		strings.TrimSpace(os.Getenv("SPIRE_TRUST_PROXY")) == "1"
+	trustProxy := TrustProxyEnabled()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if trustProxy {
 			if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
@@ -453,7 +530,10 @@ func SecureHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;")
+		// Every script and stylesheet is served from /static, so no third-party origin is
+		// allowed. 'unsafe-inline' remains because the templates still carry inline
+		// <script> blocks and on* handlers; moving those into files would allow dropping it.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
@@ -467,11 +547,11 @@ func EnforceHTTPSMiddleware(enforce bool) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			proto := r.Header.Get("X-Forwarded-Proto")
-			if proto == "" && r.TLS != nil {
-				proto = "https"
-			}
-			if proto != "https" {
+			if !requestIsHTTPS(r) {
+				if !validRequestHost(r.Host) {
+					http.Error(w, "Invalid Host header", http.StatusBadRequest)
+					return
+				}
 				target := "https://" + r.Host + r.URL.RequestURI()
 				http.Redirect(w, r, target, http.StatusMovedPermanently)
 				return

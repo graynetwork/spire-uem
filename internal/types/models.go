@@ -394,6 +394,9 @@ type DeviceStatusResponse struct {
 type EnrollRequest struct {
 	HardwareUUID string `json:"hardware_uuid"`
 	Hostname     string `json:"hostname"`
+	// EnrollmentKey is a random secret the agent generates once and keeps. The device is
+	// bound to it when first staged, and its token is released only to that key.
+	EnrollmentKey string `json:"enrollment_key"`
 }
 
 // EnrollResponse is returned by POST /api/v1/desktop/enroll.

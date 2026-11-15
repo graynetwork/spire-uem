@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,6 +55,9 @@ func main() {
 	} else {
 		log.Printf("[spire-server] WARNING: SPIRE_TPM_EK_ROOTS not set; hardware TPM attestations will be reported FAILED because EK certificates cannot be anchored")
 	}
+	if len(strings.TrimSpace(os.Getenv("SPIRE_SESSION_SECRET"))) < 32 {
+		log.Printf("[spire-server] WARNING: SPIRE_SESSION_SECRET is unset or shorter than 32 characters; using a random per-process key, so every restart signs all admins out")
+	}
 	hub := gateway.NewGatewayHub(repo)
 	auditor := audit.NewForwarder(repo, cfg.Server.SIEMSyslogAddr)
 
@@ -63,6 +67,11 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(web.SecureHeadersMiddleware)
 	if cfg.Server.EnforceHTTPS {
+		// The server itself serves plain HTTP, so HTTPS can only be detected from a trusted
+		// proxy's X-Forwarded-Proto. Without one every request would redirect forever.
+		if !web.TrustProxyEnabled() {
+			log.Fatalf("[spire-server] enforce_https requires a TLS-terminating reverse proxy: set SPIRE_TRUST_PROXY=true, or disable enforce_https")
+		}
 		r.Use(web.EnforceHTTPSMiddleware(true))
 	}
 

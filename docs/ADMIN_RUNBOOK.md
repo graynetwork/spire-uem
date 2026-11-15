@@ -59,6 +59,10 @@ SQL
    # PEM bundle of TPM manufacturer CA certificates (roots + intermediates).
    # Without it, hardware TPM attestations are reported FAILED.
    SPIRE_TPM_EK_ROOTS=/etc/spire/tpm-ca-bundle.pem
+   # At least 32 random characters, e.g. `openssl rand -hex 32`. Keeps admins signed in across restarts.
+   SPIRE_SESSION_SECRET=CHANGE_ME_64_HEX_CHARS
+   # Only behind a TLS-terminating reverse proxy that clients cannot bypass:
+   # SPIRE_TRUST_PROXY=true
    EOF
    sudo chmod 0600 /etc/spire-server.env
    ```
@@ -71,7 +75,13 @@ SQL
    | `SPIRE_TPM_EK_ROOTS` | TPM manufacturer CA bundle used to verify EK certificates. Required for hardware attestation to succeed. |
    | `SPIRE_SIMULATE_TPM2` / `SPIRE_ALLOW_SIMULATED_TPM` | Accept software-simulated TPM attestations. **Test environments only**: a simulated attestation proves nothing about the device. |
    | `SPIRE_ENABLE_TEST_ENDPOINTS` | Registers the unauthenticated `/auth/oidc/test-callback` used by the E2E suite. **Never set in production**: it lets any caller mint an admin session. |
-   | `general.server_base_url` (Settings → General) | Used to build the OIDC redirect URI. Set it to the server's public URL. |
+   | `SPIRE_SESSION_SECRET` | Key that signs admin session cookies. If unset (or under 32 characters) a random key is generated per process and every restart signs all admins out. |
+   | `SPIRE_TRUST_PROXY` | Trust `X-Forwarded-For`, `X-Real-IP` and `X-Forwarded-Proto` from a reverse proxy. Set it only when clients cannot reach the server except through that proxy; otherwise they can spoof their IP in audit logs. Required when `enforce_https` is on, since the server itself speaks plain HTTP: it refuses to start with `enforce_https` and no trusted proxy. |
+   | `general.server_base_url` (Settings → General) | The server's public URL. Used for the OIDC redirect URI and written into `/install.sh`. Until it is changed from the seeded `http://localhost:8080`, `/install.sh` uses the request's Host header instead (validated as a plain host name). Set it before onboarding devices. |
+
+   **Sessions** are recorded server-side. Logging out ends the session, and disabling an account or changing its password or role ends all of that account's sessions immediately.
+
+   **Roles.** `OPERATOR` and above can run arbitrary shell commands as root (`/bin/sh -c`) and open root terminals on every enrolled device. Treat those roles as root on the whole fleet: grant them only to people you would give root on every endpoint, and use `AUDITOR` for read-only access.
 
 3. Create `/etc/systemd/system/spire-server.service`:
    ```ini
@@ -171,7 +181,12 @@ What this command performs automatically:
 2. Locate the newly staged endpoint (`status = PENDING_APPROVAL`).
 3. Assign optional fleet tags (e.g., `laptop`, `kiosk`, `engineering`) and click **Save**.
 4. Click **Approve**.
-5. On its next poll cycle (default `5s`), `spired` claims its single-use bearer token, persists it to `/etc/spire/agent.token` (mode `0600`), caches its active policy set to `/etc/spire/policy-cache.json`, and enforces all assigned policies.
+5. On its next poll cycle (default `5s`), `spired` claims its single-use bearer token (the server releases it only to the agent holding the enrollment key that first staged the device, see below), persists it to `/etc/spire/agent.token` (mode `0600`), caches its active policy set to `/etc/spire/policy-cache.json`, and enforces all assigned policies.
+
+### Enrollment keys and re-installing an agent
+On first start `spired` generates a random enrollment key and stores it in `/etc/spire/enrollment.key` (mode `0600`), next to the token. The server binds the device record to that key when the device is first staged, and refuses any later enroll request for the same hardware UUID that presents a different key. Knowing a machine's hardware UUID is therefore not enough to collect its token.
+
+If you reinstall the OS or delete `/etc/spire/`, the new agent has a new key and is refused with `enrollment key mismatch`. **Revoke** the device in the Admin UI: revoking releases the key binding, the new agent stages the device again on its next poll, and you approve it as normal.
 
 ---
 

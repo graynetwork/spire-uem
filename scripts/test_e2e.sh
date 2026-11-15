@@ -182,10 +182,14 @@ echo "  -> Created 2 global policies, 1 'laptop' targeted policy, and 1 'kiosk' 
 echo "[Step 4/15] Simulating agent enrollment & verifying HTTP 403 on unapproved check-in..."
 LAPTOP_HW_UUID="e2e-sim-hw-uuid-laptop-01"
 LAPTOP_HOSTNAME="debian12-e2e-laptop"
+# Each simulated agent keeps a fixed enrollment key; the server releases a device's token
+# only to the key that first staged it.
+LAPTOP_ENROLL_KEY="e2e-laptop-enrollment-key-0123456789abcdef"
+KIOSK_ENROLL_KEY="e2e-kiosk-enrollment-key-0123456789abcdef"
 
 ENROLL_RESP=$(curl -s -w "\n%{http_code}" -X POST "${SERVER_URL}/api/v1/desktop/enroll" \
     -H "Content-Type: application/json" \
-    -d "{\"hardware_uuid\":\"${LAPTOP_HW_UUID}\",\"hostname\":\"${LAPTOP_HOSTNAME}\"}")
+    -d "{\"hardware_uuid\":\"${LAPTOP_HW_UUID}\",\"hostname\":\"${LAPTOP_HOSTNAME}\",\"enrollment_key\":\"${LAPTOP_ENROLL_KEY}\"}")
 ENROLL_BODY=$(echo "${ENROLL_RESP}" | head -n 1)
 ENROLL_CODE=$(echo "${ENROLL_RESP}" | tail -n 1)
 echo "  -> Laptop enroll response (HTTP ${ENROLL_CODE}): ${ENROLL_BODY}"
@@ -211,8 +215,18 @@ KIOSK_HW_UUID="e2e-sim-hw-uuid-kiosk-01"
 KIOSK_HOSTNAME="debian12-e2e-kiosk"
 KIOSK_ENROLL=$(curl -s -X POST "${SERVER_URL}/api/v1/desktop/enroll" \
     -H "Content-Type: application/json" \
-    -d "{\"hardware_uuid\":\"${KIOSK_HW_UUID}\",\"hostname\":\"${KIOSK_HOSTNAME}\"}")
+    -d "{\"hardware_uuid\":\"${KIOSK_HW_UUID}\",\"hostname\":\"${KIOSK_HOSTNAME}\",\"enrollment_key\":\"${KIOSK_ENROLL_KEY}\"}")
 KIOSK_ID=$(echo "${KIOSK_ENROLL}" | jq -r '.device_id')
+
+# A caller who knows the laptop's hardware UUID but holds a different enrollment key is refused.
+HIJACK_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${SERVER_URL}/api/v1/desktop/enroll" \
+    -H "Content-Type: application/json" \
+    -d "{\"hardware_uuid\":\"${LAPTOP_HW_UUID}\",\"hostname\":\"attacker\",\"enrollment_key\":\"e2e-attacker-enrollment-key-0123456789abcdef\"}")
+if [[ "${HIJACK_CODE}" != "403" ]]; then
+    echo "FAIL: Expected HTTP 403 for enroll with a different enrollment key, got ${HIJACK_CODE}" >&2
+    exit 1
+fi
+echo "  -> Verified: enrollment with a mismatched key rejected with HTTP 403."
 
 echo "[Step 5/15] Tagging & approving 'laptop' (${LAPTOP_ID}) and 'kiosk' (${KIOSK_ID}) endpoints..."
 curl -s -u "${ADMIN_USER}:${ADMIN_PASSWORD}" -X POST "${SERVER_URL}/admin/devices/${LAPTOP_ID}/tags" -d "tags=laptop" >/dev/null
@@ -223,15 +237,15 @@ curl -s -u "${ADMIN_USER}:${ADMIN_PASSWORD}" -X POST "${SERVER_URL}/admin/device
 
 LAPTOP_TOKEN=$(curl -s -X POST "${SERVER_URL}/api/v1/desktop/enroll" \
     -H "Content-Type: application/json" \
-    -d "{\"hardware_uuid\":\"${LAPTOP_HW_UUID}\",\"hostname\":\"${LAPTOP_HOSTNAME}\"}" | jq -r '.token')
+    -d "{\"hardware_uuid\":\"${LAPTOP_HW_UUID}\",\"hostname\":\"${LAPTOP_HOSTNAME}\",\"enrollment_key\":\"${LAPTOP_ENROLL_KEY}\"}" | jq -r '.token')
 KIOSK_TOKEN=$(curl -s -X POST "${SERVER_URL}/api/v1/desktop/enroll" \
     -H "Content-Type: application/json" \
-    -d "{\"hardware_uuid\":\"${KIOSK_HW_UUID}\",\"hostname\":\"${KIOSK_HOSTNAME}\"}" | jq -r '.token')
+    -d "{\"hardware_uuid\":\"${KIOSK_HW_UUID}\",\"hostname\":\"${KIOSK_HOSTNAME}\",\"enrollment_key\":\"${KIOSK_ENROLL_KEY}\"}" | jq -r '.token')
 
 # Verify Finding C1 fix: Subsequent token re-claim attempts on already-claimed approved device return HTTP 409
 RECLAIM_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${SERVER_URL}/api/v1/desktop/enroll" \
     -H "Content-Type: application/json" \
-    -d "{\"hardware_uuid\":\"${LAPTOP_HW_UUID}\",\"hostname\":\"${LAPTOP_HOSTNAME}\"}")
+    -d "{\"hardware_uuid\":\"${LAPTOP_HW_UUID}\",\"hostname\":\"${LAPTOP_HOSTNAME}\",\"enrollment_key\":\"${LAPTOP_ENROLL_KEY}\"}")
 if [[ "${RECLAIM_CODE}" != "409" ]]; then
     echo "FAIL: Expected HTTP 409 on second token claim for approved device (Finding C1 fix), got ${RECLAIM_CODE}" >&2
     exit 1
