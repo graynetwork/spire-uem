@@ -7,14 +7,14 @@ all: build
 build: server agent build-hub
 
 server:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/spire-server ./cmd/spire-server
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spire-server ./cmd/spire-server
 
 agent:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/spired ./cmd/spired
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/spire-ctl ./cmd/spire-ctl
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spired ./cmd/spired
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spire-ctl ./cmd/spire-ctl
 
 build-hub:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/spire-hub ./cmd/spire-hub
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spire-hub ./cmd/spire-hub
 
 vet:
 	go vet ./...

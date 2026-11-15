@@ -30,14 +30,14 @@
                     <h3 class="text-xs font-semibold text-white">Update Status Distribution</h3>
                     <span class="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-[#141b2a] border border-[#1a2234]">Live</span>
                 </div>
-                <p class="text-[11px] text-slate-500 mt-0.5">Fleet patch compliance distribution</p>
+                <p class="text-[11px] text-slate-500 mt-0.5">Latest patch status reported by each approved host</p>
             </div>
             
             <div class="relative my-3 flex items-center justify-center h-48">
                 <canvas id="updateStatusChart"
                     data-uptodate="{{.Metrics.UpToDateHosts}}"
                     data-needsupdates="{{.Metrics.NeedsUpdates}}"
-                    data-errored="{{.Metrics.CriticalHosts}}"></canvas>
+                    data-errored="{{.Metrics.UpdateStatus.Errored}}"></canvas>
             </div>
 
             <!-- Legend Row -->
@@ -59,9 +59,9 @@
                 <div class="p-1.5 rounded bg-[#141b2a]">
                     <div class="flex items-center justify-center space-x-1.5">
                         <span class="w-2 h-2 rounded-full bg-rose-500"></span>
-                        <span class="text-[11px] text-slate-300">Errored</span>
+                        <span class="text-[11px] text-slate-300">Patch failed</span>
                     </div>
-                    <div class="text-xs font-mono font-semibold text-rose-400 mt-0.5 tabular-nums">{{.Metrics.CriticalHosts}}</div>
+                    <div class="text-xs font-mono font-semibold text-rose-400 mt-0.5 tabular-nums">{{.Metrics.UpdateStatus.Errored}}</div>
                 </div>
             </div>
         </div>
@@ -77,12 +77,12 @@
             </div>
 
             <div class="relative my-3 flex items-center justify-center h-48">
-                <canvas id="osDistChart" data-total="{{.Metrics.TotalHosts}}"></canvas>
+                <canvas id="osDistChart" data-os="{{toJSON .Metrics.OSDistribution}}"></canvas>
             </div>
 
             <div class="pt-3 border-t border-[#1a2234] flex items-center justify-between text-[11px] text-slate-400 px-1">
-                <span>Baseline: <span class="text-blue-400 font-mono">Debian 12 Bookworm</span></span>
-                <span>Kernel: <span class="text-slate-300 font-mono">6.1.0-lts</span></span>
+                <span class="truncate" title="{{.Metrics.MostCommonOS}}">Most common: <span class="text-blue-400 font-mono">{{if .Metrics.MostCommonOS}}{{.Metrics.MostCommonOS}}{{else}}not reported{{end}}</span></span>
+                <span class="truncate" title="{{.Metrics.MostCommonKernel}}">Kernel: <span class="text-slate-300 font-mono">{{if .Metrics.MostCommonKernel}}{{.Metrics.MostCommonKernel}}{{else}}not reported{{end}}</span></span>
             </div>
         </div>
 
@@ -90,22 +90,26 @@
         <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4 flex flex-col justify-between">
             <div>
                 <div class="flex items-center justify-between gap-2">
-                    <h3 class="text-xs font-semibold text-white">Security Update Trajectory</h3>
-                    <span class="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-[#141b2a] border border-[#1a2234]">30d Window</span>
+                    <h3 class="text-xs font-semibold text-white">Pending Update Trend</h3>
+                    <span class="text-[10px] font-mono text-slate-400 px-1.5 py-0.5 rounded bg-[#141b2a] border border-[#1a2234]">Last 30 days</span>
                 </div>
-                <p class="text-[11px] text-slate-500 mt-0.5">Pending security update trajectory over time</p>
+                <p class="text-[11px] text-slate-500 mt-0.5">Fleet-wide pending and security updates, one point per day</p>
             </div>
 
             <div class="relative my-3 flex items-center justify-center h-48">
-                <canvas id="packageTrendsChart"></canvas>
+                {{if .Metrics.PatchTrend}}
+                <canvas id="packageTrendsChart" data-trend="{{toJSON .Metrics.PatchTrend}}"></canvas>
+                {{else}}
+                <p class="text-xs text-slate-500 text-center px-4">No patch data yet. The trend starts with the first agent check-in that reports pending updates.</p>
+                {{end}}
             </div>
 
             <div class="pt-3 border-t border-[#1a2234] flex items-center justify-between text-[11px] text-slate-400 px-1">
                 <span class="flex items-center space-x-1.5">
-                    <span class="w-2 h-2 rounded-full bg-blue-500"></span>
-                    <span>CVE Resolution Rate</span>
+                    <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+                    <span>Hosts with security updates</span>
                 </span>
-                <span class="text-emerald-400 font-mono font-medium">92.8% Resolved</span>
+                <span class="font-mono font-medium {{if .Metrics.HostsWithSecurityUpdates}}text-rose-400{{else}}text-emerald-400{{end}}">{{.Metrics.HostsWithSecurityUpdates}} of {{.Metrics.PatchReportingHosts}}</span>
             </div>
         </div>
     </div>
@@ -235,10 +239,9 @@
                         {{else}}
                             <tr class="hover:bg-[#141b2a]/50 transition">
                                 <td class="py-2 text-xs text-slate-200 font-medium flex items-center space-x-2">
-                                    <span class="w-4 h-4 rounded bg-[#141b2a] border border-[#1a2234] flex items-center justify-center text-[10px] text-blue-400 font-mono">A</span>
-                                    <span>Super Admin</span>
+                                    <span class="text-slate-500">No admin activity recorded yet</span>
                                 </td>
-                                <td class="py-2 text-right text-xs text-emerald-400 font-medium">Active now</td>
+                                <td></td>
                             </tr>
                         {{end}}
                     </tbody>
@@ -310,16 +313,18 @@
         const elOS = document.getElementById('osDistChart');
         if (elOS) {
             if (osChart) osChart.destroy();
-            const total = Number(elOS.dataset.total || 0);
+            const osData = JSON.parse(elOS.dataset.os || '{}');
+            const osLabels = Object.keys(osData).sort((a, b) => osData[b] - osData[a]);
 
             osChart = new Chart(elOS, {
                 type: 'bar',
                 data: {
-                    labels: ['Debian 12 Bookworm', 'Debian 11 Bullseye', 'Other Linux'],
+                    // "Debian GNU/Linux 12 (bookworm)" -> "Debian 12 (bookworm)" so the axis fits.
+                    labels: osLabels.length ? osLabels.map(k => k.replace(' GNU/Linux', '')) : ['No hosts reporting'],
                     datasets: [{
                         label: 'Endpoints',
-                        data: total > 0 ? [total, 0, 0] : [0, 0, 0],
-                        backgroundColor: ['#2563eb', '#3b82f6', '#64748b'],
+                        data: osLabels.length ? osLabels.map(k => osData[k]) : [0],
+                        backgroundColor: '#2563eb',
                         borderRadius: 3,
                         barThickness: 16
                     }]
@@ -358,13 +363,22 @@
         const elTrend = document.getElementById('packageTrendsChart');
         if (elTrend) {
             if (trendChart) trendChart.destroy();
+            const trend = JSON.parse(elTrend.dataset.trend || '[]');
             trendChart = new Chart(elTrend, {
                 type: 'line',
                 data: {
-                    labels: ['Day 1', 'Day 5', 'Day 10', 'Day 15', 'Day 20', 'Day 25', 'Day 30'],
+                    labels: trend.map(p => p.day.slice(5)),
                     datasets: [{
-                        label: 'Security Updates',
-                        data: [12, 10, 8, 9, 5, 3, 1],
+                        label: 'Pending updates',
+                        data: trend.map(p => p.pending_updates),
+                        borderColor: '#64748b',
+                        backgroundColor: 'transparent',
+                        tension: 0.2,
+                        borderWidth: 1.5,
+                        pointRadius: 2
+                    }, {
+                        label: 'Security updates',
+                        data: trend.map(p => p.security_updates),
                         borderColor: '#2563eb',
                         backgroundColor: 'transparent',
                         tension: 0.2,
@@ -428,14 +442,14 @@
     <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
         <div class="text-[11px] font-medium text-slate-400">Up to Date</div>
         <div class="text-xl font-semibold font-mono text-emerald-400 mt-1.5 tabular-nums">{{.Metrics.UpToDateHosts}}</div>
-        <div class="text-[10px] text-slate-500 mt-1">Zero pending drift</div>
+        <div class="text-[10px] text-slate-500 mt-1">Hosts with no pending updates</div>
     </div>
 
     <!-- 3. Needs Updates -->
     <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
         <div class="text-[11px] font-medium text-slate-400">Needs Updates</div>
         <div class="text-xl font-semibold font-mono text-amber-400 mt-1.5 tabular-nums">{{.Metrics.NeedsUpdates}}</div>
-        <div class="text-[10px] text-slate-500 mt-1">Pending sync cycle</div>
+        <div class="text-[10px] text-slate-500 mt-1">Hosts with pending updates</div>
     </div>
 
     <!-- 4. Needs Reboots -->
@@ -449,14 +463,14 @@
     <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
         <div class="text-[11px] font-medium text-slate-400">Outdated Packages</div>
         <div class="text-xl font-semibold font-mono text-slate-200 mt-1.5 tabular-nums">{{.Metrics.OutdatedPackages}}</div>
-        <div class="text-[10px] text-slate-500 mt-1">APT upstream delta</div>
+        <div class="text-[10px] text-slate-500 mt-1">Pending package updates, fleet total</div>
     </div>
 
     <!-- 6. Security Updates -->
     <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-3 hover:border-slate-700 transition">
         <div class="text-[11px] font-medium text-slate-400">Security Updates</div>
         <div class="text-xl font-semibold font-mono text-rose-400 mt-1.5 tabular-nums">{{.Metrics.SecurityUpdates}}</div>
-        <div class="text-[10px] text-slate-500 mt-1">Pending CVE patches</div>
+        <div class="text-[10px] text-slate-500 mt-1">Pending security updates, fleet total</div>
     </div>
 </div>
 {{end}}
