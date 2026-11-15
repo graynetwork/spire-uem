@@ -3662,6 +3662,21 @@ func (h *Handler) SaveSettingsCategory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Keys must belong to the category in the URL, so a JSON body cannot overwrite another
+	// category's settings (for example sso.client_secret via /admin/settings/rollout).
+	for k := range values {
+		if strings.Contains(k, ".") && !strings.HasPrefix(k, category+".") {
+			http.Error(w, fmt.Sprintf("Setting %q does not belong to category %s", k, category), http.StatusBadRequest)
+			return
+		}
+	}
+	if category == "rollout" {
+		if err := validateRolloutValues(values); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	if err := h.repo.UpdateSettingsCategory(r.Context(), category, values, adminUser); err != nil {
 		log.Printf("[web] failed to update settings category %s: %v", category, err)
 		http.Error(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
@@ -4522,4 +4537,44 @@ var requestHostPattern = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:
 // IPv6 address with an optional port, and nothing else.
 func validRequestHost(host string) bool {
 	return requestHostPattern.MatchString(host)
+}
+
+
+// rolloutVersionRe accepts the version strings the agent build stamps: 1.2.3, optional
+// leading v, optional -prerelease.
+var rolloutVersionRe = regexp.MustCompile(`^v?[0-9]+(\.[0-9]+){0,3}(-[0-9A-Za-z.]+)?$`)
+
+// validateRolloutValues rejects rollout settings that would silently misbehave: a version
+// string that does not parse (it compares as 0 and disables the floor), or a minimum above a
+// ring's target.
+func validateRolloutValues(values map[string]interface{}) error {
+	str := func(k string) string {
+		v, _ := values[k].(string)
+		return strings.TrimSpace(v)
+	}
+	for k := range values {
+		if !strings.HasPrefix(k, "rollout.minimum_version") && !strings.HasPrefix(k, "rollout.target_version.") {
+			continue
+		}
+		v := str(k)
+		if version.IsDev(v) {
+			continue
+		}
+		if !rolloutVersionRe.MatchString(v) {
+			return fmt.Errorf("%s: %q is not a version like 1.4.0 (or none)", k, v)
+		}
+	}
+	minV := str("rollout.minimum_version")
+	if version.IsDev(minV) {
+		return nil
+	}
+	for k := range values {
+		if !strings.HasPrefix(k, "rollout.target_version.") {
+			continue
+		}
+		if t := str(k); !version.IsDev(t) && version.Compare(t, minV) < 0 {
+			return fmt.Errorf("%s (%s) is below the minimum version %s; agents in that ring would be refused", k, t, minV)
+		}
+	}
+	return nil
 }

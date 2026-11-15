@@ -54,6 +54,24 @@ func GenerateWireGuardKeypair() (privB64, pubB64 string, err error) {
 		base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes()), nil
 }
 
+// hasControlChars reports whether s contains any ASCII control character (including CR/LF),
+// which would let a value break out of its NetworkManager keyfile line.
+func hasControlChars(s string) bool {
+	for _, c := range s {
+		if c < 0x20 || c == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateNetworkProfilePayload validates a NETWORK_PROFILE payload before it is stored. It runs
+// the same checks the agent runs at apply time, minus the policy-ID check (the ID is assigned
+// after validation).
+func ValidateNetworkProfilePayload(p types.NetworkProfilePayload) error {
+	return validateNetworkProfile("server-validate", p)
+}
+
 // secretValue returns the transient plaintext of an envelope (the server unseals before delivery).
 func secretValue(s types.SecretEnvelope) string { return s.Plaintext }
 
@@ -88,6 +106,9 @@ func validateWifi(w *types.WifiProfile) error {
 		if l := len(psk); l < 8 || l > 63 {
 			return fmt.Errorf("wifi PSK must be 8..63 characters")
 		}
+		if hasControlChars(psk) {
+			return fmt.Errorf("wifi PSK must not contain control characters")
+		}
 	case types.WifiWPA2Enterprise, types.WifiWPA3Enterprise:
 		if err := validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, w.ClientKey, secretValue(w.Password)); err != nil {
 			return err
@@ -120,6 +141,9 @@ func validateEAP(eap types.EAPMethod, identity, caCert, clientCert, clientKey, p
 		}
 	default:
 		return fmt.Errorf("invalid EAP method %q", eap)
+	}
+	if hasControlChars(password) {
+		return fmt.Errorf("802.1X password must not contain control characters")
 	}
 	if identity != "" && !nmIdentityRe.MatchString(identity) {
 		return fmt.Errorf("invalid 802.1X identity")
@@ -173,9 +197,15 @@ func validateWireGuard(wg *types.WireGuardProfile) error {
 type kf struct{ sb strings.Builder }
 
 func (k *kf) section(name string) { fmt.Fprintf(&k.sb, "[%s]\n", name) }
-func (k *kf) kv(key, val string)  { fmt.Fprintf(&k.sb, "%s=%s\n", key, val) }
-func (k *kf) blank()              { k.sb.WriteByte('\n') }
-func (k *kf) String() string      { return k.sb.String() }
+
+// kv writes one key=value line. Values are validated upstream; as a second line of defence any
+// CR/LF is stripped so a value can never start a new keyfile line or [section].
+func (k *kf) kv(key, val string) {
+	val = strings.NewReplacer("\r", "", "\n", "").Replace(val)
+	fmt.Fprintf(&k.sb, "%s=%s\n", key, val)
+}
+func (k *kf) blank()         { k.sb.WriteByte('\n') }
+func (k *kf) String() string { return k.sb.String() }
 
 // renderNetworkProfile builds the .nmconnection keyfile. For WireGuard it returns the generated
 // public key (to report back); other kinds return "".

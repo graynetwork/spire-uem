@@ -128,10 +128,12 @@ func (u *SelfUpdater) ApplyDirective(ctx context.Context, d *types.AgentUpdateDi
 // download fetches the artifact over the same server connection using the device bearer
 // token, enforcing the server-declared Size exactly and a hard byte cap.
 func (u *SelfUpdater) download(ctx context.Context, a *types.AgentArtifact, token string) (string, error) {
-	url := a.URL
-	if strings.HasPrefix(url, "/") {
-		url = u.serverURL + url
+	// Only accept a path on the configured server. An absolute URL would send the download,
+	// and the device's bearer token, to whatever host the directive named.
+	if !strings.HasPrefix(a.URL, "/") || strings.HasPrefix(a.URL, "//") {
+		return "", fmt.Errorf("artifact URL must be a path on the server, got %q", a.URL)
 	}
+	url := u.serverURL + a.URL
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err

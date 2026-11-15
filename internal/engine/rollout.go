@@ -67,5 +67,14 @@ func DecideRollout(agentVersion string, ring types.DeploymentRing, cfg types.Age
 		d.Reason = fmt.Sprintf("ring %s has no target; agent %s left as-is", ring, agentVersion)
 	}
 
+	// A below-minimum agent must always be told where to go, otherwise every gated endpoint
+	// refuses it (426) while check-in never hands it an update. When the ring target is
+	// missing or still below the floor, send it to the minimum version instead.
+	if d.BelowMinimum && (!d.ShouldUpdate || version.Compare(d.TargetVersion, cfg.MinimumVersion) < 0) {
+		d.ShouldUpdate = true
+		d.TargetVersion = cfg.MinimumVersion
+		d.Reason = fmt.Sprintf("%s; updating to minimum %s", d.Reason, cfg.MinimumVersion)
+	}
+
 	return d
 }

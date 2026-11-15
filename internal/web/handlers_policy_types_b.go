@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/spire-uem/spire-uem/internal/db"
+	"github.com/spire-uem/spire-uem/internal/engine"
 	"github.com/spire-uem/spire-uem/internal/types"
 )
 
@@ -74,6 +75,9 @@ func buildNetworkProfilePayload(r *http.Request) (json.RawMessage, error) {
 		return nil, fmt.Errorf("invalid network profile kind %q", kind)
 	}
 
+	if err := engine.ValidateNetworkProfilePayload(payload); err != nil {
+		return nil, err
+	}
 	return json.Marshal(payload)
 }
 
@@ -96,6 +100,9 @@ func buildUSBDeviceControlPayload(r *http.Request) (json.RawMessage, error) {
 			return nil, err
 		}
 		payload.AllowList = append(payload.AllowList, entry)
+	}
+	if err := engine.ValidateUSBDeviceControlPayload(payload); err != nil {
+		return nil, err
 	}
 	return json.Marshal(payload)
 }
@@ -169,6 +176,9 @@ func buildAuditdRulesPayload(r *http.Request) (json.RawMessage, error) {
 	}
 	if len(payload.Presets) == 0 && len(payload.Watches) == 0 && len(payload.Syscalls) == 0 {
 		return nil, fmt.Errorf("AUDITD_RULES requires at least one preset, watch, or syscall rule")
+	}
+	if err := engine.ValidateAuditdRulesPayload(payload); err != nil {
+		return nil, err
 	}
 	return json.Marshal(payload)
 }

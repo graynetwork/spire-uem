@@ -86,6 +86,12 @@ func AuditdPresetNames() []string {
 }
 
 // validateAuditdPayload validates a payload and returns the fully-rendered, sorted rule lines.
+// ValidateAuditdRulesPayload validates an AUDITD_RULES payload before it is stored.
+func ValidateAuditdRulesPayload(p types.AuditdRulesPayload) error {
+	_, err := validateAuditdPayload(p)
+	return err
+}
+
 func validateAuditdPayload(p types.AuditdRulesPayload) ([]string, error) {
 	var lines []string
 	seen := make(map[string]bool)

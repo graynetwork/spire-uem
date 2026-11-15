@@ -209,3 +209,15 @@ func TestEnforceFirewallRuleset_InvalidPayload(t *testing.T) {
 		t.Fatalf("expected FAILED for invalid payload, got %v", item.ComplianceStatus)
 	}
 }
+
+// Replies to established connections must be accepted even when the policy leaves
+// AllowEstablished off, or a drop policy cuts the agent off from the server.
+func TestRenderFirewallRuleset_AlwaysAcceptsEstablished(t *testing.T) {
+	out, err := RenderFirewallRuleset(types.FirewallRulesetPayload{DefaultInbound: "drop"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(out, "ct state established,related accept") {
+		t.Fatalf("established rule missing:\n%s", out)
+	}
+}

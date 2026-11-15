@@ -87,3 +87,15 @@ func TestDecideRollout_NoDowngrade(t *testing.T) {
 		t.Errorf("agent 0.3.0 above target 0.2.0 must not be downgraded, got %+v", d)
 	}
 }
+
+// A below-minimum agent whose ring has no target (or a target below the floor) is sent to the
+// minimum, so it is never refused everywhere with nowhere to update to.
+func TestDecideRollout_BelowMinimumWithoutUsableTargetGoesToMinimum(t *testing.T) {
+	for _, target := range []string{"none", "0.15.0"} {
+		c := cfg("0.20.0", map[types.DeploymentRing]string{types.RingProduction: target})
+		d := engine.DecideRollout("0.10.0", types.RingProduction, c)
+		if !d.BelowMinimum || !d.ShouldUpdate || d.TargetVersion != "0.20.0" {
+			t.Errorf("target %q: got below=%v update=%v target=%q, want update to 0.20.0", target, d.BelowMinimum, d.ShouldUpdate, d.TargetVersion)
+		}
+	}
+}

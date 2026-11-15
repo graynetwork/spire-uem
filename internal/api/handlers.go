@@ -222,7 +222,7 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		OSName:          truncate(strings.TrimSpace(req.OSName), 128),
 		KernelVersion:   truncate(strings.TrimSpace(req.KernelVersion), 128),
 		CheckedInAt:     time.Now().UTC(),
-		SourcePackages:  req.SourcePackages,
+		SourcePackages:  capSourcePackages(req.SourcePackages),
 		ReleaseCodename: truncate(strings.ToLower(strings.TrimSpace(req.ReleaseCodename)), 64),
 	}
 	if err := h.repo.RecordCheckin(r.Context(), hwUUID, reported); err != nil {
@@ -1146,4 +1146,16 @@ func truncate(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+
+// maxReportedSourcePackages matches the agent's own cap (internal/inventory/srcpackages.go). A
+// client that sends more is truncated so one device cannot inflate its CVE match on check-in.
+const maxReportedSourcePackages = 6000
+
+func capSourcePackages[T any](pkgs []T) []T {
+	if len(pkgs) > maxReportedSourcePackages {
+		return pkgs[:maxReportedSourcePackages]
+	}
+	return pkgs
 }

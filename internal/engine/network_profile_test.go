@@ -238,3 +238,24 @@ func TestRemoveNetworkProfileOnlyTouchesOwnedFile(t *testing.T) {
 		t.Error("foreign profile must NOT be removed")
 	}
 }
+
+// A PSK or 802.1X password containing a newline must be refused: written verbatim it would add
+// lines (or a new [section]) to the root-owned NetworkManager keyfile.
+func TestNetworkProfileRejectsSecretLineInjection(t *testing.T) {
+	inject := "password1\n[connection]\npermissions=user:mallory"
+	bad := []types.NetworkProfilePayload{
+		{Kind: types.NetworkProfileWifi, Wifi: &types.WifiProfile{SSID: "net", Security: types.WifiWPA2Personal, PSK: types.SecretEnvelope{Plaintext: inject}}},
+		{Kind: types.NetworkProfileWifi, Wifi: &types.WifiProfile{SSID: "net", Security: types.WifiWPA2Enterprise, EAP: types.EAPPEAPMSCHAPv2, Identity: "alice", Password: types.SecretEnvelope{Plaintext: inject}}},
+		{Kind: types.NetworkProfileWiredDot1x, Wired: &types.WiredDot1xProfile{EAP: types.EAPPEAPMSCHAPv2, Identity: "alice", Password: types.SecretEnvelope{Plaintext: "pw\r\nx=y"}}},
+	}
+	for i, p := range bad {
+		if err := ValidateNetworkProfilePayload(p); err == nil {
+			t.Errorf("case %d: expected control-character rejection", i)
+		}
+	}
+	var k kf
+	k.kv("psk", "a\nb\r\n[x]")
+	if strings.Count(k.String(), "\n") != 1 {
+		t.Errorf("kv must emit exactly one line, got %q", k.String())
+	}
+}

@@ -135,7 +135,8 @@ func RenderFirewallRuleset(p types.FirewallRulesetPayload) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("# Managed by SpireUEM - FIREWALL_RULESET (table inet spire)\n")
 	sb.WriteString(fmt.Sprintf("# Generated at: %s\n", time.Now().UTC().Format(time.RFC3339)))
-	sb.WriteString("# Outbound is intentionally left unmanaged (open) so the agent keeps its control-plane link.\n")
+	sb.WriteString("# Outbound is left unmanaged (open) and replies to established connections are always\n")
+	sb.WriteString("# accepted, so the agent keeps its control-plane link whatever the inbound policy.\n")
 	// Flush only our own table, then recreate it. This never references other tables.
 	sb.WriteString("table inet spire\n")
 	sb.WriteString("delete table inet spire\n")
@@ -145,9 +146,10 @@ func RenderFirewallRuleset(p types.FirewallRulesetPayload) (string, error) {
 	if p.AllowLoopback {
 		sb.WriteString("\t\tiif lo accept\n")
 	}
-	if p.AllowEstablished {
-		sb.WriteString("\t\tct state established,related accept\n")
-	}
+	// Always accept replies to established connections, regardless of AllowEstablished. The
+	// agent's control-plane link is an outbound connection; with "policy drop" and no such rule
+	// its reply packets would be dropped and the device could never be managed (or fixed) again.
+	sb.WriteString("\t\tct state established,related accept\n")
 	if p.AllowICMP {
 		sb.WriteString("\t\tip protocol icmp accept\n")
 		sb.WriteString("\t\tip6 nexthdr ipv6-icmp accept\n")

@@ -33,6 +33,11 @@ func usbguardRulesPath() string {
 }
 
 // validateUSBPayload validates an allow-list payload and the mode.
+// ValidateUSBDeviceControlPayload validates a USB_DEVICE_CONTROL payload before it is stored.
+func ValidateUSBDeviceControlPayload(p types.USBDeviceControlPayload) error {
+	return validateUSBPayload(p)
+}
+
 func validateUSBPayload(p types.USBDeviceControlPayload) error {
 	switch p.Mode {
 	case types.USBModeAllowAll, types.USBModeBlockNew:

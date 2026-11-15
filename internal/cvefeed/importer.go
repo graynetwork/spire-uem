@@ -6,10 +6,12 @@ package cvefeed
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -138,6 +140,10 @@ func (im *Importer) ImportFromFile(ctx context.Context, path string) (int, int, 
 // ImportFromURL fetches and imports the feed over HTTP with a timeout and size cap, using a
 // streaming body (no second copy).
 func (im *Importer) ImportFromURL(ctx context.Context, url string) (int, int, error) {
+	if err := checkFeedURL(url); err != nil {
+		_ = im.repo.RecordCVEFeedError(ctx, "url:"+url, err.Error())
+		return 0, 0, err
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
@@ -148,7 +154,7 @@ func (im *Importer) ImportFromURL(ctx context.Context, url string) (int, int, er
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "SpireUEM-CVE-Importer")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := feedClient.Do(req)
 	if err != nil {
 		_ = im.repo.RecordCVEFeedError(ctx, "url:"+url, err.Error())
 		return 0, 0, err
@@ -225,4 +231,38 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	*c.n += int64(n)
 	return n, err
+}
+
+// feedClient fetches the feed over TLS 1.2+ and refuses redirects to a non-https URL.
+var feedClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy:           http.ProxyFromEnvironment,
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+	},
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
+		return checkFeedURL(req.URL.String())
+	},
+}
+
+// checkFeedURL requires an https feed URL. SPIRE_CVE_FEED_ALLOW_HTTP=1 allows plain http, for a
+// local mirror on a trusted network.
+func checkFeedURL(raw string) error {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid CVE feed URL %q", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if os.Getenv("SPIRE_CVE_FEED_ALLOW_HTTP") == "1" {
+			return nil
+		}
+		return fmt.Errorf("CVE feed URL must use https (set SPIRE_CVE_FEED_ALLOW_HTTP=1 for a trusted local mirror)")
+	default:
+		return fmt.Errorf("CVE feed URL must use https, got scheme %q", u.Scheme)
+	}
 }

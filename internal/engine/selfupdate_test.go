@@ -188,3 +188,24 @@ func TestConsumePendingUpdateResult(t *testing.T) {
 		t.Errorf("result should be consumed only once, got %+v", again)
 	}
 }
+
+// An absolute artifact URL must be refused before any request is made, so the device token is
+// never sent to another host.
+func TestApplyDirective_RejectsAbsoluteArtifactURL(t *testing.T) {
+	hit := false
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	defer other.Close()
+	installer := func(ctx context.Context, p string) error { t.Fatal("installer must not run"); return nil }
+	u := engine.NewSelfUpdater(other.Client(), "http://127.0.0.1:1", "0.1.0", installer)
+	engine.SetUpdaterStatePath(u, filepath.Join(t.TempDir(), "state.json"))
+	for _, url := range []string{other.URL + "/x.deb", "//evil.example/x.deb"} {
+		res := u.ApplyDirective(context.Background(), directive("0.2.0", url, "00", 1), "tok")
+		if res == nil || res.Status != types.AgentUpdateFailed {
+			t.Errorf("%s: expected failure, got %+v", url, res)
+		}
+		engine.SetUpdaterStatePath(u, filepath.Join(t.TempDir(), "state.json"))
+	}
+	if hit {
+		t.Fatal("agent contacted a host other than its server")
+	}
+}

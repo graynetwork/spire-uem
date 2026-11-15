@@ -76,11 +76,18 @@ func (h *Handler) computeAgentUpdateDirective(r *http.Request, dev *types.Device
 // the minimum, so it can still check in (ungated) to receive an update directive and update
 // itself — no deadlock. A "dev"/unknown agent is never refused.
 //
-// The agent's version is read from the X-Spire-Agent-Version request header, which spired
-// sends on every authenticated request. A missing/"dev" header is treated as unknown.
+// The agent's version is the one recorded for the authenticated device at check-in; the
+// X-Spire-Agent-Version header is only a fallback for a device that has never reported one.
 func (h *Handler) enforceMinimumVersion(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Prefer the version the device recorded at its last check-in over the request header,
+		// so a client cannot skip the floor by sending "X-Spire-Agent-Version: dev". The header
+		// is used only before the device has ever reported a version. A device whose recorded
+		// version is known and below the floor is refused whatever the header says.
 		agentVersion := r.Header.Get("X-Spire-Agent-Version")
+		if dev := h.authenticateBearer(r); dev != nil && !version.IsDev(dev.AgentVersion) {
+			agentVersion = dev.AgentVersion
+		}
 		if version.IsDev(agentVersion) {
 			next.ServeHTTP(w, r)
 			return
