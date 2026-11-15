@@ -144,7 +144,32 @@ sha256sum "${BACKUP_FILE}" > "${BACKUP_FILE}.sha256"
 
 ---
 
-## 4. Host Firewall & Network Rules
+## 4. TLS is required
+
+Device tokens, Wi-Fi and 802.1X secrets, LUKS key escrow, agent update downloads and the
+wipe-signing key that agents pin at enrollment all travel between the agent and `spire-server`.
+Over plain HTTP anyone on the path can read or replace them, so the server refuses to start in
+plain HTTP on a reachable address. Pick one of:
+
+| Mode | How to enable | Notes |
+|---|---|---|
+| Built-in TLS | `SPIRE_TLS_CERT_FILE=/etc/spire/tls/server.crt` and `SPIRE_TLS_KEY_FILE=/etc/spire/tls/server.key` (or `tls_cert_file` / `tls_key_file` under `server:`) | TLS 1.2 or later. Both files must be set together. |
+| TLS-terminating proxy | Put Caddy, nginx or Traefik in front and set `SPIRE_TRUST_PROXY=true` | Bind `spire-server` to `127.0.0.1` or a private interface so clients cannot bypass the proxy. |
+| Loopback only | `SPIRE_LISTEN_ADDR=127.0.0.1:8080` | Plain HTTP that cannot leave the host. Used for local development. |
+| Plain HTTP (lab only) | `SPIRE_ALLOW_INSECURE_HTTP=1` | Logs a warning at every start. Never use it on a production network. |
+
+`enforce_https` works with built-in TLS or with a trusted proxy.
+
+The agent applies the same rule to its `server_url`: it refuses a non-loopback `http://` URL
+unless `allow_insecure_http: true` is set in `/etc/spire/config.yaml` (or
+`SPIRE_AGENT_ALLOW_INSECURE_HTTP=1`). `/install.sh` refuses a plain HTTP server URL unless it
+is run with `--allow-insecure-http`, which also writes that setting into the agent config.
+
+Set **Settings → General → server base URL** to the `https://` address agents should use.
+
+---
+
+## 4a. Host Firewall & Network Rules
 
 SpireUEM requires **zero inbound ports** on managed Debian desktop endpoints. All communication is initiated outbound by `spired` to `spire-server`.
 
@@ -167,7 +192,9 @@ sudo ufw reload
 ### Step 1: Run Single-Command Bootstrap on the Target Debian Machine
 On any physical or virtual Debian 12/13 (`amd64`) machine with network reachability to `spire-server`:
 ```bash
-curl -sSL http://<server-ip>:8080/install.sh | sudo bash
+curl -sSL https://<server-host>/install.sh | sudo bash
+# Lab network without TLS only:
+# curl -sSL http://<server-ip>:8080/install.sh | sudo bash -s -- --allow-insecure-http
 ```
 What this command performs automatically:
 1. Verifies root privileges (`EUID == 0`) and `amd64` architecture.

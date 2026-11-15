@@ -47,6 +47,9 @@ func main() {
 		log.Fatalf("[spired] failed to determine hardware UUID: %v", err)
 	}
 	hostname := inventory.GetHostname()
+	if err := config.CheckAgentServerURL(cfg.Agent.ServerURL, cfg.Agent.AllowInsecureHTTP); err != nil {
+		log.Fatalf("[spired] refusing to start: %v", err)
+	}
 	log.Printf("[spired] starting daemon hardware_uuid=%s hostname=%s server=%s", hwUUID, hostname, cfg.Agent.ServerURL)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

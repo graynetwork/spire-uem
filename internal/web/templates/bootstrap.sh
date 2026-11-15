@@ -9,6 +9,7 @@ TMP_DEB="/tmp/${DEB_PACKAGE}"
 
 USE_APT_REPO="${SPIRE_USE_APT_REPO:-0}"
 APT_REPO_URL="${SPIRE_APT_REPO_URL:-}"
+ALLOW_INSECURE_HTTP="${SPIRE_AGENT_ALLOW_INSECURE_HTTP:-0}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -25,11 +26,34 @@ while [[ $# -gt 0 ]]; do
             SERVER_URL="$2"
             shift 2
             ;;
+        --allow-insecure-http)
+            ALLOW_INSECURE_HTTP="1"
+            shift 1
+            ;;
         *)
             shift 1
             ;;
     esac
 done
+
+# The agent sends its device token, receives network secrets and pins the server's
+# wipe-signing key over this URL, so plain HTTP is refused unless explicitly allowed.
+case "${SERVER_URL}" in
+    https://*) ;;
+    http://localhost|http://localhost:*|http://127.0.0.1|http://127.0.0.1:*) ;;
+    http://*)
+        if [[ "${ALLOW_INSECURE_HTTP}" != "1" && "${ALLOW_INSECURE_HTTP}" != "true" ]]; then
+            echo "ERROR: ${SERVER_URL} uses plain HTTP. Serve SpireUEM over HTTPS, or re-run with" >&2
+            echo "       --allow-insecure-http on a lab network only." >&2
+            exit 1
+        fi
+        echo "WARNING: enrolling over plain HTTP (--allow-insecure-http). Lab use only." >&2
+        ;;
+    *)
+        echo "ERROR: unsupported server URL ${SERVER_URL}" >&2
+        exit 1
+        ;;
+esac
 
 if [[ "${USE_APT_REPO}" == "1" || "${USE_APT_REPO}" == "true" ]]; then
     if [[ -z "${APT_REPO_URL}" ]]; then
@@ -135,6 +159,9 @@ agent:
   checkin_interval: "5m"
   poll_interval: "10s"
 EOF
+if [[ "${ALLOW_INSECURE_HTTP}" == "1" || "${ALLOW_INSECURE_HTTP}" == "true" ]]; then
+    echo '  allow_insecure_http: true' >> /etc/spire/config.yaml
+fi
 chmod 0600 /etc/spire/config.yaml
 
 echo "[4/4] Reloading systemd and starting spired.service..."

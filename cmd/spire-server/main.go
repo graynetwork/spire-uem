@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"context"
 	"flag"
 	"log"
@@ -36,6 +37,17 @@ func main() {
 	flag.Parse()
 
 	cfg := config.Load(*configPath)
+
+	transport, err := config.ResolveServerTransport(cfg.Server, web.TrustProxyEnabled())
+	if err != nil {
+		log.Fatalf("[spire-server] refusing to start: %v", err)
+	}
+	switch transport {
+	case config.TransportInsecure:
+		log.Printf("[spire-server] WARNING: serving plain HTTP on %s (SPIRE_ALLOW_INSECURE_HTTP). Device tokens, network secrets and the wipe-signing key travel unencrypted; lab use only", cfg.Server.ListenAddr)
+	case config.TransportLoopback:
+		log.Printf("[spire-server] serving plain HTTP on loopback %s only; put a TLS proxy in front before exposing it", cfg.Server.ListenAddr)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -101,10 +113,10 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(web.SecureHeadersMiddleware)
 	if cfg.Server.EnforceHTTPS {
-		// The server itself serves plain HTTP, so HTTPS can only be detected from a trusted
-		// proxy's X-Forwarded-Proto. Without one every request would redirect forever.
-		if !web.TrustProxyEnabled() {
-			log.Fatalf("[spire-server] enforce_https requires a TLS-terminating reverse proxy: set SPIRE_TRUST_PROXY=true, or disable enforce_https")
+		// Without built-in TLS, HTTPS can only be detected from a trusted proxy's
+		// X-Forwarded-Proto. Without either, every request would redirect forever.
+		if transport != config.TransportBuiltinTLS && !web.TrustProxyEnabled() {
+			log.Fatalf("[spire-server] enforce_https requires TLS: set SPIRE_TLS_CERT_FILE/SPIRE_TLS_KEY_FILE, or put a TLS-terminating reverse proxy in front and set SPIRE_TRUST_PROXY=true")
 		}
 		r.Use(web.EnforceHTTPSMiddleware(true))
 	}
@@ -128,10 +140,19 @@ func main() {
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+	if transport == config.TransportBuiltinTLS {
+		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
 
 	go func() {
-		log.Printf("[spire-server] listening on %s (Admin UI: http://localhost%s/admin/devices)", cfg.Server.ListenAddr, cfg.Server.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("[spire-server] listening on %s (transport=%s)", cfg.Server.ListenAddr, transport)
+		var err error
+		if transport == config.TransportBuiltinTLS {
+			err = srv.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[spire-server] server error: %v", err)
 		}
 	}()
