@@ -210,14 +210,14 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	csrfToken := CSRFTokenFromContext(r.Context())
 
-	metrics, err := h.repo.GetDashboardMetrics(r.Context())
+	metrics, err := h.repo.GetDashboardMetricsScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] failed to get dashboard metrics: %v", err)
 		metrics = &types.DashboardMetrics{
 			OSDistribution: make(map[string]int),
 		}
 	}
-	if total, high, err := h.repo.CountOpenCVEsByUrgency(r.Context()); err == nil {
+	if total, high, err := h.repo.CountOpenCVEsByUrgencyScoped(r.Context(), h.deviceScope(r)); err == nil {
 		metrics.OpenCVEs = total
 		metrics.HighUrgencyCVEs = high
 	}
@@ -241,14 +241,14 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 
 // DashboardMetricsPartial renders the #metric-cards HTML partial for HTMX auto-refreshing.
 func (h *Handler) DashboardMetricsPartial(w http.ResponseWriter, r *http.Request) {
-	metrics, err := h.repo.GetDashboardMetrics(r.Context())
+	metrics, err := h.repo.GetDashboardMetricsScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] failed to get dashboard metrics partial: %v", err)
 		metrics = &types.DashboardMetrics{
 			OSDistribution: make(map[string]int),
 		}
 	}
-	if total, high, err := h.repo.CountOpenCVEsByUrgency(r.Context()); err == nil {
+	if total, high, err := h.repo.CountOpenCVEsByUrgencyScoped(r.Context(), h.deviceScope(r)); err == nil {
 		metrics.OpenCVEs = total
 		metrics.HighUrgencyCVEs = high
 	}
@@ -266,7 +266,7 @@ func (h *Handler) DashboardMetricsPartial(w http.ResponseWriter, r *http.Request
 
 // DashboardBenchmarkCardPartial renders the #active-benchmark-card HTML partial for HTMX auto-refreshing.
 func (h *Handler) DashboardBenchmarkCardPartial(w http.ResponseWriter, r *http.Request) {
-	metrics, err := h.repo.GetDashboardMetrics(r.Context())
+	metrics, err := h.repo.GetDashboardMetricsScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] failed to get metrics for benchmark card: %v", err)
 		metrics = &types.DashboardMetrics{}
@@ -431,7 +431,7 @@ func (h *Handler) RemediateBenchmarkRule(w http.ResponseWriter, r *http.Request)
 
 	// If deviceID not specified, look up from latest scan
 	if deviceID == "" {
-		if summary, err := h.repo.GetLatestFleetBenchmarkSummary(r.Context()); err == nil && summary.LatestDeviceID != "" {
+		if summary, err := h.repo.GetLatestFleetBenchmarkSummaryScoped(r.Context(), h.deviceScope(r)); err == nil && summary.LatestDeviceID != "" {
 			deviceID = summary.LatestDeviceID
 		}
 	}
@@ -876,7 +876,7 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	ring := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("ring")))
 
-	summary, err := h.repo.GetFleetSummary(r.Context())
+	summary, err := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] get fleet summary error: %v", err)
 		summary = &types.FleetSummary{CompliancePercent: 100}
@@ -1377,13 +1377,15 @@ func (h *Handler) DeviceLiveWS(w http.ResponseWriter, r *http.Request) {
 
 // ListSystemAuditEventsJSON handles GET /admin/audit/events, returning recent system_audit_events and RFC 5424 syslog frames.
 func (h *Handler) ListSystemAuditEventsJSON(w http.ResponseWriter, r *http.Request) {
-	events, err := h.repo.ListSystemAuditEvents(r.Context(), 50)
+	events, err := h.repo.ListSystemAuditEventsScoped(r.Context(), 50, h.deviceScope(r))
 	if err != nil {
 		http.Error(w, "Failed to list system audit events", http.StatusInternalServerError)
 		return
 	}
 	var rfc5424Lines []string
-	if h.auditor != nil {
+	// The in-memory syslog frames are fleet-wide and cannot be filtered by device tag,
+	// so a tag-scoped admin gets only the filtered events.
+	if h.auditor != nil && !h.deviceScope(r).Scoped {
 		rfc5424Lines = h.auditor.RecentRFC5424()
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -1687,7 +1689,7 @@ func (h *Handler) ListPoliciesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 	var totalHosts int
 	if summary != nil {
 		totalHosts = summary.TotalDevices
@@ -2448,7 +2450,7 @@ func (h *Handler) ListApplications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 	data := map[string]any{
 		"Title":        "Application Catalog & Self-Service",
 		"ActiveNav":    "applications",
@@ -3118,7 +3120,7 @@ func (h *Handler) UpdateApplicationAssignment(w http.ResponseWriter, r *http.Req
 	h.dispatchPolicyCheckin(r.Context(), updatedPol)
 
 	// Recalculate fleet compliance metrics
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 
 	if h.auditor != nil {
 		adminUser := AdminUserFromContext(r.Context())
@@ -3512,7 +3514,7 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
 
 	activeTab := strings.TrimSpace(r.URL.Query().Get("tab"))
 	if activeTab == "" {

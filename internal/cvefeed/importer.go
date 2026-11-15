@@ -36,10 +36,16 @@ const (
 
 // Config resolves the importer settings from env first, then DB settings, then defaults.
 type Config struct {
-	Enabled  bool
-	URL      string
-	FilePath string // SPIRE_CVE_FEED_FILE: offline import source (takes priority over URL)
-	Interval time.Duration
+	// Enabled turns on the automatic periodic import. It is off by default: the server
+	// downloads nothing until an admin enables it (cve.feed_enabled) or sets
+	// SPIRE_CVE_FEED_ENABLED=true. Manual imports and offline uploads work either way.
+	Enabled bool
+	// EnabledFromEnv reports that SPIRE_CVE_FEED_ENABLED decided Enabled, so the stored
+	// setting has no effect.
+	EnabledFromEnv bool
+	URL            string
+	FilePath       string // SPIRE_CVE_FEED_FILE: offline import source (takes priority over URL)
+	Interval       time.Duration
 }
 
 // Importer runs feed imports against a Repository.
@@ -53,11 +59,11 @@ func New(repo *db.Repository) *Importer { return &Importer{repo: repo} }
 // LoadConfig resolves importer configuration. Env wins over stored settings so an operator
 // can pin behaviour without the DB. Missing/blank values fall back to defaults.
 func LoadConfig(ctx context.Context, repo *db.Repository) Config {
-	cfg := Config{Enabled: true, URL: DefaultFeedURL, Interval: DefaultInterval}
+	cfg := Config{Enabled: false, URL: DefaultFeedURL, Interval: DefaultInterval}
 
-	// DB settings (category "cve").
+	// DB settings (category "cve"). Only an explicit true enables the automatic import.
 	if s, err := repo.GetSetting(ctx, "cve.feed_enabled"); err == nil && s != nil {
-		cfg.Enabled = strings.TrimSpace(string(s.Value)) != "false"
+		cfg.Enabled = strings.TrimSpace(string(s.Value)) == "true"
 	}
 	if s, err := repo.GetSetting(ctx, "cve.feed_url"); err == nil && s != nil {
 		if u := strings.Trim(strings.TrimSpace(string(s.Value)), `"`); u != "" {
@@ -85,7 +91,8 @@ func LoadConfig(ctx context.Context, repo *db.Repository) Config {
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("SPIRE_CVE_FEED_ENABLED")); v != "" {
-		cfg.Enabled = !strings.EqualFold(v, "false") && v != "0"
+		cfg.Enabled = strings.EqualFold(v, "true") || v == "1"
+		cfg.EnabledFromEnv = true
 	}
 	return cfg
 }
@@ -189,15 +196,20 @@ func (im *Importer) RunOnce(ctx context.Context, cfg Config) (int, int, error) {
 	return records, cves, nil
 }
 
-// Schedule runs RunOnce immediately (unless an offline file-only air-gapped operator has
-// disabled scheduling) and then on cfg.Interval until ctx is cancelled. Disabled config is
-// a no-op. Intended to be launched in a goroutine from main.
+// disabledRecheck is how often a disabled scheduler re-reads its config, so turning the
+// automatic import on in the admin UI takes effect without a restart.
+var disabledRecheck = time.Minute
+
+// Schedule runs the automatic import while it is enabled: once shortly after startup (or
+// after it is switched on) and then every cfg.Interval, until ctx is cancelled. While it is
+// disabled (the default) it downloads nothing and only re-reads the setting. Intended to
+// be launched in a goroutine from main.
 func (im *Importer) Schedule(ctx context.Context) {
 	cfg := LoadConfig(ctx, im.repo)
 	if !cfg.Enabled {
-		log.Printf("[cvefeed] periodic import disabled (cve.feed_enabled=false / SPIRE_CVE_FEED_ENABLED=false)")
-		return
+		log.Printf("[cvefeed] automatic import is off (enable it on the Vulnerabilities page or with SPIRE_CVE_FEED_ENABLED=true)")
 	}
+	wasEnabled := cfg.Enabled
 	// Initial import shortly after startup, not blocking server readiness.
 	timer := time.NewTimer(15 * time.Second)
 	defer timer.Stop()
@@ -209,10 +221,20 @@ func (im *Importer) Schedule(ctx context.Context) {
 		}
 		// Re-read config each cycle so settings changes take effect without a restart.
 		cfg = LoadConfig(ctx, im.repo)
-		if cfg.Enabled {
-			if _, _, err := im.RunOnce(ctx, cfg); err != nil {
-				log.Printf("[cvefeed] scheduled import failed: %v", err)
+		if !cfg.Enabled {
+			if wasEnabled {
+				log.Printf("[cvefeed] automatic import switched off")
 			}
+			wasEnabled = false
+			timer.Reset(disabledRecheck)
+			continue
+		}
+		if !wasEnabled {
+			log.Printf("[cvefeed] automatic import switched on")
+		}
+		wasEnabled = true
+		if _, _, err := im.RunOnce(ctx, cfg); err != nil {
+			log.Printf("[cvefeed] scheduled import failed: %v", err)
 		}
 		interval := cfg.Interval
 		if interval <= 0 {

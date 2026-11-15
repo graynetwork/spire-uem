@@ -9,6 +9,9 @@
         <div>
             <h1 class="text-lg font-semibold text-white">Fleet Vulnerabilities</h1>
             <p class="text-xs text-slate-500 mt-0.5">CVEs matched from installed source packages against the Debian Security Tracker feed</p>
+            {{if .Scoped}}
+            <p class="text-[11px] text-amber-400 mt-1">Showing only devices tagged {{range $i, $t := .ScopeTags}}{{if $i}}, {{end}}<span class="font-mono">{{$t}}</span>{{end}}.</p>
+            {{end}}
         </div>
     </div>
 
@@ -43,6 +46,25 @@
             Last error: {{.FeedState.LastError}}
         </div>
         {{end}}
+
+        <div class="mt-3 flex flex-wrap items-center gap-3 text-[11px]">
+            <span class="text-slate-400">Automatic import (every 24h by default):</span>
+            {{if .AutoImport}}<span class="font-medium text-emerald-400">On</span>{{else}}<span class="font-medium text-slate-300">Off</span>{{end}}
+            {{if .AutoImportEnv}}
+            <span class="text-slate-500">Set by <span class="font-mono">SPIRE_CVE_FEED_ENABLED</span> on the server.</span>
+            {{else if .CanSetAutoImport}}
+            <form action="/admin/vulnerabilities/auto-import" method="POST">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <input type="hidden" name="enabled" value="{{if .AutoImport}}false{{else}}true{{end}}">
+                <button type="submit" class="px-2.5 py-1 rounded-md bg-[#162035] hover:bg-[#1a2234] text-slate-200 border border-[#1a2234] transition">
+                    {{if .AutoImport}}Turn off{{else}}Turn on{{end}}
+                </button>
+            </form>
+            {{else}}
+            <span class="text-slate-500">A super-admin can change this.</span>
+            {{end}}
+            {{if not .AutoImport}}<span class="text-slate-500">The server downloads nothing until it is turned on.</span>{{end}}
+        </div>
 
         <div class="mt-4 flex flex-col sm:flex-row gap-3">
             <form action="/admin/vulnerabilities/import" method="POST">

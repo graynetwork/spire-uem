@@ -263,22 +263,30 @@ func (r *Repository) CountDeviceCVEs(ctx context.Context, deviceID string) (int,
 // ListFleetCVEs aggregates CVE matches across all devices for the Vulnerabilities page:
 // one row per CVE with its affected-host count and urgency.
 func (r *Repository) ListFleetCVEs(ctx context.Context) ([]types.FleetCVE, error) {
+	return r.ListFleetCVEsScoped(ctx, Unscoped)
+}
+
+// ListFleetCVEsScoped is ListFleetCVEs limited to the devices in scope.
+func (r *Repository) ListFleetCVEsScoped(ctx context.Context, scope DeviceScope) ([]types.FleetCVE, error) {
+	scoped, tags := scope.sqlArgs()
 	rows, err := r.pool.Query(ctx, `
-		SELECT cve_id,
-		       COALESCE(MAX(NULLIF(urgency, '')), '') AS urgency,
-		       COUNT(DISTINCT device_id) AS affected_hosts,
-		       BOOL_OR(no_fix_available) AS no_fix
-		FROM device_cve_matches
-		GROUP BY cve_id
+		SELECT m.cve_id,
+		       COALESCE(MAX(NULLIF(m.urgency, '')), '') AS urgency,
+		       COUNT(DISTINCT m.device_id) AS affected_hosts,
+		       BOOL_OR(m.no_fix_available) AS no_fix
+		FROM device_cve_matches m
+		JOIN devices d ON d.id = m.device_id
+		WHERE (NOT $1::bool OR d.tags && $2::text[])
+		GROUP BY m.cve_id
 		ORDER BY
-			CASE COALESCE(MAX(NULLIF(urgency, '')), '')
+			CASE COALESCE(MAX(NULLIF(m.urgency, '')), '')
 				WHEN 'high' THEN 0 WHEN 'high**' THEN 0
 				WHEN 'medium' THEN 1 WHEN 'medium**' THEN 1
 				WHEN 'low' THEN 2 WHEN 'low**' THEN 2
 				ELSE 3 END,
 			affected_hosts DESC,
-			cve_id ASC
-	`)
+			m.cve_id ASC
+	`, scoped, tags)
 	if err != nil {
 		return nil, fmt.Errorf("list fleet cves: %w", err)
 	}
@@ -297,11 +305,19 @@ func (r *Repository) ListFleetCVEs(ctx context.Context) ([]types.FleetCVE, error
 // CountOpenCVEsByUrgency returns the number of DISTINCT CVEs present across the fleet and
 // how many of those are high urgency, for the dashboard metric ribbon.
 func (r *Repository) CountOpenCVEsByUrgency(ctx context.Context) (total, high int, err error) {
+	return r.CountOpenCVEsByUrgencyScoped(ctx, Unscoped)
+}
+
+// CountOpenCVEsByUrgencyScoped is CountOpenCVEsByUrgency limited to the devices in scope.
+func (r *Repository) CountOpenCVEsByUrgencyScoped(ctx context.Context, scope DeviceScope) (total, high int, err error) {
+	scoped, tags := scope.sqlArgs()
 	err = r.pool.QueryRow(ctx, `
-		SELECT COUNT(DISTINCT cve_id),
-		       COUNT(DISTINCT cve_id) FILTER (WHERE urgency IN ('high','high**'))
-		FROM device_cve_matches
-	`).Scan(&total, &high)
+		SELECT COUNT(DISTINCT m.cve_id),
+		       COUNT(DISTINCT m.cve_id) FILTER (WHERE m.urgency IN ('high','high**'))
+		FROM device_cve_matches m
+		JOIN devices d ON d.id = m.device_id
+		WHERE (NOT $1::bool OR d.tags && $2::text[])
+	`, scoped, tags).Scan(&total, &high)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, 0, nil
 	}

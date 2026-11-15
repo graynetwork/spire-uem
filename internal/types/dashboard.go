@@ -33,6 +33,11 @@ type PatchTrendPoint struct {
 
 // DashboardMetrics holds the aggregated 6-metric summary ribbon and telemetry cards.
 type DashboardMetrics struct {
+	// Scoped is true when the figures cover only the devices carrying ScopeTags (a
+	// tag-limited admin), not the whole fleet.
+	Scoped    bool     `json:"scoped"`
+	ScopeTags []string `json:"scope_tags,omitempty"`
+
 	// 6-Metric Stat Ribbon
 	TotalHosts       int `json:"total_hosts"`
 	UpToDateHosts    int `json:"up_to_date_hosts"`

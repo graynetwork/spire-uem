@@ -196,6 +196,7 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/wipe/{requestID}/cancel", h.CancelWipe)
 
 			r.Get("/settings", h.SettingsPage)
+			r.Post("/vulnerabilities/auto-import", h.SetCVEAutoImport)
 			r.Post("/settings/{category}", h.SaveSettingsCategory)
 
 			// Personal access tokens — fleet-wide overview and revoke (any owner).

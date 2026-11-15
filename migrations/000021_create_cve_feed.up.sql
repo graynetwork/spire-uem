@@ -41,7 +41,7 @@ INSERT INTO cve_feed_state (id) VALUES (TRUE) ON CONFLICT (id) DO NOTHING;
 -- Default settings for the CVE feed importer under the new 'cve' category.
 INSERT INTO system_settings (key, category, value, description, is_secret, updated_by)
 VALUES
-    ('cve.feed_enabled', 'cve', 'true'::jsonb, 'Enable periodic import of the Debian Security Tracker CVE feed', FALSE, 'system'),
+    ('cve.feed_enabled', 'cve', 'false'::jsonb, 'Enable periodic import of the Debian Security Tracker CVE feed (off by default; overridden by SPIRE_CVE_FEED_ENABLED)', FALSE, 'system'),
     ('cve.feed_url', 'cve', '"https://security-tracker.debian.org/tracker/data/json"'::jsonb, 'Debian Security Tracker JSON feed URL (overridden by SPIRE_CVE_FEED_URL)', FALSE, 'system'),
     ('cve.feed_interval_hours', 'cve', '24'::jsonb, 'Hours between automatic CVE feed imports (overridden by SPIRE_CVE_FEED_INTERVAL)', FALSE, 'system')
 ON CONFLICT (key) DO NOTHING;

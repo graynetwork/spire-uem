@@ -17,7 +17,7 @@ const maxCVEUploadBytes = 512 * 1024 * 1024
 // VulnerabilitiesPage renders /admin/vulnerabilities: the fleet CVE list (CVE -> affected
 // host count) plus feed freshness.
 func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
-	cves, err := h.repo.ListFleetCVEs(r.Context())
+	cves, err := h.repo.ListFleetCVEsScoped(r.Context(), h.deviceScope(r))
 	if err != nil {
 		log.Printf("[web] list fleet CVEs: %v", err)
 		http.Error(w, "Failed to load vulnerabilities", http.StatusInternalServerError)
@@ -28,23 +28,61 @@ func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[web] get cve feed state: %v", err)
 		feedState = &types.CVEFeedState{}
 	}
-	summary, _ := h.repo.GetFleetSummary(r.Context())
+	summary, _ := h.repo.GetFleetSummaryScoped(r.Context(), h.deviceScope(r))
+	if summary == nil {
+		summary = &types.FleetSummary{}
+	}
+	scope := h.deviceScope(r)
+	feedCfg := cvefeed.LoadConfig(r.Context(), h.repo)
 
 	data := map[string]any{
-		"Title":           "Fleet Vulnerabilities",
-		"ActiveNav":       "vulnerabilities",
-		"CSRFToken":       CSRFTokenFromContext(r.Context()),
-		"AdminUser":       AdminUserFromContext(r.Context()),
-		"FleetCVEs":       cves,
-		"FeedState":       feedState,
-		"FlashMessage":    r.URL.Query().Get("msg"),
-		"TotalHostsCount": summary.TotalDevices,
+		"Title":            "Fleet Vulnerabilities",
+		"ActiveNav":        "vulnerabilities",
+		"CSRFToken":        CSRFTokenFromContext(r.Context()),
+		"AdminUser":        AdminUserFromContext(r.Context()),
+		"FleetCVEs":        cves,
+		"FeedState":        feedState,
+		"FlashMessage":     r.URL.Query().Get("msg"),
+		"TotalHostsCount":  summary.TotalDevices,
+		"Scoped":           scope.Scoped,
+		"ScopeTags":        scope.Tags,
+		"AutoImport":       feedCfg.Enabled,
+		"AutoImportEnv":    feedCfg.EnabledFromEnv,
+		"CanSetAutoImport": AdminRoleFromContext(r.Context()) == types.RoleSuperAdmin,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "layout.html", data); err != nil {
 		log.Printf("[web] render vulnerabilities page: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
+}
+
+// SetCVEAutoImport handles POST /admin/vulnerabilities/auto-import (SUPER_ADMIN): turns
+// the automatic periodic feed import on or off by writing cve.feed_enabled. The running
+// scheduler picks the change up within a minute. Audited.
+func (h *Handler) SetCVEAutoImport(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		return
+	}
+	enabled := r.FormValue("enabled") == "true"
+	actor := AdminUserFromContext(r.Context())
+	if err := h.repo.UpdateSettingsCategory(r.Context(), "cve", map[string]interface{}{"cve.feed_enabled": enabled}, actor); err != nil {
+		log.Printf("[web] set cve.feed_enabled: %v", err)
+		http.Error(w, "Failed to save setting", http.StatusInternalServerError)
+		return
+	}
+	if h.auditor != nil {
+		_, _, _ = h.auditor.Emit(r.Context(), actor, "SETTINGS_UPDATE", "cve", r.RemoteAddr, map[string]any{"category": "cve", "updates": map[string]any{"cve.feed_enabled": enabled}})
+	}
+	msg := "Automatic import turned off."
+	if enabled {
+		msg = "Automatic import turned on. The first download starts within a minute."
+	}
+	if cvefeed.LoadConfig(r.Context(), h.repo).EnabledFromEnv {
+		msg += " Note: SPIRE_CVE_FEED_ENABLED is set on the server and overrides this setting."
+	}
+	http.Redirect(w, r, "/admin/vulnerabilities?msg="+url.QueryEscape(msg), http.StatusSeeOther)
 }
 
 // TriggerCVEFeedImport handles POST /admin/vulnerabilities/import — runs an online feed

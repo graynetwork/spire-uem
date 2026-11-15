@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/types"
 )
 
@@ -194,4 +195,14 @@ func ScopedUpdatedTagsAllowed(u *types.AdminUser, newTags []string) (ok bool, re
 		return true, ""
 	}
 	return false, "you may not remove all of your in-scope tags from a device; the new tag set must keep at least one of your assigned tags"
+}
+
+// deviceScope returns the db.DeviceScope for the request's admin, used to limit fleet-wide
+// read views (dashboard, vulnerabilities, audit log, page header counts) to their tags.
+func (h *Handler) deviceScope(r *http.Request) db.DeviceScope {
+	allowed, scoped := AllowedTagsForContext(r)
+	if !scoped {
+		return db.Unscoped
+	}
+	return db.DeviceScope{Scoped: true, Tags: allowed, Actor: AdminUserFromContext(r.Context())}
 }

@@ -526,7 +526,7 @@ defaults:
 
 | Setting (category `cve`) | Env var | Default | Meaning |
 |---|---|---|---|
-| `cve.feed_enabled` | `SPIRE_CVE_FEED_ENABLED` | `true` | Enable periodic automatic import. `false` disables scheduling (offline sites import manually). |
+| `cve.feed_enabled` | `SPIRE_CVE_FEED_ENABLED` | `false` | Automatic periodic import. **Off by default**: the server downloads nothing until a super-admin turns it on (**Vulnerabilities → Automatic import → Turn on**) or `SPIRE_CVE_FEED_ENABLED=true` is set. Only `true` (or `1` for the env var) enables it. The running server notices a change within a minute. When the env var is set, the UI shows it and the stored setting is ignored. |
 | `cve.feed_url` | `SPIRE_CVE_FEED_URL` | `https://security-tracker.debian.org/tracker/data/json` | Feed URL for online import. |
 | `cve.feed_interval_hours` | `SPIRE_CVE_FEED_INTERVAL` | `24` | Hours between automatic imports. Env accepts a Go duration (`24h`) or an integer hour count. |
 | — | `SPIRE_CVE_FEED_FILE` | — | **Offline/air-gapped**: path to a local feed JSON. When set it takes priority over the URL on every scheduled import. |
@@ -536,8 +536,8 @@ hard size cap, and a 10-minute fetch timeout. A failed import preserves the prev
 records the error in `cve_feed_state` (shown in the UI).
 
 ### 10.3 Importing the feed
-- **Online**: automatic on the configured interval, and the first import runs ~15 s after
-  server start. Trigger one immediately from **Vulnerabilities → Import now** (requires
+- **Online**: once automatic import is turned on, the first import runs within a minute
+  (or ~15 s after server start) and then on the configured interval. Trigger one immediately from **Vulnerabilities → Import now** (requires
   `SECURITY_ADMIN` or `SUPER_ADMIN`).
 - **Air-gapped, server-side file**: set `SPIRE_CVE_FEED_FILE=/path/feed.json`; each scheduled
   import reads that file. Refresh it out of band on the operator's own schedule.
@@ -917,3 +917,11 @@ read-only and not scoped here. A user with an empty tag set is unrestricted.
 - A scoped user **cannot edit a device's tags to remove it from their own scope** (tag
   escape): the new tag set must still contain at least one of their allowed tags.
 - Tag-scope changes are audited.
+- **Fleet-wide views are filtered too.** For a scoped user the dashboard, the Vulnerabilities
+  page and the device/policy page counts cover only their devices, and both pages say which
+  tags they are limited to. The 30-day pending-update trend is stored as fleet totals only, so
+  it is not shown to scoped users.
+- **The audit log** (`/admin/audit/events`) shows a scoped user only events whose target is one
+  of their devices, plus their own actions. Other admins' changes to policies, settings and
+  out-of-scope devices are hidden, and so are the raw RFC 5424 syslog frames, which cannot be
+  filtered by device. Use an AUDITOR or SUPER_ADMIN account for the full log.
