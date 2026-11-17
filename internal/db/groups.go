@@ -732,3 +732,71 @@ func nonNil(s []string) []string {
 	}
 	return s
 }
+
+// SetGroupIncludeMember adds (add=true) or removes (add=false) one device from a group's
+// static include_device_ids list, idempotently, and recomputes that device's membership so
+// the change takes effect immediately. Used by the group_include / group_exclude workflow
+// actions. It never touches another device's membership or the group's rule.
+func (r *Repository) SetGroupIncludeMember(ctx context.Context, groupID, deviceID string, add bool) error {
+	var q string
+	if add {
+		// array_append only if not already present, via a conditional update.
+		q = `UPDATE device_groups
+		     SET include_device_ids = (
+		         SELECT ARRAY(SELECT DISTINCT unnest(COALESCE(include_device_ids,'{}') || ARRAY[$2::uuid]))
+		     ), updated_at = NOW()
+		     WHERE id = $1`
+	} else {
+		q = `UPDATE device_groups
+		     SET include_device_ids = array_remove(COALESCE(include_device_ids,'{}'), $2::uuid), updated_at = NOW()
+		     WHERE id = $1`
+	}
+	tag, err := r.pool.Exec(ctx, q, groupID, deviceID)
+	if err != nil {
+		return fmt.Errorf("set group include member: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("group %s not found", groupID)
+	}
+	// Recompute just this device's membership so the include change is reflected at once.
+	if err := r.recomputeGroupForSingleDevice(ctx, groupID, deviceID); err != nil {
+		// Best-effort: the periodic recompute will pick it up; do not fail the action.
+		return nil
+	}
+	return nil
+}
+
+// recomputeGroupForSingleDevice materialises one device's membership for one group from the
+// current definition (rule OR include) AND NOT exclude, adding/removing the single membership
+// row with a history event. A rule failure leaves the last membership for the device.
+func (r *Repository) recomputeGroupForSingleDevice(ctx context.Context, groupID, deviceID string) error {
+	g, err := r.GetGroupByID(ctx, groupID)
+	if err != nil || g == nil {
+		return err
+	}
+	q, args, berr := r.buildMembershipSelect(g, Unscoped, deviceID)
+	if berr != nil {
+		return berr
+	}
+	var matched bool
+	var hostname string
+	row := r.pool.QueryRow(ctx, `SELECT hostname FROM (`+q+`) m LIMIT 1`, args...)
+	switch err := row.Scan(&hostname); {
+	case err == nil:
+		matched = true
+	case errors.Is(err, pgx.ErrNoRows):
+		matched = false
+	default:
+		return err
+	}
+	var isMember bool
+	_ = r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM group_memberships WHERE group_id=$1 AND device_id=$2)`, groupID, deviceID).Scan(&isMember)
+	if matched && !isMember {
+		_, _ = r.pool.Exec(ctx, `INSERT INTO group_memberships (group_id, device_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, groupID, deviceID)
+		_, _ = r.pool.Exec(ctx, `INSERT INTO group_membership_events (group_id, device_id, entered, reason) VALUES ($1,$2,true,$3)`, groupID, deviceID, "joined (workflow include)")
+	} else if !matched && isMember {
+		_, _ = r.pool.Exec(ctx, `DELETE FROM group_memberships WHERE group_id=$1 AND device_id=$2`, groupID, deviceID)
+		_, _ = r.pool.Exec(ctx, `INSERT INTO group_membership_events (group_id, device_id, entered, reason) VALUES ($1,$2,false,$3)`, groupID, deviceID, "left (workflow exclude)")
+	}
+	return nil
+}

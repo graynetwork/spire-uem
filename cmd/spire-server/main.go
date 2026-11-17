@@ -24,6 +24,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/groupsync"
 	"github.com/spire-uem/spire-uem/internal/web"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 func main() {
@@ -130,6 +131,19 @@ func main() {
 	alertMgr := alerts.NewManager(alertStore, repo.LoadAlertConfig(ctx))
 	go alertMgr.RunWorkers(ctx)
 
+	// Automation & remediation workflows: durable event log, triggers/conditions/actions,
+	// approvals, scheduled + agent-start script runs. The engine runs on every instance and
+	// claims events / schedule fires atomically so each is handled once cluster-wide.
+	wfStore := repo.WorkflowStore()
+	wfEngine := workflows.NewEngine(wfStore, workflows.NewRegistry(), workflows.DefaultConfig())
+	repo.NewWorkflowActions(alertMgr, wfEngine.Config().QuarantineTag).RegisterBuiltins(wfEngine.Registry())
+	// Forward offline-device detections from the alerts ticker into the workflow event log.
+	alertMgr.SetOfflineHook(func(c context.Context, deviceID, hostname string, minutes int) {
+		repo.EmitEvent(c, workflows.EventDeviceOffline, deviceID,
+			map[string]any{"hostname": hostname, "offline_minutes": minutes}, false)
+	})
+	go wfEngine.RunWorkers(ctx)
+
 	r := chi.NewRouter()
 	r.Use(web.TrustedProxyRealIPMiddleware)
 	r.Use(middleware.Logger)
@@ -154,6 +168,7 @@ func main() {
 	webHandler.SetAptRepoDir(cfg.Server.AptRepoDir)
 	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
 	webHandler.SetAlerting(alertStore, alertMgr)
+	webHandler.SetWorkflowEngine(wfEngine)
 	webHandler.SetDeviceMTLSMode(mtlsMode)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 

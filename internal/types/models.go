@@ -742,6 +742,10 @@ type CheckinRequest struct {
 	ReleaseCodename string            `json:"release_codename,omitempty"`
 	// AgentVersion is the build version of the reporting spired binary (internal/version.Version).
 	AgentVersion string `json:"agent_version,omitempty"`
+	// AgentStarted is set to true by the agent ONLY on its first check-in after the spired
+	// process (re)started, so workflows can fire an "agent started" automation. Old agents
+	// never send it (always false), so agent_start workflows simply never fire for them.
+	AgentStarted bool `json:"agent_started,omitempty"`
 	// UpdateResult, when set, reports the outcome of the agent's most recent self-update attempt.
 	UpdateResult *AgentUpdateResult `json:"update_result,omitempty"`
 

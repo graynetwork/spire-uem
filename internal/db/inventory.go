@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 // maxInventoryChangesPerDevice bounds the per-device change history. After each report the
@@ -305,6 +306,20 @@ func (r *Repository) recordInventoryChanges(ctx context.Context, deviceID string
 		return
 	}
 	_ = tx.Commit(ctx)
+
+	// Raise a workflow event per change so attribute-change workflows can trigger. Best-effort
+	// and AFTER the change history is committed, so an event is never raised for a change that
+	// failed to persist. Emission failure never affects the inventory write (EmitEvent logs
+	// and swallows). A later version could filter which keys emit events; today every change
+	// to a scalar inventory attribute (category "attr") emits.
+	for _, c := range changes {
+		if c.Category != "attr" {
+			continue
+		}
+		r.EmitEvent(ctx, workflows.EventAttributeChanged, deviceID, map[string]any{
+			"key": c.Key, "old": c.OldValue, "new": c.NewValue, "source": types.AttrSourceInventory,
+		}, false)
+	}
 }
 
 // ---- Device-page read model ----

@@ -124,6 +124,10 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Get("/groups/{id}/members", h.GroupMembers)
 		r.Get("/groups/{id}/history", h.GroupHistory)
 
+		// Automation & remediation workflows — read views (AUDITOR+).
+		r.Get("/workflows", h.ListWorkflows)
+		r.Get("/workflows/runs", h.ListWorkflowRuns)
+
 		r.Get("/applications", h.ListApplications)
 		r.Get("/applications/{id}/edit", h.EditApplicationModal)
 
@@ -213,6 +217,15 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/groups/{id}", h.UpdateGroup)
 			r.Delete("/groups/{id}", h.DeleteGroup)
 			r.Post("/groups/{id}/delete", h.DeleteGroup)
+
+			// Automation & remediation workflows — create/edit/delete + approvals. SECURITY_ADMIN+.
+			r.Post("/workflows", h.CreateWorkflow)
+			r.Post("/workflows/{id}", h.UpdateWorkflow)
+			r.Post("/workflows/{id}/toggle", h.ToggleWorkflow)
+			r.Delete("/workflows/{id}", h.DeleteWorkflow)
+			r.Post("/workflows/{id}/delete", h.DeleteWorkflow)
+			r.Get("/workflows/approvals", h.ListPendingApprovals)
+			r.Post("/workflows/approvals/{id}/{decision}", h.DecideWorkflowApproval)
 
 			r.Get("/applications/new", h.NewApplicationModal)
 			r.Post("/applications", h.CreateApplication)

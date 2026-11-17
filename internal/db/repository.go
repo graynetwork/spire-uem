@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -127,6 +128,8 @@ func (r *Repository) ApproveDevice(ctx context.Context, id string) (*types.Devic
 	if err != nil {
 		return nil, "", fmt.Errorf("approve device: %w", err)
 	}
+	// Raise a workflow event (best-effort; never fails the approval).
+	r.EmitEvent(ctx, workflows.EventDeviceApproved, d.ID, map[string]any{"hostname": d.Hostname}, false)
 	return d, "", nil
 }
 
@@ -3743,6 +3746,10 @@ func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.E
 	if err = tx.Commit(ctx); err != nil {
 		return nil, "", false, fmt.Errorf("commit register tx: %w", err)
 	}
+	// Raise a workflow event (best-effort; never fails enrollment).
+	r.EmitEvent(ctx, workflows.EventDeviceEnrolled, d.ID, map[string]any{
+		"hostname": d.Hostname, "auto_approved": status == string(types.StatusApproved),
+	}, false)
 	return d, rawBearerToken, status == string(types.StatusApproved), nil
 }
 
