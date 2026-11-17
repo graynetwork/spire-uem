@@ -71,6 +71,10 @@ The server accepts one of four explicit deployment modes:
 
 The server and bootstrap refuse reachable plain HTTP unless the lab-only override is set. See [TLS deployment](docs/ADMIN_RUNBOOK.md#4-tls-is-required).
 
+### Device certificates and mutual TLS
+
+An internal ECDSA P-256 device CA issues a client-auth leaf to each device at token claim: the agent generates its key locally (never transmitted), sends a CSR, and the server issues a leaf bound to `spire://device/<device-id>` whose serial, fingerprint and validity are stored. `SPIRE_DEVICE_MTLS` sets the mode — `off`, `optional` (default; validate a presented cert, allow none), or `required` (device REST/WebSocket endpoints refuse any request without a valid cert matching the bearer token). Every presented certificate is checked against the database (known serial, not revoked, in validity, device matches the token); revoking a device revokes all its certificates. The agent renews at ~2/3 of the lifetime. `required` cannot be combined with a trusted TLS proxy. Agents may pin the control-plane with `server_ca_file` / `server_ca_sha256`. See [Device certificates and mutual TLS](docs/ADMIN_RUNBOOK.md#4-device-certificates-and-mutual-tls-mtls).
+
 ## Features
 
 - Declarative package, Flatpak, systemd, sysctl, APT, dconf, nftables, local-account, CA-certificate, NetworkManager, usbguard, and auditd policy engines.

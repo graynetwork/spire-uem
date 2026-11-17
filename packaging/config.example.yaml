@@ -2,6 +2,15 @@
 server:
   listen_addr: ":8080"
   database_url: "postgres://spire:spirepassword@localhost:5432/spire_uem?sslmode=disable"
+  # Device mutual TLS: off | optional (default) | required. In required mode, device
+  # REST/WebSocket endpoints refuse any request without a valid client certificate matching
+  # the device's bearer token. required cannot be combined with a trusted TLS proxy.
+  device_mtls: "optional"
+  # Internal ECDSA P-256 device CA (generated on first start if absent; key written mode 0600).
+  device_ca_cert_file: "internal/crypto/device-ca.crt"
+  device_ca_key_file: "internal/crypto/device-ca.key"
+  # Lifetime of an issued device leaf certificate (Go duration). Default 720h (30 days).
+  device_cert_validity: "720h"
 
 agent:
   server_url: "http://localhost:8080"
@@ -15,3 +24,7 @@ agent:
   # in the package; leave it at the default unless you relocate them.
   require_signed_updates: true
   release_keys_dir: "/usr/share/spire/release-keys"
+  # Pin the control-plane's TLS trust, replacing the system root store for the server
+  # connection (removes first-contact trust in the wipe-signing key). Optional.
+  # server_ca_file: "/etc/spire/server-ca.pem"
+  # server_ca_sha256: "<hex sha256 of the server leaf certificate>"

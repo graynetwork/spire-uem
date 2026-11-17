@@ -35,6 +35,28 @@ type Handler struct {
 	bundleStorageDir string
 	artifacts        *artifactResolver
 	notifier         alerts.Notifier
+	// mtlsMode is off | optional | required (config.MTLS*). It governs whether device
+	// REST/WebSocket endpoints require a verified client certificate.
+	mtlsMode     string
+	certValidity time.Duration
+}
+
+// SetDeviceMTLS configures the device mutual-TLS mode and the validity of issued leaves.
+// mode must be one of config.MTLSOff/Optional/Required; an empty mode means optional.
+func (h *Handler) SetDeviceMTLS(mode string, validity time.Duration) {
+	if strings.TrimSpace(mode) == "" {
+		mode = "optional"
+	}
+	h.mtlsMode = mode
+	h.certValidity = validity
+}
+
+// MTLSMode returns the configured device mutual-TLS mode (defaults to optional).
+func (h *Handler) MTLSMode() string {
+	if h.mtlsMode == "" {
+		return "optional"
+	}
+	return h.mtlsMode
 }
 
 // SetNotifier wires the alerts notifier used by agent-API event hooks (patch
@@ -83,9 +105,9 @@ func (h *Handler) SetBundleStorageDir(dir string) {
 }
 
 const (
-	maxSmallBodyBytes = 64 << 10   // 64 KiB for enrollment & self-service requests
-	maxAuthBodyBytes  = 512 << 10  // 512 KiB for attestation & LUKS escrow payloads
-	maxLargeBodyBytes = 10 << 20   // 10 MiB for check-in, compliance, and benchmark reports
+	maxSmallBodyBytes = 64 << 10  // 64 KiB for enrollment & self-service requests
+	maxAuthBodyBytes  = 512 << 10 // 512 KiB for attestation & LUKS escrow payloads
+	maxLargeBodyBytes = 10 << 20  // 10 MiB for check-in, compliance, and benchmark reports
 )
 
 // Enroll handles POST /api/v1/desktop/enroll.
@@ -158,12 +180,23 @@ func (h *Handler) Enroll(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("[api] HTTP 200 enroll token issued for approved device id=%s hw=%s hostname=%s", dev.ID, dev.HardwareUUID, dev.Hostname)
-		writeJSON(w, http.StatusOK, types.EnrollResponse{
-			DeviceID: dev.ID,
-			Status:   dev.Status,
-			Token:    token,
+		resp := types.EnrollResponse{
+			DeviceID:             dev.ID,
+			Status:               dev.Status,
+			Token:                token,
 			WipeSigningPublicKey: h.repo.WipeSigningPublicKeyBase64(),
-		})
+		}
+		// Issue a client-auth leaf for the agent's CSR, if it sent one and a CA is configured.
+		// Issuance failure must not block enrollment: the agent retries with a fresh CSR, and
+		// in optional mode it can still operate on the bearer token alone.
+		if certPEM, notAfter, cerr := h.issueAndStoreCert(r.Context(), dev.ID, req.CSRPEM, "DEVICE_CERT_ISSUE", r.RemoteAddr); cerr != nil {
+			log.Printf("[api] warning: device certificate issuance failed for id=%s: %v", dev.ID, cerr)
+		} else if certPEM != "" {
+			resp.DeviceCertificatePEM = certPEM
+			resp.DeviceCertNotAfter = notAfter.UTC().Format(time.RFC3339)
+			log.Printf("[api] issued device certificate at claim for id=%s not_after=%s", dev.ID, resp.DeviceCertNotAfter)
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -1139,7 +1172,6 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-
 // truncate shortens s to at most n bytes, for agent-reported free text stored server-side.
 func truncate(s string, n int) string {
 	if len(s) > n {
@@ -1147,7 +1179,6 @@ func truncate(s string, n int) string {
 	}
 	return s
 }
-
 
 // maxReportedSourcePackages matches the agent's own cap (internal/inventory/srcpackages.go). A
 // client that sends more is truncated so one device cannot inflate its CVE match on check-in.

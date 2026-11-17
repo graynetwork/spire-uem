@@ -25,9 +25,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/auth"
-	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -49,6 +49,24 @@ type Handler struct {
 	enforceHTTPS     bool
 	alertStore       *db.AlertStore
 	alertMgr         *alerts.Manager
+	// deviceMTLSMode is shown read-only on the Settings page (off | optional | required).
+	deviceMTLSMode string
+}
+
+// SetDeviceMTLSMode records the device mutual-TLS mode for the read-only Settings display.
+func (h *Handler) SetDeviceMTLSMode(mode string) {
+	if strings.TrimSpace(mode) == "" {
+		mode = "optional"
+	}
+	h.deviceMTLSMode = mode
+}
+
+// deviceMTLSModeOrDefault returns the configured mTLS mode, defaulting to optional.
+func (h *Handler) deviceMTLSModeOrDefault() string {
+	if strings.TrimSpace(h.deviceMTLSMode) == "" {
+		return "optional"
+	}
+	return h.deviceMTLSMode
 }
 
 // SetAlerting wires the alert store and manager used by the Alerts admin page and
@@ -1034,6 +1052,9 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		dev.IsLost, dev.LastSeenIP, dev.LastActiveUser = isLost, seenIP, activeUser
 	}
 
+	// Device client certificate (mTLS): the most recent leaf, for the cert-status panel.
+	deviceCert, _ := h.repo.GetLatestDeviceCertificate(r.Context(), dev.ID)
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(types.DeviceDetailResponse{
@@ -1097,6 +1118,8 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"OpenWipe":           openWipe,
 		"LUKSRotations":      luksRotations,
 		"AdminRole":          string(AdminRoleFromContext(r.Context())),
+		"DeviceCert":         deviceCert,
+		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -3567,6 +3590,7 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		"FlashMessage":    r.URL.Query().Get("msg"),
 		"TotalHostsCount": summary.TotalDevices,
 		"CVEFeedState":    cveFeedState,
+		"DeviceMTLSMode":  h.deviceMTLSModeOrDefault(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -4553,7 +4577,6 @@ var requestHostPattern = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:
 func validRequestHost(host string) bool {
 	return requestHostPattern.MatchString(host)
 }
-
 
 // rolloutVersionRe accepts the version strings the agent build stamps: 1.2.3, optional
 // leading v, optional -prerelease.

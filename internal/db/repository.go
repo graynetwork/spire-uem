@@ -25,10 +25,18 @@ import (
 
 // Repository provides data access operations backed by pgxpool.
 type Repository struct {
-	pool          *pgxpool.Pool
-	kekMgr        crypto.KeyEnvelopeManager
-	wipeSigner    *crypto.WipeSigner
+	pool       *pgxpool.Pool
+	kekMgr     crypto.KeyEnvelopeManager
+	wipeSigner *crypto.WipeSigner
+	deviceCA   crypto.DeviceCA
 }
+
+// SetDeviceCA wires the internal device certificate authority used to issue client-auth
+// leaves at token claim and renewal.
+func (r *Repository) SetDeviceCA(ca crypto.DeviceCA) { r.deviceCA = ca }
+
+// DeviceCA returns the wired device certificate authority, or nil when mTLS is not set up.
+func (r *Repository) DeviceCA() crypto.DeviceCA { return r.deviceCA }
 
 // NewRepository creates a new Repository and initializes the server's 4096-bit RSA KEK.
 func NewRepository(pool *pgxpool.Pool) *Repository {
@@ -45,8 +53,8 @@ func NewRepositoryWithKEK(pool *pgxpool.Pool, kekPath string) *Repository {
 		log.Printf("[db] warning: failed to initialize persistent KEK (%s): %v", kekPath, err)
 	}
 	return &Repository{
-		pool:          pool,
-		kekMgr:        mgr,
+		pool:   pool,
+		kekMgr: mgr,
 	}
 }
 
@@ -158,6 +166,11 @@ func (r *Repository) RevokeDevice(ctx context.Context, id string) (*types.Device
 	}
 	if _, err := r.pool.Exec(ctx, `UPDATE devices SET token_pending = FALSE WHERE id = $1`, id); err != nil {
 		return nil, fmt.Errorf("clear pending token: %w", err)
+	}
+	// Revoking a device revokes every client certificate it holds, so no leaf it still has
+	// on disk can authenticate against mTLS-gated endpoints.
+	if _, err := r.RevokeDeviceCertificates(ctx, id); err != nil {
+		return nil, err
 	}
 	return r.UpdateDeviceStatus(ctx, id, types.StatusRevoked, nil)
 }
@@ -3938,7 +3951,3 @@ func (r *Repository) ResolveRoleFromGroups(ctx context.Context, groups []string)
 
 	return resolvedRole, nil
 }
-
-
-
-

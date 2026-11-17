@@ -1006,7 +1006,33 @@
         </div>
         {{end}}
 
-        <!-- Escrowed LUKS2 Volumes Table -->
+        <!-- Device Client Certificate (mTLS) -->
+        <div class="p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-1.5">
+            <div class="flex items-center justify-between">
+                <div class="text-[11px] font-medium text-slate-400">Device Client Certificate (mTLS: {{.DeviceMTLSMode}})</div>
+                {{if .DeviceCert}}
+                    {{if .DeviceCert.Revoked}}
+                    <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/30">Revoked</span>
+                    {{else}}
+                    <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Active</span>
+                    {{end}}
+                {{else}}
+                    <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-500/10 text-slate-400 border border-slate-500/30">None issued</span>
+                {{end}}
+            </div>
+            {{if .DeviceCert}}
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 font-mono text-[10px]">
+                <div class="px-2 py-1 rounded bg-[#0f1420] border border-[#1a2234] truncate">
+                    <span class="text-blue-400">Serial:</span> <span class="text-slate-300">{{.DeviceCert.ShortSerial}}</span>
+                </div>
+                <div class="px-2 py-1 rounded bg-[#0f1420] border border-[#1a2234] truncate">
+                    <span class="text-blue-400">Expires:</span> <span class="text-slate-300">{{.DeviceCert.NotAfter.Format "2006-01-02 15:04 MST"}}</span>
+                </div>
+            </div>
+            {{else}}
+            <div class="text-[10px] text-slate-500 font-mono">No client certificate has been issued to this device yet.</div>
+            {{end}}
+        </div>
         <div class="bg-[#0a0e17] border border-[#1a2234] rounded-md overflow-hidden">
             <table class="min-w-full divide-y divide-[#1a2234]">
                 <thead class="bg-[#0f1420]">

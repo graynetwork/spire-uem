@@ -183,6 +183,35 @@ Set **Settings → General → server base URL** to the `https://` address agent
 
 ---
 
+## 4. Device Certificates and Mutual TLS (mTLS)
+
+Beyond the bearer token, each device can hold a client certificate issued by SpireUEM's internal ECDSA P-256 device CA. The CA key and certificate are generated on first start at `SPIRE_DEVICE_CA_CERT_FILE` / `SPIRE_DEVICE_CA_KEY_FILE` (defaults under `internal/crypto/`; the key is written mode 0600). The agent generates its private key locally (`/etc/spire/device.key`, never transmitted), submits a CSR at token claim, and the server issues a client-auth-only leaf (default 30-day validity, `SPIRE_DEVICE_CERT_VALIDITY`) bound to `spire://device/<device-id>`. The agent renews automatically at about two-thirds of the lifetime.
+
+A device with **no active certificate** (enrolled before mTLS was enabled, issuance failed at claim, or its certificate expired while offline) requests one from `POST /api/v1/desktop/cert/renew` with its bearer token alone. That grants nothing the token did not already grant. As soon as the device holds an active certificate, further issuance requires that certificate as well as the token. The agent never presents an expired certificate, because the TLS handshake would reject the whole connection.
+
+`SPIRE_DEVICE_MTLS` (or `device_mtls:` under `server:`) selects the mode:
+
+| Mode | Behaviour |
+|---|---|
+| `off` | Client certificates are never checked. |
+| `optional` (default) | A presented certificate is validated and must match the device's bearer token; a device without one still authenticates on the token alone. |
+| `required` | Device REST and WebSocket endpoints refuse any request without a valid certificate matching the bearer token. Enroll and claim stay reachable; admin browser routes never need a client certificate. |
+
+The device detail page shows each device's certificate status (short serial, expiry, revoked), and **Settings → Security** shows the active mode read-only. Revoking a device revokes all of its certificates immediately.
+
+**Proxy limitation.** `required` mode cannot be combined with a trusted TLS proxy (`SPIRE_TRUST_PROXY`): SpireUEM verifies the client certificate from the TLS handshake it terminates itself and never trusts a forwarded client-certificate header, which anything behind the proxy could spoof. To use `required` mode, terminate TLS in `spire-server` with `SPIRE_TLS_CERT_FILE` / `SPIRE_TLS_KEY_FILE`. The server refuses to start if `required` is set alongside `SPIRE_TRUST_PROXY`.
+
+**Upgrading from optional to required.** Roll it out in two steps so no device is locked out:
+
+1. Upgrade agents and run in `optional` mode until every active device shows an Active certificate on its device page. Agents request a certificate within about an hour of starting.
+2. Switch `SPIRE_DEVICE_MTLS=required` and restart `spire-server`. A device that is still without a valid certificate, or whose certificate expires later, is refused on gated endpoints until it obtains a new one with its bearer token; enroll, check-in and certificate issuance are never gated.
+
+In `required` mode the certificate proves possession of the device key only while the device holds an active certificate. A stolen bearer token for a device whose certificate has lapsed can still obtain a new certificate, so `required` mode raises the bar for devices that stay online but is not a substitute for revoking a device whose token is exposed.
+
+**Server pinning (optional).** An agent can pin the control-plane's TLS trust with `server_ca_file` and/or `server_ca_sha256` (config, `SPIRE_AGENT_SERVER_CA_FILE` / `SPIRE_AGENT_SERVER_CA_SHA256`, or `/install.sh --server-ca-file` / `--server-ca-sha256`). This replaces the system root store for the server connection and removes the first-contact trust window in the wipe-signing key, at the cost of having to rotate the pin when the server certificate changes.
+
+---
+
 ## 4a. Host Firewall & Network Rules
 
 SpireUEM requires **zero inbound ports** on managed Debian desktop endpoints. All communication is initiated outbound by `spired` to `spire-server`.
