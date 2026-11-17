@@ -1,8 +1,8 @@
 package main
 
 import (
-	"crypto/tls"
 	"context"
+	"crypto/tls"
 	"flag"
 	"log"
 	"net/http"
@@ -14,8 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/spire-uem/spire-uem/internal/api"
 	"github.com/spire-uem/spire-uem/internal/alerts"
+	"github.com/spire-uem/spire-uem/internal/api"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/crypto"
@@ -70,6 +70,28 @@ func main() {
 		repo.SetWipeSigner(signer)
 		log.Printf("[spire-server] loaded Ed25519 wipe-signing key (agents pin this public key at enrollment)")
 	}
+
+	// Device mutual-TLS: resolve the mode, stand up the internal ECDSA P-256 device CA, and
+	// refuse the required + trusted-proxy combination (a forwarded client-cert header is
+	// never trusted).
+	mtlsMode, err := config.ResolveDeviceMTLSMode(cfg.Server.DeviceMTLSMode)
+	if err != nil {
+		log.Fatalf("[spire-server] refusing to start: %v", err)
+	}
+	if err := config.CheckDeviceMTLSTransport(mtlsMode, transport, web.TrustProxyEnabled()); err != nil {
+		log.Fatalf("[spire-server] refusing to start: %v", err)
+	}
+	var deviceCA *crypto.FileDeviceCA
+	if mtlsMode != config.MTLSOff {
+		deviceCA, err = crypto.NewFileDeviceCA(cfg.Server.DeviceCACertFile, cfg.Server.DeviceCAKeyFile)
+		if err != nil {
+			log.Fatalf("[spire-server] failed to initialize device CA: %v", err)
+		}
+		repo.SetDeviceCA(deviceCA)
+		log.Printf("[spire-server] device mTLS mode=%s; loaded ECDSA P-256 device CA (cert=%s)", mtlsMode, cfg.Server.DeviceCACertFile)
+	} else {
+		log.Printf("[spire-server] device mTLS mode=off; no device CA loaded, no client certificates checked")
+	}
 	if err := enforceAdminCredentials(ctx, repo, cfg.Server); err != nil {
 		log.Fatalf("[spire-server] refusing to start: %v", err)
 	}
@@ -121,7 +143,7 @@ func main() {
 		r.Use(web.EnforceHTTPSMiddleware(true))
 	}
 
-	api.RegisterRoutesWithAlerts(r, repo, hub, cfg.Server.BundleStorageDir, alertMgr)
+	api.RegisterRoutesWithAlertsAndMTLS(r, repo, hub, cfg.Server.BundleStorageDir, alertMgr, mtlsMode, cfg.Server.DeviceCertValidity)
 
 	webHandler, err := web.NewHandler(repo, hub, auditor)
 	if err != nil {
@@ -131,6 +153,7 @@ func main() {
 	webHandler.SetAptRepoDir(cfg.Server.AptRepoDir)
 	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
 	webHandler.SetAlerting(alertStore, alertMgr)
+	webHandler.SetDeviceMTLSMode(mtlsMode)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 
 	srv := &http.Server{
@@ -141,7 +164,18 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	if transport == config.TransportBuiltinTLS {
-		srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		// Device mTLS: when a device CA is loaded, ask every client for a certificate and
+		// verify any it presents against the device CA pool. VerifyClientCertIfGiven keeps
+		// admin browsers and the enroll/claim flow working without a client cert; the
+		// per-route middleware is what turns "required" into a hard refusal for device
+		// endpoints. The handshake proves possession of the leaf's private key; the DB check
+		// in the middleware proves the leaf is current and matches the bearer token.
+		if deviceCA != nil {
+			tlsCfg.ClientCAs = deviceCA.CertPool()
+			tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+		}
+		srv.TLSConfig = tlsCfg
 	}
 
 	go func() {

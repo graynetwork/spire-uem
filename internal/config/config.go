@@ -9,17 +9,17 @@ import (
 
 // ServerConfig holds configuration for spire-server.
 type ServerConfig struct {
-	ListenAddr       string
-	DatabaseURL      string
-	MigrationsPath   string
-	AdminUsername    string
-	AdminPassword    string
-	SIEMSyslogAddr   string
-	KEKPath          string
+	ListenAddr         string
+	DatabaseURL        string
+	MigrationsPath     string
+	AdminUsername      string
+	AdminPassword      string
+	SIEMSyslogAddr     string
+	KEKPath            string
 	WipeSigningKeyPath string
-	AptRepoDir       string
-	BundleStorageDir string
-	EnforceHTTPS     bool
+	AptRepoDir         string
+	BundleStorageDir   string
+	EnforceHTTPS       bool
 	// MultiInstance signals this server runs as one of several instances behind a load
 	// balancer sharing one database. It turns on gateway cross-instance routing and makes
 	// a shared SPIRE_SESSION_SECRET mandatory.
@@ -34,6 +34,17 @@ type ServerConfig struct {
 	// AllowInsecureHTTP permits plain HTTP on a reachable address (SPIRE_ALLOW_INSECURE_HTTP=1).
 	// Lab and test networks only.
 	AllowInsecureHTTP bool
+	// DeviceCACertFile / DeviceCAKeyFile locate the internal ECDSA P-256 device CA
+	// (SPIRE_DEVICE_CA_CERT_FILE / SPIRE_DEVICE_CA_KEY_FILE). Both are generated on first
+	// start if absent (key mode 0600), like the KEK.
+	DeviceCACertFile string
+	DeviceCAKeyFile  string
+	// DeviceMTLSMode is off | optional | required (SPIRE_DEVICE_MTLS, default optional). It
+	// governs whether device REST/WebSocket endpoints require a client certificate.
+	DeviceMTLSMode string
+	// DeviceCertValidity is the lifetime of an issued device leaf certificate
+	// (SPIRE_DEVICE_CERT_VALIDITY, Go duration; default 30 days).
+	DeviceCertValidity time.Duration
 }
 
 // AgentConfig holds configuration for the spired client daemon.
@@ -45,7 +56,29 @@ type AgentConfig struct {
 	// AllowInsecureHTTP lets the agent talk to a non-loopback server over plain HTTP
 	// (allow_insecure_http / SPIRE_AGENT_ALLOW_INSECURE_HTTP=1). Lab networks only.
 	AllowInsecureHTTP bool
+	// RequireSignedUpdates makes the agent refuse any self-update whose independent
+	// Ed25519 manifest does not verify under a pinned release key
+	// (require_signed_updates / SPIRE_AGENT_REQUIRE_SIGNED_UPDATES). It DEFAULTS TO TRUE:
+	// a fresh install, and any config that does not set the key, require signed updates.
+	// Set it false ONLY for the transition window while unsigned agents are still being
+	// replaced by signed ones; an unsigned update then installs but logs a loud warning
+	// on every attempt. See docs/ADMIN_RUNBOOK.md "Unsigned-to-signed transition".
+	RequireSignedUpdates bool
+	// ReleaseKeysDir is the directory of pinned release-signing trust anchors (*.pub),
+	// shipped INSIDE the agent package so the server can never supply them
+	// (release_keys_dir / SPIRE_AGENT_RELEASE_KEYS_DIR). Defaults to
+	// /usr/share/spire/release-keys.
+	ReleaseKeysDir string
+	// ServerCAFile pins the control-plane's TLS trust to the CA certificate(s) in this file
+	// (server_ca_file / SPIRE_AGENT_SERVER_CA_FILE), replacing the system root store for the
+	// server connection. ServerCASHA256 optionally pins the server leaf's SHA-256
+	// fingerprint. Either removes first-contact trust in the wipe-signing key.
+	ServerCAFile   string
+	ServerCASHA256 string
 }
+
+// DefaultReleaseKeysDir is where the agent package installs the pinned release public keys.
+const DefaultReleaseKeysDir = "/usr/share/spire/release-keys"
 
 // Config aggregates server and agent configurations.
 type Config struct {
@@ -57,22 +90,30 @@ type Config struct {
 func Load(configPath string) *Config {
 	cfg := &Config{
 		Server: ServerConfig{
-			ListenAddr:       ":8080",
-			DatabaseURL:      "postgres://spire:spirepassword@localhost:5432/spire_uem?sslmode=disable",
-			MigrationsPath:   "migrations/000001_init_schema.up.sql",
-			AdminUsername:    "admin",
-			AdminPassword:    "", // static break-glass account disabled unless explicitly configured
-			KEKPath:          "internal/crypto/kek.pem",
+			ListenAddr:         ":8080",
+			DatabaseURL:        "postgres://spire:spirepassword@localhost:5432/spire_uem?sslmode=disable",
+			MigrationsPath:     "migrations/000001_init_schema.up.sql",
+			AdminUsername:      "admin",
+			AdminPassword:      "", // static break-glass account disabled unless explicitly configured
+			KEKPath:            "internal/crypto/kek.pem",
 			WipeSigningKeyPath: "internal/crypto/wipe-signing.pem",
-			AptRepoDir:       "/var/www/apt/spire",
-			BundleStorageDir: "/var/lib/spire/storage/bundles",
-			EnforceHTTPS:     false,
+			DeviceCACertFile:   "internal/crypto/device-ca.crt",
+			DeviceCAKeyFile:    "internal/crypto/device-ca.key",
+			DeviceMTLSMode:     "optional",
+			DeviceCertValidity: 30 * 24 * time.Hour,
+			AptRepoDir:         "/var/www/apt/spire",
+			BundleStorageDir:   "/var/lib/spire/storage/bundles",
+			EnforceHTTPS:       false,
 		},
 		Agent: AgentConfig{
 			ServerURL:       "http://localhost:8080",
 			TokenPath:       "/etc/spire/token",
 			CheckinInterval: 5 * time.Minute,
 			PollInterval:    5 * time.Second,
+			// Signed updates are required by default; a config or env value only ever
+			// RELAXES this for the unsigned-to-signed transition window.
+			RequireSignedUpdates: true,
+			ReleaseKeysDir:       DefaultReleaseKeysDir,
 		},
 	}
 
@@ -136,8 +177,34 @@ func Load(configPath string) *Config {
 	if v := strings.TrimSpace(os.Getenv("SPIRE_ALLOW_INSECURE_HTTP")); v != "" {
 		cfg.Server.AllowInsecureHTTP = strings.EqualFold(v, "true") || v == "1"
 	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_DEVICE_CA_CERT_FILE")); v != "" {
+		cfg.Server.DeviceCACertFile = v
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_DEVICE_CA_KEY_FILE")); v != "" {
+		cfg.Server.DeviceCAKeyFile = v
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_DEVICE_MTLS")); v != "" {
+		cfg.Server.DeviceMTLSMode = strings.ToLower(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_DEVICE_CERT_VALIDITY")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.Server.DeviceCertValidity = d
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_SERVER_CA_FILE")); v != "" {
+		cfg.Agent.ServerCAFile = v
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_SERVER_CA_SHA256")); v != "" {
+		cfg.Agent.ServerCASHA256 = v
+	}
 	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_ALLOW_INSECURE_HTTP")); v != "" {
 		cfg.Agent.AllowInsecureHTTP = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_REQUIRE_SIGNED_UPDATES")); v != "" {
+		cfg.Agent.RequireSignedUpdates = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_RELEASE_KEYS_DIR")); v != "" {
+		cfg.Agent.ReleaseKeysDir = v
 	}
 	if v := os.Getenv("SPIRE_SERVER_URL"); v != "" {
 		cfg.Agent.ServerURL = strings.TrimRight(v, "/")
@@ -228,6 +295,22 @@ func parseSimpleYAML(path string, cfg *Config) {
 				cfg.Server.TLSKeyFile = val
 			case "allow_insecure_http":
 				cfg.Server.AllowInsecureHTTP = strings.EqualFold(val, "true") || val == "1"
+			case "device_ca_cert_file":
+				if val != "" {
+					cfg.Server.DeviceCACertFile = val
+				}
+			case "device_ca_key_file":
+				if val != "" {
+					cfg.Server.DeviceCAKeyFile = val
+				}
+			case "device_mtls":
+				if val != "" {
+					cfg.Server.DeviceMTLSMode = strings.ToLower(val)
+				}
+			case "device_cert_validity":
+				if d, err := time.ParseDuration(val); err == nil && d > 0 {
+					cfg.Server.DeviceCertValidity = d
+				}
 			}
 		case "agent":
 			switch key {
@@ -241,6 +324,20 @@ func parseSimpleYAML(path string, cfg *Config) {
 				}
 			case "allow_insecure_http":
 				cfg.Agent.AllowInsecureHTTP = strings.EqualFold(val, "true") || val == "1"
+			case "require_signed_updates":
+				cfg.Agent.RequireSignedUpdates = strings.EqualFold(val, "true") || val == "1"
+			case "release_keys_dir":
+				if val != "" {
+					cfg.Agent.ReleaseKeysDir = val
+				}
+			case "server_ca_file":
+				if val != "" {
+					cfg.Agent.ServerCAFile = val
+				}
+			case "server_ca_sha256":
+				if val != "" {
+					cfg.Agent.ServerCASHA256 = val
+				}
 			case "checkin_interval":
 				if d, err := time.ParseDuration(val); err == nil {
 					cfg.Agent.CheckinInterval = d

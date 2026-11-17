@@ -370,6 +370,20 @@ func EnforceNetworkProfilePolicy(ctx context.Context, policy types.AssignedPolic
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	}
 
+	// Attestation enforcement: the server withheld this profile's sealed secrets because the
+	// device is untrusted. Treat it as a skipped/non-compliant item — never write a keyfile
+	// with a blank or placeholder secret, and never remove an already-working profile just
+	// because of a withhold. The existing keyfile (if any) is left exactly as it is.
+	if policy.SecretsWithheld {
+		reason := policy.WithheldReason
+		if reason == "" {
+			reason = "device attestation untrusted; network-profile secrets withheld by server"
+		}
+		details["secrets_withheld"] = true
+		details["note"] = "profile skipped; existing keyfile (if any) left untouched"
+		return nmOut(policy.ID, types.ComplianceNonCompliant, reason, details)
+	}
+
 	var payload types.NetworkProfilePayload
 	if err := json.Unmarshal(policy.Payload, &payload); err != nil {
 		return nmFail(policy.ID, details, fmt.Sprintf("invalid NETWORK_PROFILE payload: %v", err))

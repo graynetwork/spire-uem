@@ -367,6 +367,16 @@
                         </label>
                     </div>
                 </div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-1">
+                    <div class="sm:max-w-md">
+                        <label class="block text-xs font-medium text-slate-200">Device Mutual TLS (mTLS)</label>
+                        <p class="text-[11px] text-slate-500 mt-0.5">Whether device REST/WebSocket endpoints require a client certificate issued by the internal device CA. Set at the process level via <span class="font-mono">SPIRE_DEVICE_MTLS</span> (off | optional | required); shown here read-only.</p>
+                    </div>
+                    <div class="flex items-center">
+                        <span class="px-2.5 py-1 rounded text-xs font-mono font-medium {{if eq .DeviceMTLSMode "required"}}bg-emerald-500/10 text-emerald-400 border border-emerald-500/30{{else if eq .DeviceMTLSMode "optional"}}bg-blue-500/10 text-blue-400 border border-blue-500/30{{else}}bg-slate-500/10 text-slate-400 border border-slate-500/30{{end}}">{{.DeviceMTLSMode}}</span>
+                    </div>
+                </div>
             </div>
 
             <div class="flex justify-end pt-2">

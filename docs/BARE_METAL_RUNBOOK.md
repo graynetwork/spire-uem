@@ -2,7 +2,7 @@
 
 **Document ID:** `SPIRE-OPS-BM-001`  
 **Target Operating System:** Debian 12 (Bookworm) `amd64`  
-**Validation Harness:** [`scripts/test_baremetal.sh`](file:///home/sysadmin/spire-uem/scripts/test_baremetal.sh)
+**Validation Harness:** [`scripts/test_baremetal.sh`](../scripts/test_baremetal.sh)
 
 ---
 
@@ -77,17 +77,27 @@ sudo apt-get install -y \
 
 ## 4. Step-by-Step Qualification Procedure
 
-### 4.1 Zero-Touch Onboarding via `/install.sh`
-On the target Debian 12 workstation, enroll the endpoint against the SpireUEM Control Plane (`spire-server`):
+### 4.1 Endpoint onboarding
+Set the public server base URL first, then download and inspect the bootstrap before running it:
 ```bash
-curl -fsSL http://<SPIRE_SERVER_IP>:8080/install.sh | sudo bash
+curl -fsSLo /tmp/spire-install.sh https://spire.example.com/install.sh
+less /tmp/spire-install.sh
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com
 ```
-Approve the newly staged device in the SpireUEM Admin Console (**Devices -> Approve**) or via API.
+
+For an isolated lab using plain HTTP, the server must set `SPIRE_ALLOW_INSECURE_HTTP=1`, and the bootstrap must be run with `--allow-insecure-http`:
+
+```bash
+curl -fsSLo /tmp/spire-install.sh http://<SPIRE_SERVER_IP>:8080/install.sh
+sudo bash /tmp/spire-install.sh --server-url http://<SPIRE_SERVER_IP>:8080 --allow-insecure-http
+```
+
+Approve the newly staged device in **Devices → Approve**. The standard bootstrap uses administrator approval; it does not consume dynamic `spire_tok_...` enrollment tokens.
 
 ---
 
 ### 4.2 Running the Automated Bare-Metal Qualification Suite
-Execute [`scripts/test_baremetal.sh`](file:///home/sysadmin/spire-uem/scripts/test_baremetal.sh) as `root`:
+Execute [`scripts/test_baremetal.sh`](../scripts/test_baremetal.sh) as `root`:
 
 ```bash
 # 1. Safe Dry-Run (validates pre-flight checks without mutating kernel/LUKS/Flatpak state):
@@ -95,7 +105,7 @@ sudo ./scripts/test_baremetal.sh --dry-run --verbose
 
 # 2. Full Hardware Qualification Run (skipping interactive cold-reboot prompt):
 sudo ./scripts/test_baremetal.sh \
-    --server-url "http://<SPIRE_SERVER_IP>:8080" \
+    --server-url "https://spire.example.com" \
     --admin-user "admin" \
     --admin-pass "spire-admin-secret" \
     --skip-reboot \
@@ -149,6 +159,16 @@ sudo ./scripts/test_baremetal.sh \
    ```text
    [spired] TPM 2.0 attestation completed status=ATTESTED secure_boot=true
    ```
+3. **Approve the qualified measurements as a PCR baseline (fleet onboarding):**
+   Once a representative, fully-updated reference unit of this hardware/firmware class reads
+   `ATTESTED`, approve its quote-proven PCR values as an approved baseline so sibling devices
+   are checked against a known-good set: in the admin UI open the device → attestation panel →
+   **Approve current measurements**, scoping the baseline to this hardware class's tags (and
+   ring, if used). Thereafter a matching unit reads `BASELINE_MATCH`; a unit whose boot chain
+   drifts reads `BASELINE_MISMATCH` with the differing PCR indices. See
+   `ADMIN_RUNBOOK.md` §15 for re-approving after a firmware/bootloader update and for the
+   `off → warn → enforce` secret-gating rollout. The required PCR set is exactly the SHA-256
+   bank 0, 2, 4, 7 verified in Phase 1.
 
 ---
 
@@ -166,13 +186,13 @@ sudo ./scripts/test_baremetal.sh \
    curl -fsSL -u "admin:spire-admin-secret" \
      -H "Content-Type: application/json" \
      -H "Accept: application/json" \
-     -X POST "http://<SPIRE_SERVER_IP>:8080/api/v1/auth/recovery-key" \
+     -X POST "https://spire.example.com/api/v1/auth/recovery-key" \
      -d '{"device_id":"<DEVICE_UUID>","volume_uuid":"<LUKS_UUID>","reason":"HW-PILOT-001"}'
    ```
-   *Expected Output:* JSON payload containing `"recovery_key": "spire-..."` and an immutable `LUKS_KEY_REVEAL` event logged in `GET /admin/audit/events`.
+   *Expected Output:* JSON containing a 48-character `recovery_key`, plus an immutable `LUKS_KEY_REVEAL` event in `GET /admin/audit/events`. The reveal also queues recovery-key rotation.
 
 3. **Cold-Boot Unlock Verification (When `--skip-reboot` is omitted):**
-   Reboot the physical workstation (`sudo reboot`). At the `cryptsetup` initramfs passphrase prompt (`Please unlock disk nvme0n1p3_crypt:`), enter the revealed recovery key (`spire-...`) instead of the user's primary passphrase and confirm the workstation boots cleanly into GDM3/GNOME.
+   Reboot the physical workstation (`sudo reboot`). At the `cryptsetup` initramfs prompt, enter the revealed 48-character recovery key instead of the user's primary passphrase and confirm the workstation boots into GDM/GNOME.
 
 ---
 
@@ -186,7 +206,7 @@ sudo ./scripts/test_baremetal.sh \
    ```bash
    curl -fsSL -u "admin:spire-admin-secret" \
      -H "Content-Type: application/json" \
-     -X POST "http://<SPIRE_SERVER_IP>:8080/admin/benchmarks/remediate-rule" \
+     -X POST "https://spire.example.com/admin/benchmarks/remediate-rule" \
      -d '{"rule_id":"xccdf_org.ssgproject.content_rule_sysctl_net_ipv4_conf_all_rp_filter"}'
    sudo spire-ctl sync
    cat /proc/sys/net/ipv4/conf/all/rp_filter   # Outputs: 1
@@ -226,13 +246,20 @@ sudo ./scripts/test_baremetal.sh \
 - **Resolution:**
   1. Verify UEFI Secure Boot remains enabled (`mokutil --sb-state` -> `SecureBoot enabled`).
   2. Trigger a fresh attestation cycle via `sudo spire-ctl sync`.
-  3. Because `spired` performs a live challenge-response quote (`POST /api/v1/desktop/attest/challenge` -> `POST /api/v1/desktop/attest/verify`) and validates that PCR 7 is non-zero and signed by the hardware AK/EK, the new PCR 7 baseline is automatically recorded in `device_tpm_attestation`.
+  3. `spired` performs a fresh challenge-response quote (`POST /api/v1/desktop/attest/challenge` → `POST /api/v1/desktop/attest/verify`). The server verifies the EK/AK binding, nonce, signature, and signed PCR digest, then stores the latest values in `device_tpm_attestation`.
+  4. SpireUEM does **not** compare the new PCR values with an approved baseline. A changed-but-valid PCR set can still be `ATTESTED` if PCR 7 is nonzero. Investigate the change through firmware, bootloader, and Secure Boot tooling; do not treat `ATTESTED` as proof that measurements match the previous boot.
 
-### Scenario 3: LUKS2 Keyslot 1 Collision (Keyslot 1 Already Occupied Before Enrollment)
-- **Symptom:** Target workstation had a secondary recovery passphrase manually added to Keyslot 1 prior to `spired` installation.
-- **Behavior & Resolution:**
-  - If `/etc/spire/luks-keyslot1.key` does not yet exist on disk, `spired` uses `/etc/spire/luks-master.key` (or `/root/luks-passphrase`) to overwrite Keyslot 1 (`cryptsetup luksKillSlot <dev> 1` followed by `cryptsetup luksAddKey --key-slot 1`) and escrows the new key to `spire-server`.
-  - If `/etc/spire/luks-master.key` is not staged on a pre-existing manual install, stage the initial installation passphrase at `/etc/spire/luks-master.key` (`chmod 0400`), run `sudo spire-ctl sync`, and then shred the bootstrap passphrase file (`sudo shred -u /etc/spire/luks-master.key`) once Keyslot 1 is escrowed.
+### Scenario 3: LUKS2 Keyslot 1 is already occupied
+- **Symptom:** escrow fails because the current implementation always requests Keyslot 1 and `cryptsetup luksAddKey --key-slot 1` refuses to replace an occupied slot.
+- **Behavior:** `spired` fails closed. It does not run `luksKillSlot`, does not overwrite the existing key, and does not create `/etc/spire/luks-keyslot1.key`.
+- **Resolution:**
+  1. Confirm another working key opens the volume and back up the LUKS header.
+  2. Determine who owns Keyslot 1 and whether it can be retired under your recovery-key procedure.
+  3. If retiring it is approved, remove it manually with `cryptsetup` while preserving at least one tested working key.
+  4. Ensure `/etc/spire/luks-master.key` contains a valid provisioning key with mode `0400`, then run `sudo spire-ctl sync`.
+  5. Verify the new escrowed recovery key before removing the provisioning keyfile.
+
+Do not automate deletion of an occupied keyslot based only on this runbook. The product currently has no configurable escrow-slot selector.
 
 ### Scenario 4: `HTTP 403 Caller is not the active console session user` on `/run/spire/agent.sock`
 - **Symptom:** Running `spire-ctl` or `spire-hub` returns HTTP 403 over `/run/spire/agent.sock`.

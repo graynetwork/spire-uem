@@ -63,6 +63,9 @@ const (
 	EventDeviceRevoked     EventKind = "device_revoked"
 	EventLoginFailureBurst EventKind = "login_failure_burst"
 	EventPatchFailed       EventKind = "patch_failed"
+	// EventAgentUpdateFailed fires when an agent reports a FAILED self-update (including a
+	// signature/verification failure) or a ROLLED_BACK outcome.
+	EventAgentUpdateFailed EventKind = "agent_update_failed"
 	EventTest              EventKind = "test"
 )
 
@@ -77,6 +80,7 @@ var AllEventKinds = []EventKind{
 	EventDeviceRevoked,
 	EventLoginFailureBurst,
 	EventPatchFailed,
+	EventAgentUpdateFailed,
 }
 
 // Label returns a human-readable name for an event kind.
@@ -98,6 +102,8 @@ func (k EventKind) Label() string {
 		return "Admin login-failure burst"
 	case EventPatchFailed:
 		return "Patch run failed"
+	case EventAgentUpdateFailed:
+		return "Agent self-update failed / rolled back"
 	case EventTest:
 		return "Test alert"
 	default:

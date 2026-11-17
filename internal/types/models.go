@@ -30,13 +30,13 @@ const (
 	PolicyTypeSysctlSetting   PolicyType = "SYSCTL_SETTING"
 	PolicyTypeAptConfig       PolicyType = "APT_CONFIG"
 	// Policy types A: declarative host-hardening policies.
-	PolicyTypeFirewallRuleset   PolicyType = "FIREWALL_RULESET"
+	PolicyTypeFirewallRuleset    PolicyType = "FIREWALL_RULESET"
 	PolicyTypeLocalAccountPolicy PolicyType = "LOCAL_ACCOUNT_POLICY"
 	PolicyTypeTrustedCACerts     PolicyType = "TRUSTED_CA_CERTIFICATES"
 	// Appended by policy-types-b worker (network/USB/auditd declarative types).
-	PolicyTypeNetworkProfile    PolicyType = "NETWORK_PROFILE"
-	PolicyTypeUSBDeviceControl  PolicyType = "USB_DEVICE_CONTROL"
-	PolicyTypeAuditdRules       PolicyType = "AUDITD_RULES"
+	PolicyTypeNetworkProfile   PolicyType = "NETWORK_PROFILE"
+	PolicyTypeUSBDeviceControl PolicyType = "USB_DEVICE_CONTROL"
+	PolicyTypeAuditdRules      PolicyType = "AUDITD_RULES"
 )
 
 // DeploymentRing represents the phased patch deployment ring of a device or policy.
@@ -333,22 +333,22 @@ type AptConfigPayload struct {
 // FirewallInboundRule is a single allowed inbound rule inside a FIREWALL_RULESET policy.
 // Port and PortEnd express either a single port (PortEnd == 0) or an inclusive range.
 type FirewallInboundRule struct {
-	Proto     string `json:"proto"`                // "tcp" | "udp"
-	Port      int    `json:"port"`                 // 1-65535
-	PortEnd   int    `json:"port_end,omitempty"`   // optional range end; >= Port when set
+	Proto      string `json:"proto"`                 // "tcp" | "udp"
+	Port       int    `json:"port"`                  // 1-65535
+	PortEnd    int    `json:"port_end,omitempty"`    // optional range end; >= Port when set
 	SourceCIDR string `json:"source_cidr,omitempty"` // optional IPv4/IPv6 CIDR scoping the rule
-	Comment   string `json:"comment,omitempty"`
+	Comment    string `json:"comment,omitempty"`
 }
 
 // FirewallRulesetPayload defines the payload for FIREWALL_RULESET (nftables) policies. The agent
 // renders a dedicated `table inet spire`, never touching other tables, validated with `nft -c`
 // and applied with `nft -f`. Outbound traffic is always left open so the agent keeps its server link.
 type FirewallRulesetPayload struct {
-	DefaultInbound    string                `json:"default_inbound"`               // "accept" | "drop"
-	AllowEstablished  bool                  `json:"allow_established"`             // allow ct state established,related
-	AllowLoopback     bool                  `json:"allow_loopback"`               // allow iif lo
-	AllowICMP         bool                  `json:"allow_icmp,omitempty"`         // allow icmp + icmpv6
-	InboundRules      []FirewallInboundRule `json:"inbound_rules,omitempty"`
+	DefaultInbound   string                `json:"default_inbound"`      // "accept" | "drop"
+	AllowEstablished bool                  `json:"allow_established"`    // allow ct state established,related
+	AllowLoopback    bool                  `json:"allow_loopback"`       // allow iif lo
+	AllowICMP        bool                  `json:"allow_icmp,omitempty"` // allow icmp + icmpv6
+	InboundRules     []FirewallInboundRule `json:"inbound_rules,omitempty"`
 }
 
 // LocalAccountSudoersPayload is the managed /etc/sudoers.d/90-spire drop-in specification.
@@ -363,7 +363,7 @@ type LocalAccountSudoersPayload struct {
 // managed sudoers drop-in. The agent uses Debian drop-in config files, never blind sed on pam.d.
 type LocalAccountPolicyPayload struct {
 	// Password quality (written to /etc/security/pwquality.conf.d/90-spire.conf).
-	PwqualityMinLen  int `json:"pwquality_minlen,omitempty"`  // minimum length; 0 = unset
+	PwqualityMinLen   int `json:"pwquality_minlen,omitempty"`   // minimum length; 0 = unset
 	PwqualityMinClass int `json:"pwquality_minclass,omitempty"` // minimum character classes 0-4
 
 	// Account lockout (written to /etc/security/faillock.conf).
@@ -426,9 +426,9 @@ func (s SecretEnvelope) HasValue() bool {
 type NetworkProfileKind string
 
 const (
-	NetworkProfileWifi      NetworkProfileKind = "wifi"
+	NetworkProfileWifi       NetworkProfileKind = "wifi"
 	NetworkProfileWiredDot1x NetworkProfileKind = "wired_8021x"
-	NetworkProfileWireGuard NetworkProfileKind = "wireguard"
+	NetworkProfileWireGuard  NetworkProfileKind = "wireguard"
 )
 
 // WifiSecurity enumerates supported Wi-Fi security modes.
@@ -472,9 +472,9 @@ type NetworkProfilePayload struct {
 	// /etc/NetworkManager/system-connections/spire-<policy_id>.nmconnection.
 	Autoconnect bool `json:"autoconnect"`
 
-	Wifi      *WifiProfile      `json:"wifi,omitempty"`
+	Wifi      *WifiProfile       `json:"wifi,omitempty"`
 	Wired     *WiredDot1xProfile `json:"wired_8021x,omitempty"`
-	WireGuard *WireGuardProfile `json:"wireguard,omitempty"`
+	WireGuard *WireGuardProfile  `json:"wireguard,omitempty"`
 }
 
 // WifiProfile holds Wi-Fi connection settings.
@@ -485,12 +485,12 @@ type WifiProfile struct {
 	// Personal (WPA2/WPA3-Personal): PSK.
 	PSK SecretEnvelope `json:"psk,omitempty"`
 	// Enterprise (WPA2/WPA3-Enterprise, 802.1X):
-	EAP      EAPMethod      `json:"eap,omitempty"`
-	Identity string         `json:"identity,omitempty"`
-	CACert   string         `json:"ca_cert,omitempty"`   // PEM text of the CA certificate
-	ClientCert string       `json:"client_cert,omitempty"` // PEM text (EAP-TLS)
-	ClientKey  string       `json:"client_key,omitempty"`  // PEM text (EAP-TLS); treated as a secret
-	Password SecretEnvelope `json:"password,omitempty"`  // PEAP-MSCHAPv2 password (and EAP-TLS key passphrase)
+	EAP        EAPMethod      `json:"eap,omitempty"`
+	Identity   string         `json:"identity,omitempty"`
+	CACert     string         `json:"ca_cert,omitempty"`     // PEM text of the CA certificate
+	ClientCert string         `json:"client_cert,omitempty"` // PEM text (EAP-TLS)
+	ClientKey  string         `json:"client_key,omitempty"`  // PEM text (EAP-TLS); treated as a secret
+	Password   SecretEnvelope `json:"password,omitempty"`    // PEAP-MSCHAPv2 password (and EAP-TLS key passphrase)
 }
 
 // WiredDot1xProfile holds wired 802.1X connection settings.
@@ -550,8 +550,8 @@ type AuditdWatchRule struct {
 
 // AuditdSyscallRule is a syscall rule (-a <action,filter> -S <syscall>... [-F ...] -k <key>).
 type AuditdSyscallRule struct {
-	Action   string   `json:"action"`   // "always" | "never"
-	Filter   string   `json:"filter"`   // "exit" | "entry" | "task" | "user" | "exclude"
+	Action   string   `json:"action"` // "always" | "never"
+	Filter   string   `json:"filter"` // "exit" | "entry" | "task" | "user" | "exclude"
 	Syscalls []string `json:"syscalls"`
 	Fields   []string `json:"fields,omitempty"` // raw -F field expressions, validated
 	Key      string   `json:"key"`
@@ -660,6 +660,11 @@ type EnrollRequest struct {
 	// EnrollmentKey is a random secret the agent generates once and keeps. The device is
 	// bound to it when first staged, and its token is released only to that key.
 	EnrollmentKey string `json:"enrollment_key"`
+	// CSRPEM is a PEM-encoded PKCS#10 certificate request for the device's locally generated
+	// ECDSA P-256 key. Present only when the agent is ready to claim its token. The server
+	// ignores every name/extension it requests and issues a client-auth leaf bound to the
+	// device id. Optional for older agents and for the pre-approval polling phase.
+	CSRPEM string `json:"csr_pem,omitempty"`
 }
 
 // EnrollResponse is returned by POST /api/v1/desktop/enroll.
@@ -670,6 +675,24 @@ type EnrollResponse struct {
 	// WipeSigningPublicKey lets the agent pin the server's Ed25519 wipe-order signing key
 	// at enrollment (base64). Present only when a token is issued.
 	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
+	// DeviceCertificatePEM is the PEM-encoded client-auth leaf the device CA issued for the
+	// CSR in the request. Present only when a CSR was supplied and a token was issued.
+	DeviceCertificatePEM string `json:"device_certificate_pem,omitempty"`
+	// DeviceCANotAfter is the leaf's expiry (RFC3339), so the agent can schedule renewal.
+	DeviceCertNotAfter string `json:"device_cert_not_after,omitempty"`
+}
+
+// DeviceCertRenewRequest is sent by spired to POST /api/v1/desktop/cert/renew. It requires a
+// valid current client certificate AND the bearer token of the same device.
+type DeviceCertRenewRequest struct {
+	// CSRPEM is a PEM-encoded PKCS#10 request for the device's new ECDSA P-256 key.
+	CSRPEM string `json:"csr_pem"`
+}
+
+// DeviceCertRenewResponse carries the freshly issued leaf.
+type DeviceCertRenewResponse struct {
+	DeviceCertificatePEM string `json:"device_certificate_pem"`
+	DeviceCertNotAfter   string `json:"device_cert_not_after"`
 }
 
 // AssignedPolicy is returned to a device during check-in.
@@ -683,6 +706,13 @@ type AssignedPolicy struct {
 	RequiresReboot          bool                      `json:"requires_reboot,omitempty"`
 	WithinMaintenanceWindow bool                      `json:"within_maintenance_window"`
 	Version                 int                       `json:"version"`
+	// SecretsWithheld is set by the server when attestation enforcement is ON and the device
+	// is untrusted: the policy's sealed secrets were NOT unsealed and are absent from Payload.
+	// The agent MUST treat such a policy as a skipped/non-compliant item — it must never
+	// write a keyfile with a blank/placeholder secret, and must not remove an already-working
+	// profile on account of it. WithheldReason is a short human-readable explanation.
+	SecretsWithheld bool   `json:"secrets_withheld,omitempty"`
+	WithheldReason  string `json:"withheld_reason,omitempty"`
 }
 
 // CommandDTO is dispatched to a device in CheckinResponse.
@@ -1001,5 +1031,3 @@ type UpdateUserRequest struct {
 	// slice clears the scope (unrestricted).
 	AllowedTags *[]string `json:"allowed_tags,omitempty"`
 }
-
-

@@ -10,6 +10,8 @@ TMP_DEB="/tmp/${DEB_PACKAGE}"
 USE_APT_REPO="${SPIRE_USE_APT_REPO:-0}"
 APT_REPO_URL="${SPIRE_APT_REPO_URL:-}"
 ALLOW_INSECURE_HTTP="${SPIRE_AGENT_ALLOW_INSECURE_HTTP:-0}"
+SERVER_CA_FILE="${SPIRE_AGENT_SERVER_CA_FILE:-}"
+SERVER_CA_SHA256="${SPIRE_AGENT_SERVER_CA_SHA256:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,6 +31,14 @@ while [[ $# -gt 0 ]]; do
         --allow-insecure-http)
             ALLOW_INSECURE_HTTP="1"
             shift 1
+            ;;
+        --server-ca-file)
+            SERVER_CA_FILE="$2"
+            shift 2
+            ;;
+        --server-ca-sha256)
+            SERVER_CA_SHA256="$2"
+            shift 2
             ;;
         *)
             shift 1
@@ -161,6 +171,15 @@ agent:
 EOF
 if [[ "${ALLOW_INSECURE_HTTP}" == "1" || "${ALLOW_INSECURE_HTTP}" == "true" ]]; then
     echo '  allow_insecure_http: true' >> /etc/spire/config.yaml
+fi
+# Pin the control-plane's TLS trust to a CA file and/or the server leaf's SHA-256
+# fingerprint. This replaces the system root store for the server connection and removes
+# first-contact trust in the wipe-signing key (the agent trusts only the pinned server).
+if [[ -n "${SERVER_CA_FILE}" ]]; then
+    echo "  server_ca_file: \"${SERVER_CA_FILE}\"" >> /etc/spire/config.yaml
+fi
+if [[ -n "${SERVER_CA_SHA256}" ]]; then
+    echo "  server_ca_sha256: \"${SERVER_CA_SHA256}\"" >> /etc/spire/config.yaml
 fi
 chmod 0600 /etc/spire/config.yaml
 

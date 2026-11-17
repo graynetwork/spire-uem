@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/engine"
 	"github.com/spire-uem/spire-uem/internal/inventory"
 	"github.com/spire-uem/spire-uem/internal/ipc"
+	"github.com/spire-uem/spire-uem/internal/release"
 	"github.com/spire-uem/spire-uem/internal/types"
 	"github.com/spire-uem/spire-uem/internal/version"
 )
@@ -38,9 +40,31 @@ func main() {
 
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	once := flag.Bool("once", false, "Run a single check-in/enforcement cycle and exit")
+	rollbackCheck := flag.Bool("rollback-check", false, "Run the independent agent-update rollback check and exit (invoked by the rollback timer; does not depend on a healthy new binary)")
 	flag.Parse()
 
 	cfg := config.Load(*configPath)
+
+	// Rollback trigger entry point: reinstall the previous agent package if the just-installed
+	// one never confirmed healthy. This runs off on-disk state only, so a crash-looping new
+	// binary is still reverted. It is deliberately BEFORE enrollment/network setup.
+	if *rollbackCheck {
+		rb := engine.NewRollbacker(engine.DefaultRollbackDir, nil, nil)
+		outcome := rb.CheckAndRollback(context.Background(), engine.DefaultUpdateStatePath)
+		switch outcome.Action {
+		case engine.RollbackActionRolledBack:
+			if outcome.Err != nil {
+				log.Printf("[spired] rollback-check: reinstall FAILED: %v", outcome.Err)
+				os.Exit(1)
+			}
+			log.Printf("[spired] rollback-check: new agent did not confirm healthy; reinstalled previous package")
+		case engine.RollbackActionConfirmed:
+			log.Printf("[spired] rollback-check: update confirmed healthy; nothing to do")
+		default:
+			log.Printf("[spired] rollback-check: nothing to do (%s)", outcome.Action)
+		}
+		return
+	}
 
 	hwUUID, err := inventory.GetHardwareUUID()
 	if err != nil {
@@ -55,7 +79,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client := &http.Client{Timeout: 4 * time.Second}
+	certPaths := deviceCertFiles(cfg.Agent.TokenPath)
+	deviceKey, err := loadOrCreateDeviceKey(certPaths.keyPath)
+	if err != nil {
+		log.Fatalf("[spired] failed to load or create device key: %v", err)
+	}
+
+	client, err := buildHTTPClient(4*time.Second, certPaths, cfg.Agent.ServerCAFile, cfg.Agent.ServerCASHA256)
+	if err != nil {
+		log.Fatalf("[spired] failed to build HTTP client: %v", err)
+	}
+	if strings.TrimSpace(cfg.Agent.ServerCAFile) != "" || strings.TrimSpace(cfg.Agent.ServerCASHA256) != "" {
+		log.Printf("[spired] pinning control-plane TLS trust (server_ca_file=%q server_ca_sha256 set=%v); system roots are NOT used for the server connection", cfg.Agent.ServerCAFile, strings.TrimSpace(cfg.Agent.ServerCASHA256) != "")
+	}
 	backoffAttempt := 0
 	triggerCheckinCh := make(chan struct{}, 1)
 	var checkinMu sync.Mutex
@@ -116,6 +152,7 @@ func main() {
 
 	if !*once {
 		go runWebSocketStream(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, triggerCheckinCh, ipcSrv)
+		go runCertRenewalLoop(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, deviceKey, certPaths)
 		go func() {
 			if err := ipcSrv.Run(ctx); err != nil {
 				log.Printf("[spired] local IPC server stopped: %v", err)
@@ -141,7 +178,7 @@ func main() {
 				}
 				continue
 			}
-			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey)
+			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey, deviceKey, certPaths)
 			if netErr != nil {
 				backoffAttempt++
 				sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
@@ -295,10 +332,29 @@ func main() {
 						log.Printf("[spired] agent self-update directive: %s -> %s (%s)", version.Version, checkinResp.AgentUpdate.TargetVersion, checkinResp.AgentUpdate.Reason)
 						updateClient := &http.Client{Timeout: 10 * time.Minute}
 						updater := engine.NewSelfUpdater(updateClient, cfg.Agent.ServerURL, version.Version, nil)
+
+						// Pin release trust anchors from the keys shipped INSIDE this package;
+						// they are never fetched from the server. require_signed defaults true.
+						trust, keyErrs := release.LoadTrustAnchors(cfg.Agent.ReleaseKeysDir)
+						for _, e := range keyErrs {
+							log.Printf("[spired] warning: release trust anchor load: %v", e)
+						}
+						engine.SetSignatureVerification(updater, trust, cfg.Agent.RequireSignedUpdates, cfg.Agent.ReleaseKeysDir)
+
+						// Arm an independent rollback trigger around the install.
+						engine.SetRollbacker(updater, engine.NewRollbacker(engine.DefaultRollbackDir, nil, nil))
+
 						if res := updater.ApplyDirective(ctx, checkinResp.AgentUpdate, token); res != nil {
 							log.Printf("[spired] agent self-update result target=%s status=%s msg=%s", res.TargetVersion, res.Status, res.Message)
 						}
 					}
+				}
+
+				// A completed check-in is the agent's "healthy" signal: if THIS process is the
+				// newly-installed agent from a recent update, confirm it so the independent
+				// rollback trigger stands down. Harmless on a normal (non-update) check-in.
+				if err := engine.NewRollbacker(engine.DefaultRollbackDir, nil, nil).ConfirmHealthy(version.Version); err != nil {
+					log.Printf("[spired] warning: could not write update health marker: %v", err)
 				}
 			}
 			return code, nil
@@ -337,11 +393,18 @@ func main() {
 	}
 }
 
-func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPath, hwUUID, hostname, enrollKey string) (string, error) {
+func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPath, hwUUID, hostname, enrollKey string, deviceKey *ecdsa.PrivateKey, certPaths deviceCertPaths) (string, error) {
+	// Include a CSR for the device's local key so the server can issue a client-auth leaf at
+	// the moment the token is claimed. The private key never leaves this host.
+	csrPEM, csrErr := buildDeviceCSR(deviceKey, hwUUID)
+	if csrErr != nil {
+		log.Printf("[spired] warning: could not build device CSR (continuing without mTLS cert): %v", csrErr)
+	}
 	reqBody, _ := json.Marshal(types.EnrollRequest{
 		HardwareUUID:  hwUUID,
 		Hostname:      hostname,
 		EnrollmentKey: enrollKey,
+		CSRPEM:        csrPEM,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/enroll", bytes.NewReader(reqBody))
 	if err != nil {
@@ -362,6 +425,14 @@ func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPat
 	if resp.StatusCode == http.StatusOK && enrollResp.Status == types.StatusApproved && enrollResp.Token != "" {
 		// Pin the server's Ed25519 wipe-signing key at enrollment (once, persisted).
 		pinWipeKey(tokenPath, enrollResp.WipeSigningPublicKey)
+		// Persist the issued client certificate, if the server returned one.
+		if strings.TrimSpace(enrollResp.DeviceCertificatePEM) != "" {
+			if err := storeDeviceCert(certPaths.certPath, enrollResp.DeviceCertificatePEM); err != nil {
+				log.Printf("[spired] warning: failed to persist device certificate: %v", err)
+			} else {
+				log.Printf("[spired] stored device client certificate (not_after=%s)", enrollResp.DeviceCertNotAfter)
+			}
+		}
 		return enrollResp.Token, nil
 	}
 

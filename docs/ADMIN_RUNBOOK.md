@@ -52,20 +52,34 @@ SQL
 2. Create the environment configuration file at `/etc/spire-server.env` (mode `0600`):
    ```bash
    sudo tee /etc/spire-server.env >/dev/null <<'EOF'
-   SPIRE_SERVER_LISTEN_ADDR=:8080
-   SPIRE_DB_DSN=postgres://spire:CHANGE_ME_STRONG_DB_PASSWORD@127.0.0.1:5432/spire_uem?sslmode=disable
+   SPIRE_LISTEN_ADDR=:8443
+   DATABASE_URL=postgres://spire:CHANGE_ME_STRONG_DB_PASSWORD@127.0.0.1:5432/spire_uem?sslmode=disable
+   SPIRE_MIGRATIONS_PATH=/opt/spire-uem/migrations
    SPIRE_ADMIN_USER=admin
    SPIRE_ADMIN_PASSWORD=CHANGE_ME_STRONG_ADMIN_PASSWORD
+   # Built-in TLS. The server requires both files and permits TLS 1.2 or later.
+   SPIRE_TLS_CERT_FILE=/etc/spire/tls/server.crt
+   SPIRE_TLS_KEY_FILE=/etc/spire/tls/server.key
    # PEM bundle of TPM manufacturer CA certificates (roots + intermediates).
    # Without it, hardware TPM attestations are reported FAILED.
    SPIRE_TPM_EK_ROOTS=/etc/spire/tpm-ca-bundle.pem
    # At least 32 random characters, e.g. `openssl rand -hex 32`. Keeps admins signed in across restarts.
    SPIRE_SESSION_SECRET=CHANGE_ME_64_HEX_CHARS
-   # Only behind a TLS-terminating reverse proxy that clients cannot bypass:
+   # Use this only instead of built-in TLS, behind a TLS proxy clients cannot bypass:
    # SPIRE_TRUST_PROXY=true
    EOF
    sudo chmod 0600 /etc/spire-server.env
    ```
+
+   Before starting the service, install the certificate and private key named above:
+
+   ```bash
+   sudo install -d -m 0750 /etc/spire/tls
+   sudo install -m 0644 /path/to/server.crt /etc/spire/tls/server.crt
+   sudo install -m 0600 /path/to/server.key /etc/spire/tls/server.key
+   ```
+
+   If a reverse proxy terminates TLS instead, remove the two `SPIRE_TLS_*` variables, bind `spire-server` to loopback, and set `SPIRE_TRUST_PROXY=true`.
 
    Security-relevant settings:
 
@@ -76,12 +90,12 @@ SQL
    | `SPIRE_SIMULATE_TPM2` / `SPIRE_ALLOW_SIMULATED_TPM` | Accept software-simulated TPM attestations. **Test environments only**: a simulated attestation proves nothing about the device. |
    | `SPIRE_ENABLE_TEST_ENDPOINTS` | Registers the unauthenticated `/auth/oidc/test-callback` used by the E2E suite. **Never set in production**: it lets any caller mint an admin session. |
    | `SPIRE_SESSION_SECRET` | Key that signs admin session cookies. If unset (or under 32 characters) a random key is generated per process and every restart signs all admins out. |
-   | `SPIRE_TRUST_PROXY` | Trust `X-Forwarded-For`, `X-Real-IP` and `X-Forwarded-Proto` from a reverse proxy. Set it only when clients cannot reach the server except through that proxy; otherwise they can spoof their IP in audit logs. Required when `enforce_https` is on, since the server itself speaks plain HTTP: it refuses to start with `enforce_https` and no trusted proxy. |
+   | `SPIRE_TRUST_PROXY` | Trust `X-Forwarded-For`, `X-Real-IP` and `X-Forwarded-Proto` from a reverse proxy. Set it only when clients cannot reach the server except through that proxy; otherwise they can spoof their IP in audit logs. With `enforce_https`, either configure built-in TLS or a trusted TLS proxy. |
    | `general.server_base_url` (Settings → General) | The server's public URL. Used for the OIDC redirect URI and written into `/install.sh`. Until it is changed from the seeded `http://localhost:8080`, `/install.sh` uses the request's Host header instead (validated as a plain host name). Set it before onboarding devices. |
 
    **Sessions** are recorded server-side. Logging out ends the session, and disabling an account or changing its password or role ends all of that account's sessions immediately.
 
-   **Roles.** `OPERATOR` and above can run arbitrary shell commands as root (`/bin/sh -c`) and open root terminals on every enrolled device. Treat those roles as root on the whole fleet: grant them only to people you would give root on every endpoint, and use `AUDITOR` for read-only access.
+   **Roles.** `OPERATOR` and above can run arbitrary shell commands as root (`/bin/sh -c`) and open root terminals on every device within their tag scope. An unscoped account has that authority across the fleet. Grant these roles only to people trusted with root on the devices they can reach; use `AUDITOR` for read-only access.
 
 3. Create `/etc/systemd/system/spire-server.service`:
    ```ini
@@ -169,18 +183,46 @@ Set **Settings → General → server base URL** to the `https://` address agent
 
 ---
 
+## 4. Device Certificates and Mutual TLS (mTLS)
+
+Beyond the bearer token, each device can hold a client certificate issued by SpireUEM's internal ECDSA P-256 device CA. The CA key and certificate are generated on first start at `SPIRE_DEVICE_CA_CERT_FILE` / `SPIRE_DEVICE_CA_KEY_FILE` (defaults under `internal/crypto/`; the key is written mode 0600). The agent generates its private key locally (`/etc/spire/device.key`, never transmitted), submits a CSR at token claim, and the server issues a client-auth-only leaf (default 30-day validity, `SPIRE_DEVICE_CERT_VALIDITY`) bound to `spire://device/<device-id>`. The agent renews automatically at about two-thirds of the lifetime.
+
+A device with **no active certificate** (enrolled before mTLS was enabled, issuance failed at claim, or its certificate expired while offline) requests one from `POST /api/v1/desktop/cert/renew` with its bearer token alone. That grants nothing the token did not already grant. As soon as the device holds an active certificate, further issuance requires that certificate as well as the token. The agent never presents an expired certificate, because the TLS handshake would reject the whole connection.
+
+`SPIRE_DEVICE_MTLS` (or `device_mtls:` under `server:`) selects the mode:
+
+| Mode | Behaviour |
+|---|---|
+| `off` | Client certificates are never checked. |
+| `optional` (default) | A presented certificate is validated and must match the device's bearer token; a device without one still authenticates on the token alone. |
+| `required` | Device REST and WebSocket endpoints refuse any request without a valid certificate matching the bearer token. Enroll and claim stay reachable; admin browser routes never need a client certificate. |
+
+The device detail page shows each device's certificate status (short serial, expiry, revoked), and **Settings → Security** shows the active mode read-only. Revoking a device revokes all of its certificates immediately.
+
+**Proxy limitation.** `required` mode cannot be combined with a trusted TLS proxy (`SPIRE_TRUST_PROXY`): SpireUEM verifies the client certificate from the TLS handshake it terminates itself and never trusts a forwarded client-certificate header, which anything behind the proxy could spoof. To use `required` mode, terminate TLS in `spire-server` with `SPIRE_TLS_CERT_FILE` / `SPIRE_TLS_KEY_FILE`. The server refuses to start if `required` is set alongside `SPIRE_TRUST_PROXY`.
+
+**Upgrading from optional to required.** Roll it out in two steps so no device is locked out:
+
+1. Upgrade agents and run in `optional` mode until every active device shows an Active certificate on its device page. Agents request a certificate within about an hour of starting.
+2. Switch `SPIRE_DEVICE_MTLS=required` and restart `spire-server`. A device that is still without a valid certificate, or whose certificate expires later, is refused on gated endpoints until it obtains a new one with its bearer token; enroll, check-in and certificate issuance are never gated.
+
+In `required` mode the certificate proves possession of the device key only while the device holds an active certificate. A stolen bearer token for a device whose certificate has lapsed can still obtain a new certificate, so `required` mode raises the bar for devices that stay online but is not a substitute for revoking a device whose token is exposed.
+
+**Server pinning (optional).** An agent can pin the control-plane's TLS trust with `server_ca_file` and/or `server_ca_sha256` (config, `SPIRE_AGENT_SERVER_CA_FILE` / `SPIRE_AGENT_SERVER_CA_SHA256`, or `/install.sh --server-ca-file` / `--server-ca-sha256`). This replaces the system root store for the server connection and removes the first-contact trust window in the wipe-signing key, at the cost of having to rotate the pin when the server certificate changes.
+
+---
+
 ## 4a. Host Firewall & Network Rules
 
 SpireUEM requires **zero inbound ports** on managed Debian desktop endpoints. All communication is initiated outbound by `spired` to `spire-server`.
 
 ### 4.1 Control Plane Firewall (`ufw`)
-Allow inbound TCP port `8080` (direct) or `80`/`443` (when fronted by Caddy/Nginx TLS reverse proxy) from your management and endpoint subnets:
+Allow the built-in TLS port from endpoint and management subnets, or expose only the TLS proxy on 443. Do not expose a plaintext control-plane listener:
 ```bash
-# Direct HTTP/8080 access on LAN
-sudo ufw allow from 192.168.1.0/24 to any port 8080 proto tcp comment "SpireUEM Control Plane"
+# Built-in TLS example from section 2.3
+sudo ufw allow from 192.168.1.0/24 to any port 8443 proto tcp comment "SpireUEM TLS Control Plane"
 
-# Or if using a TLS Reverse Proxy (Nginx / Caddy)
-sudo ufw allow 80/tcp comment "SpireUEM HTTP Redirect"
+# Or a TLS reverse proxy
 sudo ufw allow 443/tcp comment "SpireUEM HTTPS Ingress"
 sudo ufw reload
 ```
@@ -189,26 +231,45 @@ sudo ufw reload
 
 ## 5. Bare-Metal Endpoint Onboarding Flow
 
-### Step 1: Run Single-Command Bootstrap on the Target Debian Machine
-On any physical or virtual Debian 12/13 (`amd64`) machine with network reachability to `spire-server`:
-```bash
-curl -sSL https://<server-host>/install.sh | sudo bash
-# Lab network without TLS only:
-# curl -sSL http://<server-ip>:8080/install.sh | sudo bash -s -- --allow-insecure-http
-```
-What this command performs automatically:
-1. Verifies root privileges (`EUID == 0`) and `amd64` architecture.
-2. Downloads `/dist/spire-agent_0.1.0_amd64.deb` from `spire-server`.
-3. Installs the package via `dpkg -i` (`/usr/local/bin/spired` and `/lib/systemd/system/spired.service`).
-4. Writes `/etc/spire/config.yaml` (mode `0600`) pointing to `http://<server-ip>:8080`.
-5. Reloads `systemd`, enables `spired.service`, and starts the daemon immediately.
+### Step 1: Run the bootstrap on the target Debian machine
 
-### Step 2: Tag & Approve Endpoint in the Admin Web UI
-1. Open `http://<server-ip>:8080/admin/devices` and authenticate with `SPIRE_ADMIN_USER` / `SPIRE_ADMIN_PASSWORD`.
+Set **Settings → General → server base URL** to the public HTTPS URL first. Download the script so the operator can inspect it before running it:
+
+```bash
+curl -fsSLo /tmp/spire-install.sh https://spire.example.com/install.sh
+less /tmp/spire-install.sh
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com
+```
+
+The direct `.deb` path relies on deployment TLS and does not independently verify a package signature. For production fleets, initialize and publish the signed APT repository (`make init-repo`, then `make publish-deb`) and use:
+
+```bash
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com --use-apt-repo
+```
+
+For an isolated lab only, both server and bootstrap need explicit insecure-HTTP overrides:
+
+```bash
+curl -fsSLo /tmp/spire-install.sh http://<server-ip>:8080/install.sh
+sudo bash /tmp/spire-install.sh --server-url http://<server-ip>:8080 --allow-insecure-http
+```
+
+The bootstrap:
+
+1. verifies root privileges and `amd64` architecture;
+2. installs the agent from the direct `.deb` or signed APT repository;
+3. installs `/usr/local/bin/spired`, `/usr/bin/spire-ctl`, Spire Hub, and `spired.service`;
+4. writes `/etc/spire/config.yaml` with the selected server URL and `/etc/spire/token` path;
+5. enables and starts `spired.service`.
+
+The standard bootstrap does not accept a dynamic enrollment token. It uses the administrator-approval flow below. Dynamic `spire_tok_...` tokens are for provisioning clients that call `POST /api/v1/enrollment/register` directly.
+
+### Step 2: Tag and approve the endpoint
+1. Open `https://spire.example.com/admin/devices` and authenticate.
 2. Locate the newly staged endpoint (`status = PENDING_APPROVAL`).
-3. Assign optional fleet tags (e.g., `laptop`, `kiosk`, `engineering`) and click **Save**.
+3. Assign optional fleet tags and a valid ring, then click **Save**.
 4. Click **Approve**.
-5. On its next poll cycle (default `5s`), `spired` claims its single-use bearer token (the server releases it only to the agent holding the enrollment key that first staged the device, see below), persists it to `/etc/spire/agent.token` (mode `0600`), caches its active policy set to `/etc/spire/policy-cache.json`, and enforces all assigned policies.
+5. On its next poll (10 seconds in the generated config), `spired` claims its single-use bearer token. The server releases it only to the agent holding the enrollment key that first staged the device. The agent writes `/etc/spire/token` with mode `0600`, caches active policy in `/etc/spire/policy-cache.json`, and begins enforcement.
 
 ### Enrollment keys and re-installing an agent
 On first start `spired` generates a random enrollment key and stores it in `/etc/spire/enrollment.key` (mode `0600`), next to the token. The server binds the device record to that key when the device is first staged, and refuses any later enroll request for the same hardware UUID that presents a different key. Knowing a machine's hardware UUID is therefore not enough to collect its token.
@@ -224,7 +285,7 @@ If you reinstall the OS or delete `/etc/spire/`, the new agent has a new key and
 sudo journalctl -u spired.service -f
 ```
 Key log markers:
-- `[spired] device approved! Token persisted to /etc/spire/agent.token (mode 0600)` — Enrollment completed.
+- `[spired] device approved! Token persisted to /etc/spire/token (mode 0600)` — Enrollment completed.
 - `[WARN] Server unreachable; falling back to local policy cache` — Agent is operating in offline resilience mode and enforcing cached policies.
 - `[spired] flushed N buffered offline reports` — Agent reconnected to `spire-server` and uploaded buffered offline compliance reports.
 
@@ -260,10 +321,10 @@ sudo /usr/local/bin/spired -config /etc/spire/config.yaml -once
 Administrators and auditors can export a complete compliance snapshot via the **Export Audit** buttons on `/admin/devices` or via CLI:
 ```bash
 # Export CSV Audit Report
-curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=csv" -o compliance-audit.csv
+curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "https://spire.example.com/admin/compliance/export?format=csv" -o compliance-audit.csv
 
 # Export JSON Audit Report
-curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
+curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "https://spire.example.com/admin/compliance/export?format=json" -o compliance-audit.json
 ```
 
 ---
@@ -392,13 +453,7 @@ is stable across convergence cycles (it is not regenerated once a valid keyfile 
 - **At rest:** sealed with the server's RSA-OAEP-4096 + AES-256-GCM KEK envelope (the same scheme as
   LUKS recovery-key escrow) before the policy payload is persisted. The stored payload holds only
   ciphertext, and the admin UI never displays a secret back after save.
-- **In transit:** the server unseals secrets **just-in-time** when building a device's check-in
-  response, so only the authenticated agent receives plaintext. **The control-plane binary serves
-  plain HTTP**; transport confidentiality for the check-in channel (and therefore for these
-  secrets) depends on the deployment's TLS-terminating reverse proxy (set `SPIRE_TRUST_PROXY=true`
-  and, for redirect enforcement, `enforce_https`). Terminate TLS at the proxy in any environment
-  carrying network secrets. EAP-TLS client **private keys** are delivered in the payload the same
-  way (plaintext only to the agent over the proxied channel); treat the proxy as mandatory.
+- **In transit:** the server unseals secrets **just-in-time** when building a device's check-in response, so only the authenticated agent receives plaintext. Transport confidentiality depends on built-in TLS or a TLS-terminating reverse proxy. Never enable `SPIRE_ALLOW_INSECURE_HTTP` on a network carrying these secrets. EAP-TLS client **private keys** are delivered to the agent in the policy payload over that protected channel; treat TLS as mandatory.
 
 ### 8.2 USB_DEVICE_CONTROL (usbguard)
 
@@ -624,25 +679,117 @@ does **not** kill itself when the package restart cycles `spired.service`. The u
 applied inside an active maintenance window. The agent reports `SUCCESS`/`FAILED` + a message
 back on its next check-in; a failed update backs off (no hot retry loop).
 
-### 11.4 Integrity — read this before trusting the hash
-The SHA-256 in the descriptor is fetched from the **same server** that serves the `.deb`, so
-it protects against **transport corruption / truncation, not a compromised server**: an
-attacker who controls the server controls both the artifact and its advertised hash. The APT
-repo served at `/apt/*` is **unsigned** (no GPG `Release.gpg`/`InRelease` in this build). For
-a deployment where the control plane is plain HTTP, terminate TLS at a trusted reverse proxy
-(see §4) and treat server compromise as out of scope for this mechanism.
+### 11.4 Integrity — independently signed update manifests
+Size and SHA-256 alone come from the **same server** that serves the `.deb`, so by themselves
+they protect only against corruption and truncation, not a compromised control plane. SpireUEM
+adds an independent Ed25519 signature over each agent package, made with a release key held
+**off** the control plane. Agents require a valid signature by default
+(`require_signed_updates: true`), so a compromised server that controls the bytes and the
+advertised hash still cannot push a forged root agent.
 
-### 11.5 Operator steps to publish a new agent version
-1. Build the new agent `.deb` and place it in the server's dist dir (`SPIRE_DIST_DIR`, default
-   `dist/`). Confirm it is reachable at `GET /dist/<file>.deb`.
+#### 11.4.1 Generate a release key (`spire-release keygen`)
+Run on a secure host — ideally offline or an HSM-backed signer — NOT the control plane:
+
+```sh
+spire-release keygen -out /secure/release-keys
+# prints: key_id: <id>, private key: /secure/release-keys/release.key (mode 0600),
+#         public key:  /secure/release-keys/<id>.pub
+```
+
+- The **private key** (`*.key`, PKCS#8 PEM, mode 0600) never leaves the signing host and is
+  never placed on the control plane. `spire-release` refuses to use a private key that is
+  group- or world-readable.
+- The **public key** (`<key_id>.pub`) is a trust anchor. Copy it into the agent source tree at
+  `packaging/release-keys/<key_id>.pub` and build a new agent package; it installs to
+  `/usr/share/spire/release-keys/<key_id>.pub` and the agent pins it. Replace the sample key
+  shipped in the repo with your own before production.
+
+#### 11.4.2 Sign a release (`spire-release sign`)
+After building the `.deb`:
+
+```sh
+spire-release sign -key /secure/release-keys/release.key -deb dist/spire-agent_0.2.0_amd64.deb
+# writes dist/spire-agent_0.2.0_amd64.deb.manifest.json (default 90-day validity)
+# or: make sign-deb RELEASE_KEY=/secure/release-keys/release.key VERSION=0.2.0
+```
+
+Place the `.deb` AND its `.manifest.json` together in the server's dist dir. The server serves
+the manifest at `GET /dist/<deb>.manifest.json` and advertises it automatically; it never needs
+the private key. Verify before publishing:
+
+```sh
+spire-release verify -deb dist/spire-agent_0.2.0_amd64.deb -keys packaging/release-keys
+```
+
+The agent's pre-install checks, any of which refuses the update: valid signature under a pinned
+key; known `key_id`; not expired; package/arch match; version equals the directive target and is
+strictly greater than the running version (no downgrade); downloaded bytes' sha256+size equal the
+SIGNED manifest; and the server-advertised sha/size equal the manifest.
+
+#### 11.4.3 Key rotation
+Multiple keys may be pinned at once. Keygen a new key, add its `.pub` to
+`packaging/release-keys/` and ship a new agent package so fielded agents trust BOTH keys, then
+start signing with the new key. Once every agent runs a package that trusts the new key, remove
+the old `.pub` and ship again.
+
+#### 11.4.4 Unsigned-to-signed transition (existing unsigned agents)
+Agents that predate signing cannot verify a manifest. To migrate without stranding them:
+
+1. Deploy a new agent package that **pins your release key** and ships with
+   `require_signed_updates: false` in `/etc/spire/config.yaml` (or set
+   `SPIRE_AGENT_REQUIRE_SIGNED_UPDATES=false`). While false, an unsigned update still installs
+   but the agent logs a loud SECURITY WARNING on every unsigned update.
+2. Start publishing signed manifests beside every `.deb` (step 11.4.2).
+3. Once the fleet is on the signing-aware agent and all releases are signed, flip
+   `require_signed_updates` back to **true** (the default for fresh installs) and ship once
+   more. From then on, unsigned or mis-signed updates are refused.
+
+SpireUEM can also publish a GPG-signed APT repository with `reprepro` (`make init-repo`, then
+`make publish-deb`); the signed-manifest path and the signed APT repo are complementary.
+Regardless of source, protect the control-plane channel with built-in TLS or a trusted proxy.
+
+### 11.5 Automatic rollback
+Before installing a new agent, `spired` stages the package for the running version under
+`/var/lib/spire/updates/previous/`, copies the running binary to
+`/var/lib/spire/updates/rollback/spired`, clears any stale health marker, and arms an
+**independent** rollback trigger (`systemd-run` transient timer, falling back to the packaged
+`spire-agent-rollback.timer`). The trigger runs that staged OLD binary with `--rollback-check`, so
+it does not depend on the new binary being healthy. The new agent writes `/var/lib/spire/updates/health-ok.json`
+only after it starts and completes one successful check-in. If that marker is absent when the
+deadline passes (default 10 minutes), the trigger reinstalls the staged previous `.deb`. The
+restored agent then reports `ROLLED_BACK` exactly once on its next check-in, which shows on the
+device page and raises an `agent_update_failed` alert. The agent will not retry that version
+for 24 hours; publish a fixed version instead.
+
+The agent keeps a copy of each package it installs under `/var/lib/spire/updates/installed/` to
+use as the next rollback source. An agent first installed by the bootstrap's direct `.deb`
+download has no such copy, so its **first** self-update installs without automatic rollback and
+reports `(no automatic rollback: previous package unavailable)`. Agents installed from the signed
+APT repository can use the exact-version package in `/var/cache/apt/archives/` if apt has not
+cleaned it. Test a new version on the `CANARY` ring before wider rollout.
+
+To exercise/verify rollback on an endpoint:
+
+```sh
+systemctl status spire-agent-rollback.timer spire-agent-rollback.service
+ls -l /var/lib/spire/updates /var/lib/spire/updates/previous
+journalctl -u spired | grep -i 'rollback\|health marker\|self-update'
+```
+
+### 11.6 Operator steps to publish a new agent version
+1. Build the new agent `.deb`, sign it (11.4.2), and place both the `.deb` and its
+   `.manifest.json` in the server's dist dir (`SPIRE_DIST_DIR`, default `dist/`). Confirm both
+   are reachable at `GET /dist/<file>.deb` and `GET /dist/<file>.deb.manifest.json`.
 2. In **Settings → Agent Rollout**, set the target version for the ring(s) you want to roll to
    (start with `CANARY`, promote outward). Optionally raise `rollout.minimum_version`.
-3. Watch the version badges on `/admin/devices` advance as agents check in and self-update;
-   failed updates surface on the device drawer with their error message.
+3. Watch the version badges on `/admin/devices` advance as agents check in and self-update.
+   `FAILED` (including a signature refusal) and `ROLLED_BACK` surface on the device drawer with
+   their message and raise alerts.
 
-**Limits / out of scope:** no artifact signing (unsigned repo, see §7.4); the agent updates
-to exactly the ring target (no partial/percentage rollout within a ring beyond ring
-membership); `dev` builds are intentionally never touched.
+**Limits / out of scope:** release public keys are pinned at package-build time, so trusting a
+new signing key requires shipping a new package (there is no in-band key-distribution channel,
+by design); the agent updates to exactly the ring target, with no percentage rollout within a
+ring beyond ring membership; `dev` builds are intentionally never touched.
 ## 12. Lost-Device Actions (Lock / Mark Lost / Crypto-Erase Wipe / Recovery-Key Rotation)
 
 All four actions are driven from the device detail page on `/admin/devices` and are delivered
@@ -909,10 +1056,7 @@ read-only and not scoped here. A user with an empty tag set is unrestricted.
 
 - Set a user's allowed tags in **Settings → Users** (edit a user), or via the user API
   (`allowed_tags` on create/update).
-- Enforcement is **server-side on every device-targeted admin route** (device detail,
-  commands, terminal, remote-assist, reboot, patch, scans, approve/revoke, tags, ring, LUKS
-  reveal), applied in one central middleware so a new device route cannot silently bypass it.
-  A regression test enumerates the device routes and fails if one is not scoped.
+- Enforcement is **server-side on every device-targeted admin route**. URL-based device routes share central middleware; handlers whose device ID comes from a request body or query parameter perform an explicit scope check. A regression test enumerates the device routes and fails if one is not scoped.
 - An out-of-scope device returns **404** (its existence is hidden from the operator), not 403.
 - A scoped user **cannot edit a device's tags to remove it from their own scope** (tag
   escape): the new tag set must still contain at least one of their allowed tags.
@@ -925,3 +1069,93 @@ read-only and not scoped here. A user with an empty tag set is unrestricted.
   of their devices, plus their own actions. Other admins' changes to policies, settings and
   out-of-scope devices are hidden, and so are the raw RFC 5424 syslog frames, which cannot be
   filtered by device. Use an AUDITOR or SUPER_ADMIN account for the full log.
+
+## 15. TPM PCR Baselines & Attestation Enforcement
+
+SpireUEM compares each verified TPM quote against administrator-approved PCR baselines and
+can withhold sealed network-profile secrets from untrusted devices. This section is the
+operational runbook; the concepts are in `ARCHITECTURE.md` §4 and `ADMIN_GUIDE.md` §10.
+
+### 15.1 Data model and tables
+
+- `tpm_pcr_baselines` — approved SHA-256 PCR sets (PCRs 0, 2, 4, 7), optional `scope_tags` /
+  `scope_ring`, `active`, `version`, `supersedes`. A trigger (`tpm_pcr_baselines_immutable`)
+  rejects any UPDATE except toggling `active`, so baselines are append-only versions.
+- `device_tpm_baseline_exceptions` — per-device exceptions (`reason`, `expires_at`).
+- `device_attestation_results` — bounded per-device history (newest 50), carrying the status,
+  matching `baseline_id`, and `mismatched_pcrs`.
+- Settings (`system_settings`, category `crypto`): `crypto.attestation_enforcement`
+  (`off` | `warn` | `enforce`, default `off`) and `crypto.attestation_max_age_hours`
+  (default 24). Migrations: `000040` (tables + settings), `000041` (enum values
+  `BASELINE_MATCH` / `BASELINE_MISMATCH` + the `baseline_id` / `mismatched_pcrs` columns on
+  `device_tpm_attestation`).
+
+### 15.2 Approving a baseline after a firmware or bootloader update
+
+A legitimate firmware, option-ROM, bootloader, shim, or Secure Boot dbx update changes PCRs
+0/2/4/7. Every affected device will flip to `BASELINE_MISMATCH` and (under `enforce`) lose its
+sealed secrets. Procedure:
+
+1. Roll the firmware/bootloader change to a **small pilot ring first** (e.g. CANARY).
+2. Let the pilot devices re-attest (force a check-in from the device page if needed). Confirm
+   their new measurements are consistent across identical hardware/firmware.
+3. On one representative, up-to-date device, open the device → attestation panel → **Approve
+   current measurements**. Scope the new baseline to the tags/ring of the affected fleet
+   segment (do not approve fleet-wide from one model unless the fleet is homogeneous).
+4. This creates a **new version** that supersedes and deactivates the prior baseline. Devices
+   matching the new values return to `BASELINE_MATCH` on their next quote.
+5. Roll the firmware change to the rest of the fleet; widen or add baselines per hardware
+   class as needed. Keep baselines scoped by hardware tag when fleets are heterogeneous — one
+   fleet-wide baseline cannot match two different firmware images.
+
+Never hand-edit a baseline row in SQL to "fix" PCR values: the immutability trigger blocks it,
+and it would bypass the audit trail. Always create a new version.
+
+### 15.3 Granting and expiring exceptions
+
+For a device that legitimately cannot match yet (awaiting a firmware re-approval, hardware
+RMA, lab machine), grant a time-boxed exception: device → attestation panel → **Grant
+exception**. A reason is mandatory and the expiry is capped at 30 days. An unexpired exception
+makes the device trusted regardless of its attestation result; it expires automatically — there
+is no silent permanent bypass. Grant, expiry window, and the result are written to the audit
+log (`ATTESTATION_EXCEPTION_GRANT`). Prefer approving a correct baseline over stacking
+exceptions; exceptions are for the transition, not the steady state.
+
+### 15.4 Rolling out enforcement: off → warn → enforce
+
+Enforcement gates only **sealed network-profile secrets** (Wi-Fi PSK, 802.1X password,
+WireGuard PSK). Roll it out gradually (PCR Baselines page, SUPER_ADMIN):
+
+1. **off (baseline the fleet).** Create baselines and let devices attest. Watch the dashboard
+   **Attestation Untrusted** count and each device's result until mismatches are explained
+   (missing baseline, stale result, genuinely drifted device).
+2. **warn.** Secrets are still delivered, but every untrusted device now raises an attestation
+   alert at check-in. Use this to find the long tail — devices that never re-attest, no-TPM
+   devices, devices needing a baseline you have not approved — without breaking connectivity.
+   Tune `attestation_max_age_hours` so a normally-checking-in device never goes stale between
+   check-ins.
+3. **enforce.** Untrusted devices stop receiving sealed network-profile secrets. The carrying
+   `NETWORK_PROFILE` policies arrive marked withheld; the agent reports them NON_COMPLIANT and
+   does **not** write a blank keyfile or remove an already-working profile. A device that is
+   already connected keeps its existing keyfile; the withhold bites when a profile must be
+   (re)written. Before flipping to enforce, drive the untrusted count to zero (or cover the
+   remainder with scoped exceptions).
+
+   Enforcement withholds only sealed secrets. An EAP-TLS client private key is not sealed and
+   is still delivered to an untrusted device. Until it is, prefer password-based EAP or
+   WireGuard for networks that must depend on attestation.
+
+**Rollback.** Set enforcement back to `warn` or `off` at any time; the next check-in of each
+device delivers secrets again. No data is lost — withholding only omits plaintext from the
+check-in response; the sealed envelopes remain in the policy payload at rest.
+
+### 15.5 Verification
+
+- Device shows `BASELINE_MATCH` and **TRUSTED** in its attestation panel after a good quote.
+- Forcing a mismatch (e.g. a deliberately wrong baseline) flips the device to
+  `BASELINE_MISMATCH`, lists the differing PCRs, and raises an alert.
+- Under `enforce`, an untrusted device's check-in response carries the NETWORK_PROFILE policy
+  with `"secrets_withheld": true` and no ciphertext; the agent's compliance report shows the
+  policy NON_COMPLIANT with a withhold reason.
+- The dashboard **Attestation Untrusted** count matches the number of untrusted in-scope
+  devices for your tag scope.
