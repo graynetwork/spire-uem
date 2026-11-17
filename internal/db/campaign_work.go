@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"time"
@@ -92,6 +93,13 @@ func (r *Repository) ClaimCampaignDispatch(ctx context.Context, campaignID, devi
 	return work, true, nil
 }
 
+// ErrCampaignWorkNotDispatched means a device reported a result for campaign work that is not
+// currently dispatched to it. The report is refused.
+var ErrCampaignWorkNotDispatched = errors.New("campaign work is not dispatched to this device")
+
+// maxReportedPackages bounds the per-report package list stored for one device.
+const maxReportedPackages = 500
+
 // RecordCampaignResult records a device's reported result: it replaces the package result
 // rows, captures previous versions for rollback, sets the work state and failure class, and
 // stamps resolved_at on success. prevVersions maps package -> version before upgrade.
@@ -101,6 +109,27 @@ func (r *Repository) RecordCampaignResult(ctx context.Context, campaignID, devic
 		return fmt.Errorf("begin record result: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Keep only well-formed package entries, at most maxReportedPackages. Versions that are
+	// not valid Debian versions are dropped rather than stored, because previous_versions
+	// later drives rollback.
+	clean := res.Packages[:0:0]
+	for _, p := range res.Packages {
+		if len(clean) >= maxReportedPackages {
+			break
+		}
+		if !campaign.ValidPackageName(p.Package) {
+			continue
+		}
+		if p.FromVersion != "" && !campaign.ValidVersion(p.FromVersion) {
+			p.FromVersion = ""
+		}
+		if p.ToVersion != "" && !campaign.ValidVersion(p.ToVersion) {
+			p.ToVersion = ""
+		}
+		clean = append(clean, p)
+	}
+	res.Packages = clean
 
 	prev := map[string]string{}
 	for _, p := range res.Packages {
@@ -114,14 +143,22 @@ func (r *Repository) RecordCampaignResult(ctx context.Context, campaignID, devic
 	if state == campaign.WorkSucceeded {
 		resolvedClause = ", resolved_at = NOW()"
 	}
-	if _, err := tx.Exec(ctx, `
+	// Only work that is currently DISPATCHED to this device can take a result. A report for
+	// work that was never sent, was removed or excluded, or already finished is refused, so a
+	// device cannot mark itself succeeded (or failed) outside a real run; results feed stage
+	// promotion and halting.
+	tag, err := tx.Exec(ctx, `
 		UPDATE campaign_device_work
 		SET state=$3, failure_class=$4, reboot_required=$5,
 		    previous_versions = previous_versions || $6::jsonb,
 		    updated_at=NOW()`+resolvedClause+`
-		WHERE campaign_id=$1 AND device_id=$2`,
-		campaignID, deviceID, string(state), string(class), res.RebootRequired, string(prevJSON)); err != nil {
+		WHERE campaign_id=$1 AND device_id=$2 AND state='DISPATCHED'`,
+		campaignID, deviceID, string(state), string(class), res.RebootRequired, string(prevJSON))
+	if err != nil {
 		return fmt.Errorf("update work result: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCampaignWorkNotDispatched
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM campaign_package_results WHERE campaign_id=$1 AND device_id=$2`, campaignID, deviceID); err != nil {
 		return fmt.Errorf("clear package results: %w", err)

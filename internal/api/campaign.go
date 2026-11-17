@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"github.com/spire-uem/spire-uem/internal/db"
 	"net/http"
 	"strings"
 	"time"
@@ -51,6 +53,7 @@ func (h *Handler) ReportCampaignResult(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized or unapproved device"})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxLargeBodyBytes)
 	var res campaign.DeviceRunResult
 	if err := json.NewDecoder(r.Body).Decode(&res); err != nil || strings.TrimSpace(res.CampaignID) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "campaign_id and result required"})
@@ -58,6 +61,10 @@ func (h *Handler) ReportCampaignResult(w http.ResponseWriter, r *http.Request) {
 	}
 	state, class := engine.ClassifyDeviceResult(res)
 	if err := h.repo.RecordCampaignResult(r.Context(), strings.TrimSpace(res.CampaignID), dev.ID, res, state, class); err != nil {
+		if errors.Is(err, db.ErrCampaignWorkNotDispatched) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "no dispatched campaign work for this device"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record campaign result"})
 		return
 	}
