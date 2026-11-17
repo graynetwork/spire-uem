@@ -17,7 +17,8 @@ const maxCVEUploadBytes = 512 * 1024 * 1024
 // VulnerabilitiesPage renders /admin/vulnerabilities: the fleet CVE list (CVE -> affected
 // host count) plus feed freshness.
 func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
-	cves, err := h.repo.ListFleetCVEsScoped(r.Context(), h.deviceScope(r))
+	groupFilter := strings.TrimSpace(r.URL.Query().Get("group"))
+	cves, err := h.repo.ListFleetCVEsScopedInGroup(r.Context(), h.deviceScope(r), groupFilter)
 	if err != nil {
 		log.Printf("[web] list fleet CVEs: %v", err)
 		http.Error(w, "Failed to load vulnerabilities", http.StatusInternalServerError)
@@ -34,6 +35,7 @@ func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	scope := h.deviceScope(r)
 	feedCfg := cvefeed.LoadConfig(r.Context(), h.repo)
+	allGroups, _ := h.repo.ListGroups(r.Context(), scope)
 
 	data := map[string]any{
 		"Title":            "Fleet Vulnerabilities",
@@ -46,6 +48,8 @@ func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
 		"TotalHostsCount":  summary.TotalDevices,
 		"Scoped":           scope.Scoped,
 		"ScopeTags":        scope.Tags,
+		"Groups":           allGroups,
+		"FilterGroup":      groupFilter,
 		"AutoImport":       feedCfg.Enabled,
 		"AutoImportEnv":    feedCfg.EnabledFromEnv,
 		"CanSetAutoImport": AdminRoleFromContext(r.Context()) == types.RoleSuperAdmin,

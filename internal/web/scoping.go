@@ -183,6 +183,22 @@ func denyOutOfScope(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `<!DOCTYPE html><html><body style="background:#0a0e17;color:#f87171;font-family:sans-serif;padding:40px;text-align:center;"><h2>404 Not Found</h2><p>This device does not exist or is outside your assigned tag scope.</p><p><a href="/admin/devices" style="color:#60a5fa;">Return to Devices</a></p></body></html>`)
 }
 
+// GroupEditAllowed is the single authority deciding whether an admin may edit or delete a
+// dynamic device group. An unscoped admin (SUPER_ADMIN, AUDITOR, or an operator/security
+// admin with no allowed_tags) may edit any group. A tag-scoped admin may edit ONLY a group
+// that was itself created by a scoped admin whose scope overlaps theirs; they may never edit
+// a group created by an unscoped admin. This keeps a scoped admin from altering fleet-wide
+// group definitions while letting peers in the same tag scope collaborate.
+func GroupEditAllowed(u *types.AdminUser, g *types.DeviceGroup) bool {
+	if !userIsTagScoped(u) {
+		return true
+	}
+	if g == nil || !g.CreatedByScoped() {
+		return false
+	}
+	return tagsIntersect(g.CreatorScopedTags, u.AllowedTags)
+}
+
 // ScopedUpdatedTagsAllowed guards tag edits so a scoped operator cannot move a device out of
 // their own scope (tag escape). A scoped operator may set any tags as long as the result
 // still carries at least one of their allowed tags; an empty or out-of-scope result is

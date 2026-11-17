@@ -1,0 +1,144 @@
+{{define "groups_content"}}
+<div class="space-y-6">
+    <div class="flex items-start justify-between">
+        <div>
+            <h1 class="text-lg font-semibold text-white">Device Groups &amp; Saved Queries</h1>
+            <p class="text-[11px] text-slate-500 mt-0.5">A group is a dynamic set of devices defined by an optional rule plus static include/exclude lists. Membership = (rule matches OR included) AND NOT excluded, recomputed after each check-in, on save, and every few minutes. <strong>target</strong> groups can be used to target policies; <strong>query</strong> groups are saved fleet queries (view/export only).</p>
+        </div>
+    </div>
+
+    {{if .CanEdit}}
+    <!-- Create / edit group -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4">
+        <h2 class="text-sm font-semibold text-white mb-2">New group</h2>
+        <form id="group-form" method="POST" action="/admin/groups" class="space-y-3">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Name</label>
+                    <input name="name" required maxlength="128" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white" placeholder="e.g. Stale checkins">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Kind</label>
+                    <select name="kind" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                        <option value="target">target (usable for policy assignment)</option>
+                        <option value="query">query (saved fleet query, view/export only)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Description</label>
+                    <input name="description" maxlength="512" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                </div>
+            </div>
+            <div>
+                <label class="block text-[11px] text-slate-400 mb-1">Rule (JSON) — leave blank for a static include/exclude list</label>
+                <textarea id="group-rule" name="rule" rows="6" spellcheck="false" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs font-mono text-white" placeholder='{"all":[{"field":"device.status","op":"eq","value":"APPROVED"},{"field":"device.last_checkin_at","op":"older_than","value":"7d"}]}'></textarea>
+                <p class="text-[10px] text-slate-500 mt-1">Allowed fields: {{range $i, $f := .Fields}}{{if $i}}, {{end}}<code>{{$f.Name}}</code>{{end}}, and <code>attr.&lt;key&gt;</code>. Operators depend on field type. Combinators: <code>all</code>, <code>any</code>, <code>not</code>.</p>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Always include (device IDs, comma-separated)</label>
+                    <input name="include_device_ids" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs font-mono text-white">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Always exclude (device IDs, comma-separated)</label>
+                    <input name="exclude_device_ids" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs font-mono text-white">
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button type="button" onclick="previewGroup()" class="px-3 py-1.5 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600 text-white">Preview</button>
+                <button type="submit" class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white">Create group</button>
+                <span id="group-preview-result" class="text-[11px] text-slate-400"></span>
+            </div>
+        </form>
+        <div id="group-preview-list" class="mt-2 text-[11px] text-slate-400 font-mono"></div>
+    </div>
+    {{end}}
+
+    <!-- Existing groups -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md">
+        <table class="w-full text-xs">
+            <thead>
+                <tr class="text-left text-slate-500 border-b border-[#1a2234]">
+                    <th class="px-3 py-2">Name</th>
+                    <th class="px-3 py-2">Kind</th>
+                    <th class="px-3 py-2">Members</th>
+                    <th class="px-3 py-2">Rule</th>
+                    <th class="px-3 py-2">Status</th>
+                    <th class="px-3 py-2"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Groups}}
+                <tr class="border-b border-[#131a28]">
+                    <td class="px-3 py-2 text-white">
+                        {{.Name}}
+                        {{if .Description}}<div class="text-[10px] text-slate-500">{{.Description}}</div>{{end}}
+                    </td>
+                    <td class="px-3 py-2">
+                        {{if eq .Kind "target"}}<span class="px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300">target</span>{{else}}<span class="px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-300">query</span>{{end}}
+                    </td>
+                    <td class="px-3 py-2 text-slate-300">{{.MemberCount}}</td>
+                    <td class="px-3 py-2">{{if .Rule}}<span class="text-slate-400">rule</span>{{else}}<span class="text-slate-600">static</span>{{end}}</td>
+                    <td class="px-3 py-2">
+                        {{if .LastRuleError}}
+                            <span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300" title="{{.LastRuleError}}">rule error — last membership kept</span>
+                        {{else}}
+                            <span class="text-emerald-400">ok</span>
+                        {{end}}
+                    </td>
+                    <td class="px-3 py-2 text-right whitespace-nowrap">
+                        <a href="/admin/groups/{{.ID}}/members" class="text-blue-400 hover:underline">members</a>
+                        <a href="/admin/groups/{{.ID}}/history" class="ml-2 text-blue-400 hover:underline">history</a>
+                        {{if $.CanEdit}}
+                        <form method="POST" action="/admin/groups/{{.ID}}/delete" class="inline ml-2" onsubmit="return confirm('Delete group {{.Name}}? This is refused if any policy targets it.');">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="text-rose-400 hover:underline">delete</button>
+                        </form>
+                        {{end}}
+                    </td>
+                </tr>
+                {{else}}
+                <tr><td colspan="6" class="px-3 py-4 text-center text-slate-500">No groups yet.</td></tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+function previewGroup() {
+    var form = document.getElementById('group-form');
+    var ruleText = document.getElementById('group-rule').value.trim();
+    var payload = {
+        include_device_ids: splitCSV(form.include_device_ids.value),
+        exclude_device_ids: splitCSV(form.exclude_device_ids.value)
+    };
+    if (ruleText) {
+        try { payload.rule = JSON.parse(ruleText); }
+        catch (e) { setPreview('Rule is not valid JSON: ' + e.message, true); return; }
+    }
+    var csrf = form.csrf_token.value;
+    fetch('/admin/groups/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+        body: JSON.stringify(payload)
+    }).then(function(r) { return r.json().then(function(j){ return {ok: r.ok, body: j}; }); })
+      .then(function(res) {
+        if (!res.ok) { setPreview((res.body && res.body.message) || 'Invalid rule', true); document.getElementById('group-preview-list').textContent=''; return; }
+        setPreview(res.body.count + ' device(s) match', false);
+        var list = (res.body.devices || []).map(function(d){ return d.hostname; }).join(', ');
+        document.getElementById('group-preview-list').textContent = list;
+      }).catch(function(e){ setPreview('Preview failed: ' + e, true); });
+}
+function splitCSV(s) {
+    if (!s) return [];
+    return s.split(',').map(function(x){return x.trim();}).filter(function(x){return x.length>0;});
+}
+function setPreview(msg, isErr) {
+    var el = document.getElementById('group-preview-result');
+    el.textContent = msg;
+    el.className = 'text-[11px] ' + (isErr ? 'text-rose-400' : 'text-emerald-400');
+}
+</script>
+{{end}}

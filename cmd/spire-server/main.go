@@ -22,6 +22,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
+	"github.com/spire-uem/spire-uem/internal/groupsync"
 	"github.com/spire-uem/spire-uem/internal/web"
 )
 
@@ -194,6 +195,11 @@ func main() {
 	// Debian Security Tracker CVE feed importer: periodic online import + fleet rematch.
 	// Honours cve.feed_* settings and SPIRE_CVE_FEED_URL / _FILE / _INTERVAL / _ENABLED.
 	go cvefeed.New(repo).Schedule(ctx)
+
+	// Dynamic device-group membership: periodic materialisation (default every 5 minutes).
+	// Per-device recompute also runs on each check-in; this loop catches time-based rules
+	// and offline devices. Advisory-locked per group, so both instances may run it safely.
+	go groupsync.New(repo).Run(ctx)
 
 	<-ctx.Done()
 	log.Printf("[spire-server] shutting down...")

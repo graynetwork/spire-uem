@@ -271,6 +271,15 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[api] warning: CVE rematch failed for device %s: %v", dev.ID, err)
 		}
 	}
+
+	// Recompute this device's dynamic-group membership from its freshly reported state.
+	// Best-effort and AFTER inventory/CVE are updated so rules over those fields see current
+	// values; a failure must not fail the check-in. Assignment then follows at this same
+	// response (GetActivePoliciesForDevice / GetRevokedPoliciesForDevice read the refreshed
+	// group_memberships below).
+	if err := h.repo.RecomputeGroupsForDevice(r.Context(), dev.ID); err != nil {
+		log.Printf("[api] warning: group membership recompute failed for device %s: %v", dev.ID, err)
+	}
 	// Agent version tracking + self-update result (best-effort; never blocks check-in).
 	h.handleAgentVersionReporting(r, dev, &req)
 

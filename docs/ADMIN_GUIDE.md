@@ -94,6 +94,71 @@ The Applications page supports Debian package policies, Flathub applications, an
 
 Uploaded bundles are stored under `SPIRE_BUNDLE_STORAGE_DIR`, defaulting to `/var/lib/spire/storage/bundles`. The agent downloads the bundle, verifies its SHA-256 digest, and installs it system-wide.
 
+## 4a. Device groups and saved fleet queries
+
+The **Groups** page defines dynamic device groups and saved fleet queries. Viewing is open to
+`AUDITOR`+; creating, editing and deleting require `SECURITY_ADMIN`+.
+
+A group has:
+
+- a **name** and optional **description**;
+- a **kind** — `target` (the group can be used to target policies and applications) or
+  `query` (a saved fleet query, usable only for viewing and export);
+- an optional **rule** (JSON); and
+- static **include** and **exclude** device-ID lists.
+
+Membership is `(rule matches OR device is included) AND device is NOT excluded`. The exclude
+list wins over both the rule and the include list.
+
+**Writing a rule.** A rule is a JSON tree of `all` / `any` / `not` combinators and leaf
+conditions `{"field":..., "op":..., "value":...}`, capped at 6 levels deep and 64 leaves.
+Example — approved devices that have not checked in for a week and have open high-urgency CVEs:
+
+```json
+{"all":[
+  {"field":"device.status","op":"eq","value":"APPROVED"},
+  {"field":"device.last_checkin_at","op":"older_than","value":"7d"},
+  {"field":"cve.open_high_or_critical","op":"gt","value":0}
+]}
+```
+
+Selectable fields are a fixed list: the device columns (`device.hostname`, `device.status`,
+`device.tags`, `device.patch_ring`, `device.agent_version`, `device.last_checkin_at`,
+`device.attestation_status`, `device.os_name`, `device.kernel_version`,
+`device.release_codename`, `device.pending_updates`, `device.security_updates`,
+`device.reboot_required`, `device.ws_connected`, `device.compliance`), CVE state (`cve.id`,
+`cve.open_high_or_critical`) and `attr.<key>` for any device attribute. Operators depend on
+the field's type; `device.tags` uses `contains_any` / `contains_all`, datetimes use
+`before` / `after` / `older_than` / `newer_than` (durations like `7d`, `12h`), and any field
+supports `exists` / `missing`. An unknown field, an operator that does not fit the type, an
+over-deep or over-wide tree, or a `matches` pattern Postgres cannot compile is rejected with a
+clear error before the group is saved.
+
+**Preview** evaluates the current rule and shows the match count and the first 50 hostnames
+before you save, scoped to your own tags if you are a scoped admin.
+
+**Using a group for targeting.** On the policy form, add one or more target groups. A policy
+with target groups is applied to a device only when its existing tag/ring rules match AND the
+device is a member of at least one of the listed groups. A policy with no groups is unchanged
+from before this feature. When a device gains or loses membership, assignment follows at its
+next check-in; a device that leaves every targeted group has the policy revoked through the
+normal cleanup path. A group that is referenced by a policy cannot be deleted — the server
+lists the referencing policies instead.
+
+**Filtering.** The Devices list, the Vulnerabilities page and the compliance export each
+accept a `group` filter to narrow their results to a group's members (scoped to your tags).
+
+**Tag scoping.** If your account is tag-scoped, every group you create carries an implicit
+"device has one of my tags" filter, you see only in-scope members and counts, and you can edit
+only groups created by a scoped admin whose scope overlaps yours — never a group created by an
+unscoped administrator.
+
+**Recompute and reliability.** Membership is recomputed for a device when it checks in, for a
+group when you save it, and for all groups on a periodic sweep (default every 5 minutes). The
+group page records enter/leave history with a reason. If a group's rule fails to evaluate, the
+last good membership is kept (the group is never silently emptied) and the error is shown on
+the group's row.
+
 ## 5. OIDC
 
 Under **Settings → Single Sign-On**, configure:

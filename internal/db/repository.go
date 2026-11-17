@@ -831,6 +831,9 @@ func (r *Repository) GetActivePoliciesForDevice(ctx context.Context, deviceID st
 		WHERE p.is_active = true
 		  AND (p.target_tags = '{}' OR p.target_tags && d.tags)
 		  AND (p.target_ring IS NULL OR p.target_ring = d.patch_ring)
+		  AND (COALESCE(p.target_group_ids, '{}') = '{}'
+		       OR EXISTS (SELECT 1 FROM group_memberships gm
+		                  WHERE gm.device_id = d.id AND gm.group_id = ANY(p.target_group_ids)))
 		  AND (
 		      (p.is_self_service = false AND COALESCE(p.assignment_type, 'REQUIRED') = 'REQUIRED')
 		      OR EXISTS (
@@ -913,6 +916,9 @@ func (r *Repository) GetRevokedPoliciesForDevice(ctx context.Context, deviceID s
 		      p.is_active = false
 		      OR NOT (p.target_tags = '{}' OR p.target_tags && d.tags)
 		      OR NOT (p.target_ring IS NULL OR p.target_ring = d.patch_ring)
+		      OR NOT (COALESCE(p.target_group_ids, '{}') = '{}'
+		              OR EXISTS (SELECT 1 FROM group_memberships gm
+		                         WHERE gm.device_id = d.id AND gm.group_id = ANY(p.target_group_ids)))
 		  )
 		ORDER BY p.created_at ASC
 	`
@@ -955,6 +961,9 @@ func (r *Repository) GetDevicePolicyDetails(ctx context.Context, deviceID string
 			AND p.is_self_service = false
 			AND (p.target_tags = '{}' OR p.target_tags && d.tags)
 			AND (p.target_ring IS NULL OR p.target_ring = d.patch_ring)
+			AND (COALESCE(p.target_group_ids, '{}') = '{}'
+			     OR EXISTS (SELECT 1 FROM group_memberships gm
+			                WHERE gm.device_id = d.id AND gm.group_id = ANY(p.target_group_ids)))
 		)
 		   OR dp.id IS NOT NULL
 		ORDER BY p.created_at ASC
@@ -1103,7 +1112,7 @@ func (r *Repository) RecordComplianceReports(ctx context.Context, deviceID strin
 	return nil
 }
 
-const policySelectColumns = `id, name, COALESCE(description, ''), policy_type, payload, target_tags, target_ring, patch_window_id, requires_reboot, is_self_service, COALESCE(assignment_type, 'REQUIRED'), is_active, version, created_at, updated_at`
+const policySelectColumns = `id, name, COALESCE(description, ''), policy_type, payload, target_tags, target_ring, COALESCE(target_group_ids, '{}'), patch_window_id, requires_reboot, is_self_service, COALESCE(assignment_type, 'REQUIRED'), is_active, version, created_at, updated_at`
 
 func scanPolicy(row pgx.Row) (*types.Policy, error) {
 	var p types.Policy
@@ -1115,6 +1124,7 @@ func scanPolicy(row pgx.Row) (*types.Policy, error) {
 		&p.Payload,
 		&p.TargetTags,
 		&p.TargetRing,
+		&p.TargetGroupIDs,
 		&p.PatchWindowID,
 		&p.RequiresReboot,
 		&p.IsSelfService,
@@ -1129,6 +1139,9 @@ func scanPolicy(row pgx.Row) (*types.Policy, error) {
 	}
 	if p.TargetTags == nil {
 		p.TargetTags = []string{}
+	}
+	if p.TargetGroupIDs == nil {
+		p.TargetGroupIDs = []string{}
 	}
 	if p.AssignmentType == "" {
 		if p.IsSelfService {
@@ -2798,12 +2811,18 @@ func (r *Repository) StagePolicyForTargetedDevices(ctx context.Context, pol *typ
 		WHERE d.status = 'APPROVED'
 		  AND ($1::text[] = '{}' OR $1::text[] && d.tags)
 		  AND ($2::deployment_ring IS NULL OR $2::deployment_ring = d.patch_ring)
+		  AND ($3::uuid[] = '{}' OR EXISTS (SELECT 1 FROM group_memberships gm
+		                                    WHERE gm.device_id = d.id AND gm.group_id = ANY($3::uuid[])))
 	`
 	tags := pol.TargetTags
 	if tags == nil {
 		tags = []string{}
 	}
-	rows, err := r.pool.Query(ctx, query, tags, pol.TargetRing)
+	groups := pol.TargetGroupIDs
+	if groups == nil {
+		groups = []string{}
+	}
+	rows, err := r.pool.Query(ctx, query, tags, pol.TargetRing, groups)
 	if err != nil {
 		return nil, fmt.Errorf("query targeted devices for policy %s: %w", pol.ID, err)
 	}
