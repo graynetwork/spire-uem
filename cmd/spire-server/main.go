@@ -138,6 +138,8 @@ func main() {
 	wfStore := repo.WorkflowStore()
 	wfEngine := workflows.NewEngine(wfStore, workflows.NewRegistry(), workflows.DefaultConfig())
 	repo.NewWorkflowActions(alertMgr, wfEngine.Config().QuarantineTag).RegisterBuiltins(wfEngine.Registry())
+	// Patch campaigns join workflows through the action registry (start_campaign).
+	repo.RegisterCampaignWorkflowAction(wfEngine.Registry())
 	// Forward offline-device detections from the alerts ticker into the workflow event log.
 	alertMgr.SetOfflineHook(func(c context.Context, deviceID, hostname string, minutes int) {
 		repo.EmitEvent(c, workflows.EventDeviceOffline, deviceID,

@@ -361,7 +361,9 @@ A workflow has:
 - **`then` / `else` actions** — any of: add tag, remove tag, set ring, add the device to / remove
   it from a group's static include list, run a library script version (with parameters), send an
   alert, lock the device's sessions, quarantine (adds the configured quarantine tag, default
-  `quarantine`), or require approval.
+  `quarantine`), require approval, or start a patch campaign.
+
+**Start campaign** (`start_campaign`, `params.campaign_id`) moves a prepared DRAFT or PAUSED patch campaign to RUNNING, for example when a high-urgency CVE is matched. It never resumes a HALTED campaign (that needs an administrator) or restarts a completed or cancelled one, and a tag-scoped workflow can only start campaigns created inside its scope. The campaign's own targeting, stages and gates then decide which devices receive work.
 
 **Require-approval** pauses the run: the actions after it do not run until a `SECURITY_ADMIN`
 approves (from the pending-approvals list) or rejects it, or it expires (default 24h), after
