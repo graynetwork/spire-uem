@@ -235,6 +235,22 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/sensors/{id}", h.UpdateSensor)
 			r.Delete("/sensors/{id}", h.DeleteSensor)
 			r.Post("/sensors/{id}/delete", h.DeleteSensor)
+
+			// Patch campaigns (SECURITY_ADMIN+, tag-scope aware). JSON API.
+			r.Get("/campaigns", h.ListCampaigns)
+			r.Post("/campaigns", h.CreateCampaign)
+			r.Get("/campaigns/{id}", h.GetCampaign)
+			r.Get("/campaigns/{id}/export", h.ExportCampaign)
+			r.Post("/campaigns/{id}/start", h.StartCampaign)
+			r.Post("/campaigns/{id}/pause", h.PauseCampaign)
+			r.Post("/campaigns/{id}/resume", h.ResumeCampaign)
+			r.Post("/campaigns/{id}/cancel", h.CancelCampaign)
+
+			// Risk acceptances and exclusions (SECURITY_ADMIN+, tag-scope aware).
+			r.Get("/risk-acceptances", h.ListRiskAcceptances)
+			r.Post("/risk-acceptances", h.CreateRiskAcceptance)
+			r.Delete("/risk-acceptances/{id}", h.DeleteRiskAcceptance)
+			r.Post("/risk-acceptances/{id}/delete", h.DeleteRiskAcceptance)
 		})
 
 		// ------------------------------------------------------------------
