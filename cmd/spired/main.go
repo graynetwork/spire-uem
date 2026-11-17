@@ -24,6 +24,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/engine"
 	"github.com/spire-uem/spire-uem/internal/inventory"
 	"github.com/spire-uem/spire-uem/internal/ipc"
+	"github.com/spire-uem/spire-uem/internal/release"
 	"github.com/spire-uem/spire-uem/internal/types"
 	"github.com/spire-uem/spire-uem/internal/version"
 )
@@ -38,9 +39,31 @@ func main() {
 
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	once := flag.Bool("once", false, "Run a single check-in/enforcement cycle and exit")
+	rollbackCheck := flag.Bool("rollback-check", false, "Run the independent agent-update rollback check and exit (invoked by the rollback timer; does not depend on a healthy new binary)")
 	flag.Parse()
 
 	cfg := config.Load(*configPath)
+
+	// Rollback trigger entry point: reinstall the previous agent package if the just-installed
+	// one never confirmed healthy. This runs off on-disk state only, so a crash-looping new
+	// binary is still reverted. It is deliberately BEFORE enrollment/network setup.
+	if *rollbackCheck {
+		rb := engine.NewRollbacker(engine.DefaultRollbackDir, nil, nil)
+		outcome := rb.CheckAndRollback(context.Background(), engine.DefaultUpdateStatePath)
+		switch outcome.Action {
+		case engine.RollbackActionRolledBack:
+			if outcome.Err != nil {
+				log.Printf("[spired] rollback-check: reinstall FAILED: %v", outcome.Err)
+				os.Exit(1)
+			}
+			log.Printf("[spired] rollback-check: new agent did not confirm healthy; reinstalled previous package")
+		case engine.RollbackActionConfirmed:
+			log.Printf("[spired] rollback-check: update confirmed healthy; nothing to do")
+		default:
+			log.Printf("[spired] rollback-check: nothing to do (%s)", outcome.Action)
+		}
+		return
+	}
 
 	hwUUID, err := inventory.GetHardwareUUID()
 	if err != nil {
@@ -295,10 +318,29 @@ func main() {
 						log.Printf("[spired] agent self-update directive: %s -> %s (%s)", version.Version, checkinResp.AgentUpdate.TargetVersion, checkinResp.AgentUpdate.Reason)
 						updateClient := &http.Client{Timeout: 10 * time.Minute}
 						updater := engine.NewSelfUpdater(updateClient, cfg.Agent.ServerURL, version.Version, nil)
+
+						// Pin release trust anchors from the keys shipped INSIDE this package;
+						// they are never fetched from the server. require_signed defaults true.
+						trust, keyErrs := release.LoadTrustAnchors(cfg.Agent.ReleaseKeysDir)
+						for _, e := range keyErrs {
+							log.Printf("[spired] warning: release trust anchor load: %v", e)
+						}
+						engine.SetSignatureVerification(updater, trust, cfg.Agent.RequireSignedUpdates, cfg.Agent.ReleaseKeysDir)
+
+						// Arm an independent rollback trigger around the install.
+						engine.SetRollbacker(updater, engine.NewRollbacker(engine.DefaultRollbackDir, nil, nil))
+
 						if res := updater.ApplyDirective(ctx, checkinResp.AgentUpdate, token); res != nil {
 							log.Printf("[spired] agent self-update result target=%s status=%s msg=%s", res.TargetVersion, res.Status, res.Message)
 						}
 					}
+				}
+
+				// A completed check-in is the agent's "healthy" signal: if THIS process is the
+				// newly-installed agent from a recent update, confirm it so the independent
+				// rollback trigger stands down. Harmless on a normal (non-update) check-in.
+				if err := engine.NewRollbacker(engine.DefaultRollbackDir, nil, nil).ConfirmHealthy(version.Version); err != nil {
+					log.Printf("[spired] warning: could not write update health marker: %v", err)
 				}
 			}
 			return code, nil

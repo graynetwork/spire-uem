@@ -1,0 +1,15 @@
+[Unit]
+Description=SpireUEM agent-update rollback timer
+Documentation=https://github.com/spire-uem/spire-uem
+
+[Timer]
+# Fallback trigger used when systemd-run is unavailable: the agent starts this timer when it
+# arms an update, and it fires once ~10 minutes later to run the rollback check. The check is
+# a no-op unless an arm record is present and its deadline has passed, so a stray fire is
+# harmless.
+OnActiveSec=10min
+AccuracySec=30s
+RemainAfterElapse=no
+
+[Install]
+WantedBy=timers.target

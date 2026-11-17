@@ -27,6 +27,7 @@ func (h *Handler) handleAgentVersionReporting(r *http.Request, dev *types.Device
 		} else {
 			log.Printf("[api] agent update result device=%s target=%s status=%s", dev.ID, req.UpdateResult.TargetVersion, req.UpdateResult.Status)
 		}
+		h.maybeAlertAgentUpdateFailed(r.Context(), dev, req.UpdateResult)
 	}
 }
 

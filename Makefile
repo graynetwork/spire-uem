@@ -1,6 +1,6 @@
 VERSION ?= 0.1.0
 
-.PHONY: all build server agent build-hub deb release init-repo publish-deb test vet review audit install-hooks clean
+.PHONY: all build server agent build-hub deb release init-repo publish-deb test vet review audit install-hooks clean sign-deb
 
 all: build
 
@@ -12,6 +12,7 @@ server:
 agent:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spired ./cmd/spired
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spire-ctl ./cmd/spire-ctl
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spire-release ./cmd/spire-release
 
 build-hub:
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/spire-uem/spire-uem/internal/version.Version=$(VERSION)" -o bin/spire-hub ./cmd/spire-hub
@@ -22,6 +23,14 @@ vet:
 deb: agent build-hub
 	mkdir -p dist
 	nfpm package --config packaging/nfpm.yaml --packager deb --target dist/
+
+# sign-deb produces the detached Ed25519 manifest beside the built .deb using RELEASE_KEY
+# (a private key held OFF the control plane). The server serves dist/<deb>.manifest.json
+# automatically once it is present. Usage: make sign-deb RELEASE_KEY=/secure/release.key
+sign-deb:
+	@if [ -z "$(RELEASE_KEY)" ]; then echo "set RELEASE_KEY=/path/to/release.key" >&2; exit 1; fi
+	@if [ ! -f "dist/spire-agent_$(VERSION)_amd64.deb" ]; then $(MAKE) deb; fi
+	go run ./cmd/spire-release sign -key "$(RELEASE_KEY)" -deb "dist/spire-agent_$(VERSION)_amd64.deb"
 
 release: build deb
 	cp bin/spire-server dist/spire-server_$(VERSION)_linux_amd64

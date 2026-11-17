@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,6 +25,10 @@ const DefaultUpdateStatePath = "/etc/spire/update-state.json"
 // updateFailureBackoff is the minimum interval between attempts at the SAME target version
 // after a failure, so a persistently-failing target does not re-download every cycle.
 const updateFailureBackoff = 30 * time.Minute
+
+// rolledBackBackoff blocks reinstalling a target that was rolled back, so a version that
+// cannot confirm healthy is not reinstalled every check-in.
+const rolledBackBackoff = 24 * time.Hour
 
 // maxArtifactBytes caps the .deb download size defensively (256 MiB); the server-declared
 // Size is also enforced exactly.
@@ -43,7 +49,17 @@ type SelfUpdater struct {
 	downloadDir string
 	statePath   string
 	now         func() time.Time
+	// sig carries the pinned release trust anchors and require_signed flag. Nil means
+	// signature verification is not configured (legacy behaviour: size+sha only).
+	sig *signatureConfig
+	// rollback stages the previous package and arms an independent rollback trigger before
+	// install. Nil disables rollback staging (used by tests that only exercise verification).
+	rollback *Rollbacker
 }
+
+// SetRollbacker attaches a Rollbacker so a successful install is preceded by staging the
+// previous package and arming an independent rollback trigger.
+func SetRollbacker(u *SelfUpdater, rb *Rollbacker) { u.rollback = rb }
 
 // NewSelfUpdater builds a SelfUpdater. A nil installer defaults to SystemdRunInstaller.
 func NewSelfUpdater(client *http.Client, serverURL, currentVersion string, installer Installer) *SelfUpdater {
@@ -95,10 +111,14 @@ func (u *SelfUpdater) ApplyDirective(ctx context.Context, d *types.AgentUpdateDi
 	}
 
 	// Back off if we recently failed this exact target, to avoid a hot download/install loop.
-	if st, err := u.loadState(); err == nil && st != nil &&
-		st.TargetVersion == target && st.Status == types.AgentUpdateFailed &&
-		u.now().Sub(st.AttemptedAt) < updateFailureBackoff {
-		return nil
+	if st, err := u.loadState(); err == nil && st != nil && st.TargetVersion == target {
+		age := u.now().Sub(st.AttemptedAt)
+		if st.Status == types.AgentUpdateFailed && age < updateFailureBackoff {
+			return nil
+		}
+		if st.Status == types.AgentUpdateRolledBack && age < rolledBackBackoff {
+			return nil
+		}
 	}
 
 	result := &types.AgentUpdateResult{
@@ -114,15 +134,47 @@ func (u *SelfUpdater) ApplyDirective(ctx context.Context, d *types.AgentUpdateDi
 		return u.finish(result, types.AgentUpdateFailed, "download: "+err.Error())
 	}
 
-	if err := verifyArtifact(debPath, d.Artifact); err != nil {
+	// Independent signature verification (requirement 4). When a signed manifest is present
+	// it is the authority; when it is absent and require_signed is off, fall back to the
+	// legacy size+sha256 check with a loud warning.
+	signed, err := u.verifySignedUpdate(ctx, debPath, d, token)
+	if err != nil {
 		return u.finish(result, types.AgentUpdateFailed, "verify: "+err.Error())
+	}
+	if signed == nil {
+		// Unsigned transition path: verify size+sha against the server descriptor only.
+		if err := verifyArtifact(debPath, d.Artifact); err != nil {
+			return u.finish(result, types.AgentUpdateFailed, "verify: "+err.Error())
+		}
+		logUnsignedWarning(target)
+	}
+	// (When signed != nil, verifySignedUpdate already checked the bytes against the SIGNED
+	// size+sha256, which is strictly stronger than verifyArtifact.)
+
+	// Stage the previous package and arm the independent rollback trigger BEFORE install, so
+	// a new agent that never confirms healthy is reverted without needing the new binary.
+	rollbackNote := ""
+	if u.rollback != nil {
+		if _, armErr := u.rollback.StageAndArm(ctx, u.currentVer, target); armErr != nil {
+			if !errors.Is(armErr, ErrNoPreviousPackage) {
+				return u.finish(result, types.AgentUpdateFailed, "rollback arm: "+armErr.Error())
+			}
+			// The running version's package is not on disk (e.g. installed by the bootstrap,
+			// which deletes its download). Install anyway; later updates will have rollback.
+			log.Printf("[spired] warning: no package for running version %s; installing %s WITHOUT automatic rollback", u.currentVer, target)
+			rollbackNote = " (no automatic rollback: previous package unavailable)"
+		}
+		// Keep the package being installed so the NEXT update can roll back to it.
+		if err := u.rollback.KeepInstalled(debPath, target); err != nil {
+			log.Printf("[spired] warning: could not keep installed package for future rollback: %v", err)
+		}
 	}
 
 	if err := u.installer(ctx, debPath); err != nil {
 		return u.finish(result, types.AgentUpdateFailed, "install: "+err.Error())
 	}
 
-	return u.finish(result, types.AgentUpdateSuccess, fmt.Sprintf("installed %s", target))
+	return u.finish(result, types.AgentUpdateSuccess, fmt.Sprintf("installed %s%s", target, rollbackNote))
 }
 
 // download fetches the artifact over the same server connection using the device bearer
