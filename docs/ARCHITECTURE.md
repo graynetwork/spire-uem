@@ -1,136 +1,153 @@
-# SpireUEM Technical Architecture & Security Specification
+# SpireUEM Architecture and Security Boundaries
 
-This document details the architectural design, communication protocols, security boundaries, and cryptographic models governing SpireUEM.
+This document describes the current implementation. It distinguishes cryptographic evidence from policy decisions that have not yet been implemented.
 
----
+## 1. Components
 
-## 1. System Topology & Core Components
-
-SpireUEM is structured as a resilient distributed system consisting of four primary subsystems:
-
-```
-+---------------------------------------------------------------------------------------+
-|                               CONTROL PLANE (spire-server)                            |
-|                                                                                       |
-|   +-----------------------+   +-----------------------+   +-----------------------+   |
-|   |   Admin Web Console   |   |   REST / WS Gateway   |   |    OIDC SSO Service   |   |
-|   |  (Go Templates, HTMX) |   | (/api/v1/desktop/...) |   | (Discovery, PKCE S256)|   |
-|   +-----------+-----------+   +-----------+-----------+   +-----------+-----------+   |
-|               |                           |                           |               |
-|               +---------------------------+---------------------------+               |
-|                                           |                                           |
-|                   +-----------------------v-----------------------+                   |
-|                   |         PostgreSQL 16 Storage Engine          |                   |
-|                   |   (Devices, Policies, Escrow, Audit Logs)     |                   |
-|                   +-----------------------------------------------+                   |
-+-------------------------------------------|-------------------------------------------+
-                                            |
-                      HTTPS (TLS 1.3) / WSS (Duplex JSON Stream)
-                                            |
-+-------------------------------------------v-------------------------------------------+
-|                              MANAGED ENDPOINT (spired)                                |
-|                                                                                       |
-|   +-------------------------------------------------------------------------------+   |
-|   |                          Root Daemon Engine (spired)                          |   |
-|   |  - Declarative Policy Engine (sysctl, dconf, APT, Flatpak)                    |   |
-|   |  - Hardware Attestation Engine (/dev/tpmrm0 PCR 0, 2, 4, 7)                   |   |
-|   |  - Storage Escrow Engine (LUKS2 Keyslot 1, RSA-OAEP-4096)                     |   |
-|   |  - Offline Persistent Policy Cache (/etc/spire/policy-cache.json)             |   |
-|   |  - UNIX Socket Server (/run/spire/agent.sock, SO_PEERCRED Auth)               |   |
-|   +---------------------------------------|---------------------------------------+   |
-|                                           |                                           |
-|                            UNIX Domain Socket (mode 0666)                             |
-|                       Active User UID Authenticated (seat0)                           |
-|                                           |                                           |
-|   +---------------------------------------v---------------------------------------+   |
-|   |                Desktop Portal Interface (Spire Hub / spire-ctl)               |   |
-|   |  - Unprivileged GTK4 / Libadwaita Desktop App (org.spire.hub)                 |   |
-|   |  - Self-Service Flatpak / APT App Catalog (Install / Remove)                  |   |
-|   |  - Attended Remote Assistance Approval Modal                                  |   |
-|   +-------------------------------------------------------------------------------+   |
-+---------------------------------------------------------------------------------------+
+```text
+Browser administrators
+        |
+        | HTTPS (built-in TLS 1.2+ or a trusted TLS proxy)
+        v
++-----------------------+       +-----------------------+
+|     spire-server      |------>|    PostgreSQL 15+     |
+| Admin UI, REST, WS,   |       | devices, policy,      |
+| auth, alerts, CVEs    |       | audit, migrations     |
++-----------+-----------+       +-----------------------+
+            ^
+            | HTTPS/WSS, bearer token
+            | outbound from endpoint
++-----------+-----------+
+|        spired         | root systemd service
+| policy, TPM, LUKS,    |
+| inventory, commands   |
++-----------+-----------+
+            |
+            | /run/spire/agent.sock, SO_PEERCRED
+            v
++-----------------------+
+| Spire Hub / spire-ctl |
+| unprivileged seat0 UI |
++-----------------------+
 ```
 
----
+### `spire-server`
 
-## 2. Component Deep Dive
+The control plane provides the admin UI, agent REST API, device WebSocket gateway, OIDC and local authentication, MFA, personal access tokens, schema migration coordination, CVE import, alerts, and recovery-key escrow.
 
-### 2.1. `spire-server` (Control Plane)
-- **Role**: Central API broker, WebSocket connection pool manager, policy resolver, and auditing collector.
-- **State Storage**: PostgreSQL 16 utilizing ACID transactions for device check-ins, policy compliance rollups, and enrollment token tracking.
-- **WebSocket Gateway (`internal/gateway/hub.go`)**: Manages long-lived duplex TCP connections with endpoints. Implements sub-300ms command dispatch, heartbeat liveness tracking, and interactive terminal PTY proxying over WebSocket frames.
-- **Cryptographic Master Key (KEK)**: Loads an RSA-4096 private key from filesystem or HSM to decrypt escrowed recovery keys on demand.
+State is shared through PostgreSQL. Multi-instance servers coordinate migrations with a PostgreSQL advisory lock and route asynchronous device frames through PostgreSQL `LISTEN/NOTIFY`. Interactive PTY and remote-assistance streams remain process-local and require routing to the server instance that owns the device socket.
 
-### 2.2. `spired` (Endpoint Daemon)
-- **Role**: System daemon executing with root privileges (`CAP_SYS_ADMIN`, `CAP_SYS_RAWIO`).
-- **Resilience Engine**:
-  - Implements exponential backoff with jitter on network failure.
-  - Maintains an offline encrypted state cache (`/etc/spire/policy-cache.json`, permissions `0600`).
-  - Buffers execution reports locally (`/etc/spire/pending-reports.json`) during server outages and flushes them atomically upon reconnection.
-- **Zero-Drift Enforcement**: Reconciles system configuration periodically or immediately upon WebSocket trigger:
-  - Writes atomic drop-ins: `/etc/sysctl.d/20-spire-<id>.conf`, `/etc/dconf/db/local.d/10-spire-<id>`.
-  - Enforces mandatory locks in `/etc/dconf/db/local.d/locks/`.
-  - Removes drop-in keyfiles and rolls back settings if a policy is revoked or deactivated.
+The RSA-4096 KEK and Ed25519 wipe-signing private key are loaded from filesystem paths. HSM integration is not implemented.
 
-### 2.3. `Spire Hub` (`cmd/spire-hub/`, GTK4 / Libadwaita)
-- **Role**: Unprivileged graphical user interface for enterprise desktop operators and end users.
-- **Session Sandboxing**: Executes strictly within the unprivileged user session on `seat0` (UID 1000). Does not possess `sudo` or root privileges.
-- **Capabilities**:
-  - Displays hardware security posture (TPM attestation status, Secure Boot, encryption state).
-  - Browse enterprise application catalog (Flathub, Debian packages, corporate Flatpak bundles).
-  - One-click install/uninstall for `AVAILABLE` applications via IPC requests to `spired`.
-  - Interactive approval prompts for administrator-initiated remote assistance sessions.
+### `spired`
 
-### 2.4. `spire-ctl` (`cmd/spire-ctl/`)
-- **Role**: CLI administrative diagnostic companion.
-- **Functions**: Interrogates `/run/spire/agent.sock` to output local compliance JSON, trigger instantaneous sync cycles, and display TPM PCR register dumps.
+`spired` runs as unrestricted root under the packaged systemd service. The unit does not configure `CapabilityBoundingSet` or a reduced Linux capability set.
 
----
+The daemon:
 
-## 3. Threat Model & Security Architecture
+- reconciles assigned policy;
+- inventories packages, source packages, Flatpaks, OS, kernel, and active session;
+- performs TPM attestation and LUKS escrow;
+- maintains `/etc/spire/policy-cache.json` and `/etc/spire/pending-reports.json`;
+- executes queued commands and interactive PTY sessions;
+- handles lost-device actions and self-update.
 
-### 3.1. Local IPC Authentication via `SO_PEERCRED`
-To prevent unauthorized local processes from manipulating the privileged `spired` daemon, `/run/spire/agent.sock` enforces kernel-level credential checks:
-1. When a client connects to the UNIX domain socket, `spired` inspects the socket's peer credentials using `getsockopt(fd, SOL_SOCKET, SO_PEERCRED, ...)` (`ucred`).
-2. Calls from `UID 0` (root) are always allowed.
-3. For non-root callers, `spired` queries systemd logind seats (`/run/systemd/seats/seat0` or `sd_seat_get_active`) to determine the active physical desktop console user (`seat0`).
-4. Any process whose effective UID does not match the active `seat0` UID is rejected with `HTTP 403 Forbidden`.
-5. This completely isolates desktop users on multi-seat or SSH sessions from hijacking workstation policy or triggering application installs.
+The two cache files are plaintext JSON protected by filesystem permissions. They are not encrypted.
 
-### 3.2. TPM 2.0 Challenge-Response Attestation
-SpireUEM relies on hardware-rooted trust to prevent unauthorized or modified machines from participating in the fleet:
-1. **Challenge Staging**: During check-in, the server issues a cryptographically random 32-byte nonce (`challenge_nonce`).
-2. **Quote Generation**: `spired` instructs `/dev/tpmrm0` to generate a signed TPM Quote over PCR registers:
-   - **PCR 0**: Core system firmware (BIOS / UEFI code).
-   - **PCR 2**: Extended option ROMs (PCIe devices, storage controllers).
-   - **PCR 4**: Bootloader state (GRUB executable and configuration).
-   - **PCR 7**: UEFI Secure Boot policy, PK, KEK, DB, and DBX revocation state.
-3. **Cryptographic Verification**:
-   - The server verifies the Endorsement Key (EK) certificate against manufacturer trust roots (e.g., Intel, AMD, Infineon, Nuvoton).
-   - The server checks the Attestation Key (AK) signature on the quote against the registered AK public key.
-   - The server verifies that the quote nonce matches the staged challenge.
-4. **Fail-Closed Policy**: If PCR 7 indicates Secure Boot is disabled or modified, or if the TPM quote signature fails, the device is immediately transitioned to `FAILED` or `POLICY_VIOLATION` status, and sensitive configurations are withheld.
+### Spire Hub
 
-### 3.3. LUKS2 Automated Key Escrow with RSA-OAEP-4096 Envelope
-To eliminate unencrypted disks across corporate workstations:
-1. **Discovery**: `spired` queries `lsblk` and `cryptsetup` for active LUKS2 block devices.
-2. **Key Generation**: A high-entropy 48-character recovery key is generated in memory using Go's `crypto/rand`.
-3. **Keyslot Enrollment**: The key is injected into LUKS2 Keyslot 1 via `cryptsetup luksAddKey` without ever writing plaintext to disk.
-4. **Envelope Encryption**: The recovery key is encrypted using the server's public KEK (RSA-OAEP with SHA-256):
-   $$C = \text{RSA-OAEP-4096}(K_{\text{KEK}}, \text{RecoveryKey})$$
-5. **Dual-Control Audited Reveal**:
-   - The encrypted ciphertext is stored in `device_luks_escrow`.
-   - Plaintext keys can only be retrieved by a `SUPER_ADMIN` or `SECURITY_ADMIN` via `/admin/devices/{id}/luks/reveal`.
-   - Every reveal request requires a justification reason code and emits a high-priority SIEM syslog alert (RFC 5424).
+Spire Hub is a Python GTK4/Libadwaita application with a Go launcher. It runs as the active graphical user and uses the local UNIX socket for status, sync, catalog, install, and uninstall operations. Remote-assistance consent is handled by `spired` with a `zenity` prompt, not by Spire Hub.
 
----
+## 2. Transport
 
-## 4. Communication Protocols
+The server requires one of these modes:
 
-| Channel | Transport | Authentication | Encryption | Purpose |
-| :--- | :--- | :--- | :--- | :--- |
-| **Server $\leftrightarrow$ Agent** | HTTPS | Bearer Token (SHA-256 hash in DB) | TLS 1.3 | Scheduled check-in, policy telemetry, compliance report batches |
-| **Server $\leftrightarrow$ Agent** | WebSocket | HTTP Upgrade + Bearer Token | TLS 1.3 (WSS) | Real-time command push (<300ms), live PTY terminal, remote assist |
-| **Agent $\leftrightarrow$ Desktop UI** | UNIX Socket | `SO_PEERCRED` (Kernel UID) | IPC Memory Boundary | Spire Hub catalog, compliance badges, remote assist authorization |
-| **Browser $\leftrightarrow$ Server** | HTTPS | Session Cookie (HMAC-SHA256) + CSRF | TLS 1.3 | Administrative control plane, policy authoring, user administration |
-| **Control Plane $\leftrightarrow$ IdP** | HTTPS | OAuth2 Authorization Code + PKCE | TLS 1.3 | OIDC Single Sign-On discovery, JWKS verification, user JIT provisioning |
+1. built-in TLS, with `SPIRE_TLS_CERT_FILE` and `SPIRE_TLS_KEY_FILE`;
+2. a TLS-terminating proxy with `SPIRE_TRUST_PROXY=true` and no bypass path;
+3. loopback-only HTTP for local development;
+4. explicit `SPIRE_ALLOW_INSECURE_HTTP=1` for a lab.
+
+Built-in TLS permits TLS 1.2 or later. WSS is the same HTTP server upgraded to WebSocket. Agent bearer tokens, policy secrets, escrow payloads, package downloads, and the wipe-signing public key all cross this channel, so production deployments require TLS.
+
+| Channel | Authentication | Confidentiality |
+|---|---|---|
+| Agent REST and WebSocket | Device bearer token whose SHA-256 hash is stored | Deployment TLS |
+| Admin browser | Signed session cookie plus CSRF for state changes; PAT or Basic Auth for scripts | Deployment TLS |
+| OIDC | Authorization code, PKCE S256, state, nonce, issuer/audience/signature checks | IdP HTTPS |
+| Local IPC | Kernel `SO_PEERCRED`; root or active `seat0` UID | Local UNIX socket boundary |
+
+Mutual TLS and device certificate pinning are not implemented.
+
+## 3. Local IPC
+
+`spired` creates `/run/spire/agent.sock` with mode `0666` so the desktop user can connect. For every accepted socket, it reads Linux peer credentials with `SO_PEERCRED`:
+
+- UID 0 is allowed;
+- the active `seat0` UID is allowed;
+- other users, including unrelated SSH sessions, receive HTTP 403.
+
+This restricts unprivileged cross-user access. It does not defend against root, and it should not be described as a complete local isolation boundary.
+
+The IPC routes are `GET /v1/status`, `POST /v1/sync`, `GET /v1/catalog`, `POST /v1/install`, and `POST /v1/uninstall`.
+
+## 4. TPM attestation
+
+### Evidence collected
+
+1. The agent sends its EK public key and AK TPM public area.
+2. The server verifies the AK attributes and creates a TPM2 credential-activation challenge bound to the EK and AK.
+3. The TPM recovers the secret and signs a quote over SHA-256 PCRs 0, 2, 4, and 7.
+4. The server verifies the EK certificate against `SPIRE_TPM_EK_ROOTS`, validates the challenge secret and AK signature, and checks that the reported PCR values produce the signed PCR digest.
+5. PCR 7 must be nonzero for the result to be `ATTESTED`; an all-zero PCR 7 produces `POLICY_VIOLATION`.
+
+### Current limits
+
+SpireUEM does not maintain administrator-approved PCR baselines and does not compare a new quote with previous values. A verified quote proves that the named TPM signed the current PCR values after the server's challenge. It does not prove that firmware, option ROM, bootloader, or Secure Boot databases match a known-good version.
+
+The latest verified values replace the previous values in `device_tpm_attestation`. Attestation failure updates device status and can raise an alert, but it does not currently withhold assigned policy or decrypted network-profile secrets.
+
+Software-simulated attestation exists only for tests and must be explicitly enabled on both sides. It proves freshness and signature self-consistency, not hardware state.
+
+## 5. LUKS2 recovery-key escrow
+
+1. `spired` discovers LUKS2 volumes.
+2. It generates a random 48-character recovery key in memory.
+3. Using `/etc/spire/luks-master.key`, it adds the new key to hard-coded Keyslot 1 and verifies that the key opens the volume.
+4. It generates a random 32-byte DEK and encrypts the recovery key with AES-256-GCM.
+5. It wraps the DEK with the server's RSA-4096 OAEP-SHA256 public KEK.
+6. PostgreSQL stores the wrapped DEK, ciphertext, nonce, device, volume, and slot metadata.
+
+In notation:
+
+```text
+ciphertext, nonce = AES-256-GCM(DEK, recovery_key)
+wrapped_dek       = RSA-OAEP-SHA256(server_KEK_public, DEK)
+```
+
+A `SECURITY_ADMIN` or `SUPER_ADMIN` can reveal a key in one request after supplying a reason. The server records a dedicated access audit row, emits RFC 5424 syslog, sends configured alerts, and queues recovery-key rotation. Reveal is audited but not dual control.
+
+Crypto-erase wipe has separate controls: typed hostname confirmation, a second distinct `SUPER_ADMIN`, a 24-hour approval window, an Ed25519-signed device-bound order, and agent-side volume intersection.
+
+Keyslot 1 must be free before first escrow. Enrollment does not remove an existing key from that slot.
+
+## 6. Authorization and audit
+
+Roles are ordered `AUDITOR`, `OPERATOR`, `SECURITY_ADMIN`, `SUPER_ADMIN`. `OPERATOR` and `SECURITY_ADMIN` can be restricted by device tags. Out-of-scope device routes return 404, and fleet-level dashboard, vulnerability, and audit views are filtered.
+
+Queued root commands retain command text and output. Interactive PTY auditing records session boundaries rather than every keystroke. Recovery-key reveal records its reason. Alert-channel changes, token/MFA operations, policy changes, device actions, and authentication events emit audit records where implemented.
+
+## 7. Update integrity
+
+Self-update verifies the package size and SHA-256 advertised by the same server that hosts the package. This detects corruption and truncation. It does not protect against a compromised control plane because the server controls both bytes and digest. The self-update path does not verify an independent package signature.
+
+The separately published APT repository can be generated and signed with `reprepro`; production onboarding should prefer that signed path.
+
+## 8. Known security gaps
+
+- No approved PCR baseline comparison.
+- Attestation status does not gate policy-secret delivery.
+- No mutual TLS or device certificate pinning.
+- First-contact wipe-signing-key trust depends on transport TLS.
+- Self-update has no independent artifact signature.
+- `spired` runs as unrestricted root.
+- The notification-only remote-assistance fallback does not provide genuine interactive consent and should be hardened.

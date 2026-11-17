@@ -1,132 +1,112 @@
-# Spire Hub Desktop Client & Field Troubleshooting Guide
+# Spire Hub Desktop Client and Field Troubleshooting Guide
 
-This guide covers the operation, user features, and troubleshooting procedures for **Spire Hub** (`org.spire.hub`), the unprivileged GTK4 / Libadwaita client application running on managed corporate Debian workstations.
+Spire Hub (`org.spire.hub`) is the unprivileged GTK4/Libadwaita interface installed on managed Debian workstations. The UI is implemented in Python with PyGObject and launched by `/usr/bin/spire-hub`; the package depends on Python 3, GTK4, and Libadwaita GI bindings.
 
----
+## 1. Desktop integration
 
-## 1. Overview & Desktop Integration
+- Application ID: `org.spire.hub`
+- Launcher: `/usr/bin/spire-hub`
+- Python UI: `/usr/lib/spire/spire-hub.py`
+- Desktop entry: `/usr/share/applications/spire-hub.desktop`
+- Icon: `/usr/share/icons/hicolor/scalable/apps/spire-hub.svg`
+- Categories: `System;Settings;PackageManager;`
 
-**Spire Hub** serves as the user-facing bridge between enterprise security posture and desktop productivity. It allows employees to inspect their machine's compliance status, browse approved enterprise software, and authorize IT support sessions without requiring root or `sudo` credentials.
+Spire Hub runs as the active graphical user and never invokes `sudo`. Privileged work is requested through `spired` over `/run/spire/agent.sock`.
 
-### Desktop Entry Details
-- **Application ID**: `org.spire.hub`
-- **Binary Path**: `/usr/bin/spire-hub`
-- **Desktop Entry**: `/usr/share/applications/spire-hub.desktop`
-- **Icon**: `/usr/share/icons/hicolor/scalable/apps/spire-hub.svg`
-- **Categories**: `System;Settings;GTK;`
+## 2. User features
 
----
+### 2.1 Security Compliance
 
-## 2. Key Features for End Users
+The Security Compliance view displays the latest state exposed by the local agent:
 
-### 2.1. Machine Security & Health Posture
-Upon launching Spire Hub, the **Dashboard** ribbon displays the workstation's real-time security status:
-- **Hardware Integrity (TPM 2.0)**: Displays `Attested` (Green checkmark) when UEFI firmware, bootloader, and Secure Boot hashes match corporate baselines.
-- **Disk Encryption (LUKS2)**: Indicates that storage volumes are actively encrypted and escrowed.
-- **Patch Status**: Displays kernel and OS update readiness, alerting the user when a system reboot is required to finalize critical security updates.
-- **Compliance Score**: Shows overall adherence to corporate policies and CIS benchmark standards.
+- TPM quote status and Secure Boot evidence;
+- whether a LUKS recovery key has been escrowed;
+- latest CIS score, when available;
+- assigned baseline-policy compliance;
+- required-application installation status;
+- last check-in time.
 
-### 2.2. Enterprise Software Portal
-Click on the **Applications** tab to access corporate-approved software:
-- **Required Applications**: Displayed with a lock icon. These packages (e.g. corporate VPN, security agents) are managed automatically by IT and cannot be uninstalled.
-- **Self-Service Applications**: Software made `AVAILABLE` by IT administrators. Users can click **Install** to add tools on demand (e.g., Slack, VS Code, VLC).
-- **Zero-Privilege Installation**: The user does not need to enter an administrator password. The install request is submitted across the secure local IPC socket to `spired`, which performs the package installation safely in the background.
+An `ATTESTED` TPM status means the server accepted a fresh, correctly signed quote and found a nonzero signed PCR 7. SpireUEM does not currently compare PCRs with an administrator-approved firmware or boot baseline.
 
-### 2.3. Authorizing Attended IT Support
-When an IT support technician initiates a remote assistance session from the SpireUEM console:
-1. Spire Hub immediately presents a prominent modal dialog on the user's primary monitor.
-2. The prompt displays:
-   - Requesting Technician Name / Username.
-   - Remote IP address and timestamp.
-   - Scope of requested access (e.g., Screen View, Diagnostic Shell).
-3. The user can click **Authorize Access** to allow the technician to connect, or click **Deny** to reject the request.
-4. Sessions terminate immediately when the user clicks **Disconnect** in Spire Hub.
+### 2.2 App Catalog
 
----
+`AVAILABLE` applications appear with Install, Open, or Remove controls. `REQUIRED` applications appear in the compliance view and cannot be removed through the optional catalog. The user supplies no administrator password; `spired` validates the policy ID against the server-provided catalog before performing the privileged operation.
 
-## 3. Architecture & Socket Communication
+### 2.3 Remote assistance
 
-Spire Hub communicates with the local `spired` daemon exclusively through a local UNIX domain socket:
+Remote-assistance consent is not implemented inside Spire Hub. When an administrator requests assistance, the request reaches `spired` over the device WebSocket. The daemon discovers the active `seat0` user and attempts to show a 60-second `zenity` confirmation dialog containing the administrator name. On approval it enables GNOME Remote Desktop and returns an RDP address and generated PIN to the administrator.
+
+The current prompt does not show the administrator IP or granular access scope, and Spire Hub has no Disconnect button. Endpoint images intended to use remote assistance should include `zenity`; the current notification-only fallback does not provide a genuine clickable consent choice and needs hardening.
+
+## 3. UNIX-socket API
+
+The socket is created at `/run/spire/agent.sock` with mode `0666`. Authorization does not rely on mode bits: `spired` obtains the peer UID with Linux `SO_PEERCRED` and permits root or the active `seat0` user. Other local users receive HTTP 403.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /v1/status` | Current local status, compliance groups, catalog summary, TPM evidence, and check-in time. |
+| `POST /v1/sync` | Trigger an immediate agent check-in. |
+| `GET /v1/catalog` | List assigned application policies and current installation state. |
+| `POST /v1/install` | Install an approved policy. JSON body: `{"policy_id":"<id>"}`. |
+| `POST /v1/uninstall` | Uninstall an optional approved policy. JSON body: `{"policy_id":"<id>"}`. |
+
+Remote-assistance request and response frames use the control-plane WebSocket; there is no `/v1/remote-assist/respond` IPC endpoint.
+
+## 4. Troubleshooting
+
+### Spire Hub says the agent is offline
+
+```bash
+sudo systemctl status spired
+sudo systemctl enable --now spired
+ls -la /run/spire/agent.sock
+```
+
+Expected socket mode:
 
 ```text
-+-----------------------+                    +-----------------------+
-|       Spire Hub       |                    |     spired Daemon     |
-|   (Unprivileged App)  |                    |    (System Service)   |
-|   UID: 1000 (seat0)   |                    |       UID: 0 (root)   |
-+-----------+-----------+                    +-----------+-----------+
-            |                                            |
-            |     Connect /run/spire/agent.sock          |
-            +------------------------------------------->|
-            |                                            |
-            |     Kernel SO_PEERCRED Verification        |
-            |     Checks: caller UID == seat0 UID        |
-            |<-------------------------------------------+
-            |                                            |
-            |     IPC Status, Install, Remote Assist     |
-            |<==========================================>|
+srw-rw-rw- 1 root root ... /run/spire/agent.sock
 ```
 
-### IPC Endpoints on `/run/spire/agent.sock`
-- `GET /v1/status`: Returns hardware attestation, reboot flags, and active policy list.
-- `GET /v1/catalog`: Returns partitioned list of `REQUIRED` and `AVAILABLE` applications.
-- `POST /v1/apps/{id}/install`: Triggers background installation of an approved application.
-- `POST /v1/apps/{id}/remove`: Triggers uninstallation of an optional application.
-- `POST /v1/remote-assist/respond`: Delivers user approval or denial for remote assistance.
+### HTTP 403 from the UNIX socket
 
----
+Check the active local session:
 
-## 4. Field Troubleshooting & Diagnostics
+```bash
+loginctl show-seat seat0 -p ActiveSession
+loginctl show-session "$(loginctl show-seat seat0 -p ActiveSession --value)" -p User
+id -u
+```
 
-### 4.1. Error: "Cannot connect to Spire agent socket"
-**Symptoms**: Spire Hub displays an offline warning banner: *"Spire Agent is not running"*.
+An SSH user who is not the active `seat0` user is intentionally refused. Root is allowed for local administration.
 
-**Diagnosis & Resolution**:
-1. Check if the `spired` background service is running:
-   ```bash
-   sudo systemctl status spired
-   ```
-2. If inactive, start and enable the service:
-   ```bash
-   sudo systemctl enable --now spired
-   ```
-3. Verify that the UNIX domain socket exists and has correct permissions (`0666`):
-   ```bash
-   ls -la /run/spire/agent.sock
-   # Expected output: srw-rw-rw- 1 root root 0 ... /run/spire/agent.sock
-   ```
+### Inspect local state
 
-### 4.2. Error: "HTTP 403 Forbidden: Caller UID != seat0 UID"
-**Symptoms**: Spire Hub or `spire-ctl` fails to communicate with the socket, returning an authorization error in `/var/log/syslog` or systemd journal.
-
-**Diagnosis & Resolution**:
-The `spired` IPC layer uses `SO_PEERCRED` to restrict socket access to the active physical console user on `seat0`:
-1. Check the active console seat user registered by systemd logind:
-   ```bash
-   loginctl show-seat seat0 -p ActiveSession
-   loginctl show-session $(loginctl show-seat seat0 -p ActiveSession --value) -p User
-   ```
-2. If running under SSH or a secondary terminal multiplexer, Spire Hub must be executed within the graphical session environment:
-   ```bash
-   # Verify current user matches the logged in desktop user (UID 1000)
-   id -u
-   ```
-
-### 4.3. Inspecting Local Policy Cache
-If the workstation is disconnected from the corporate network, `spired` operates from its local policy cache. You can inspect the active policy set via `spire-ctl`:
 ```bash
 spire-ctl status
-```
-Or inspect the encrypted cache file directly (requires root):
-```bash
 sudo cat /etc/spire/policy-cache.json
+sudo cat /etc/spire/pending-reports.json
 ```
 
-### 4.4. Forcing an Immediate Fleet Resynchronization
-To immediately fetch newly assigned policies or applications without waiting for the scheduled check-in interval:
+Both cache files are plaintext JSON protected by filesystem permissions; they are not encrypted.
+
+### Trigger a sync
+
+As the active graphical user:
+
 ```bash
-sudo spire-ctl sync
+spire-ctl sync
 ```
-Or execute a one-shot execution run:
+
+Root can also run a complete one-shot agent cycle:
+
 ```bash
 sudo /usr/local/bin/spired -config /etc/spire/config.yaml -once
+```
+
+### Inspect logs
+
+```bash
+sudo journalctl -u spired.service -n 200 --no-pager
+sudo journalctl -u spired.service -f
 ```

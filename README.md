@@ -1,189 +1,140 @@
 # SpireUEM: Unified Endpoint Management for Enterprise Linux
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Go Report Card](https://img.shields.io/badge/go%20report-A%2B-brightgreen.svg)]()
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)]()
-[![Platform](https://img.shields.io/badge/platform-Debian%2012-orange.svg)]()
-[![Security](https://img.shields.io/badge/security-TPM%202.0%20%7C%20LUKS2%20%7C%20CIS-blueviolet.svg)]()
+[![Security review](https://github.com/graynetwork/spire-uem/actions/workflows/security-review.yml/badge.svg)](https://github.com/graynetwork/spire-uem/actions/workflows/security-review.yml)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Debian%2012-orange.svg)](docs/BARE_METAL_RUNBOOK.md)
 
-**SpireUEM** is an enterprise-grade, zero-trust Unified Endpoint Management (UEM) control plane and client agent engineered specifically for Debian workstation fleets. It bridges the critical divide between immutable cryptographic hardware integrity, declarative OS baseline enforcement, and user-centric desktop application delivery.
+SpireUEM is a self-hosted UEM control plane and endpoint agent for Debian workstation fleets. It combines declarative operating-system policy, software delivery, TPM-backed attestation evidence, LUKS2 recovery-key escrow, vulnerability matching, alerting, and a user-facing desktop software catalog.
 
----
-
-## Architecture Overview
-
-SpireUEM decouples administrative orchestration from client execution through an asynchronous, event-driven gateway hub and an unprivileged desktop IPC bridge.
+## Architecture
 
 ```mermaid
 flowchart TD
-    subgraph ControlPlane["SpireUEM Control Plane (spire-server)"]
-        direction TB
-        WebUI["Web Admin UI (/admin) & HTMX"]
-        API["REST & WebSocket API Gateway (/api/v1)"]
-        AuthSvc["Auth & OIDC SSO Service (PKCE)"]
-        DB[(PostgreSQL 16 Engine)]
-        KEK["RSA-OAEP-4096 Master Key (KEK)"]
-        
+    subgraph ControlPlane["SpireUEM control plane"]
+        WebUI["Admin UI and HTMX"]
+        API["REST and WebSocket API"]
+        Auth["Local auth, MFA, PATs, OIDC"]
+        DB[(PostgreSQL 15+)]
+        KEK["RSA-4096 KEK wraps AES-GCM DEKs"]
         WebUI --> API
-        API --> AuthSvc
+        API --> Auth
         API --> DB
         API --> KEK
     end
 
-    subgraph ClientEndpoint["Managed Linux Endpoint (Debian 12)"]
-        direction TB
-        Spired["Endpoint Daemon (spired) - root"]
-        IPCSocket["UNIX Domain Socket (/run/spire/agent.sock) - SO_PEERCRED"]
-        SpireHub["Spire Hub (org.spire.hub) - GTK4 / Libadwaita (seat0 User)"]
-        SpireCTL["CLI Utility (spire-ctl)"]
-
-        TPM["Hardware TPM 2.0 (/dev/tpmrm0)"]
-        LUKS["Disk Cryptography (LUKS2 Keyslot 1)"]
-        OSConfigs["Declarative Engine (/etc/sysctl.d, /etc/dconf, APT)"]
-        Flatpak["Flatpak Runtime & Custom Bundles"]
-        SCAP["OpenSCAP Engine (CIS Benchmarks)"]
-
+    subgraph Endpoint["Managed Debian endpoint"]
+        Spired["spired root daemon"]
+        IPC["/run/spire/agent.sock with SO_PEERCRED"]
+        Hub["Spire Hub: Python, GTK4 and Libadwaita"]
+        CLI["spire-ctl"]
+        TPM["TPM 2.0"]
+        LUKS["LUKS2 recovery-key escrow"]
+        Policy["Declarative policy engines"]
         Spired --> TPM
         Spired --> LUKS
-        Spired --> OSConfigs
-        Spired --> Flatpak
-        Spired --> SCAP
-
-        Spired --- IPCSocket
-        IPCSocket --> SpireHub
-        IPCSocket --> SpireCTL
+        Spired --> Policy
+        Spired --- IPC
+        IPC --> Hub
+        IPC --> CLI
     end
 
-    API <== "Duplex WebSocket (<300ms) & HTTPS Sync" ==> Spired
+    API <== "HTTPS/WSS or a trusted TLS proxy" ==> Spired
 ```
 
-### Component Breakdown
-- **Control Plane (`spire-server`)**: Central orchestrator hosting the REST API, duplex WebSocket hub (`/api/v1/desktop/stream`), admin console, and cryptographic key escrow.
-- **System Agent (`spired`)**: High-performance Go daemon running as `root` with minimal memory footprint (<25 MB RSS), evaluating declarative policy, executing attestation ceremonies, and enforcing disk encryption escrow.
-- **Desktop UI (`Spire Hub` / `org.spire.hub`)**: Modern GTK4 + Libadwaita desktop portal executing unprivileged within the active `seat0` graphical session, communicating with `spired` over an authenticated UNIX domain socket (`/run/spire/agent.sock`).
-- **CLI Utility (`spire-ctl`)**: Lightweight operator tool for local diagnostics, policy reconciliation triggers, and hardware attestation inspection.
+- **`spire-server`** hosts the API, WebSocket gateway, admin console, migration runner, alert workers, CVE importer, and cryptographic escrow.
+- **`spired`** is a static Go daemon that runs as root and reconciles assigned policy.
+- **Spire Hub** is an unprivileged GTK4/Libadwaita application implemented in Python and launched by a small Go wrapper. The Debian package installs Python and GI dependencies.
+- **`spire-ctl`** exposes local status, catalog, install, uninstall, and immediate-sync operations through the authenticated UNIX socket.
 
----
+## Security boundaries
 
-## Key Feature Highlights
+### TPM attestation
 
-### 1. Zero-Trust Hardware Attestation
-- **TPM 2.0 Challenge-Response**: Real-time validation of PCR bank integrity (PCR 0 firmware, PCR 2 option ROMs, PCR 4 bootloader, PCR 7 Secure Boot policy) using Endorsement Keys (EK) and Attestation Keys (AK).
-- **Cryptographic Quote Verification**: Cryptographically checks TPM signatures against server-generated random nonces; fails closed when tampering or drift is detected.
+The agent performs TPM2 credential activation and submits a fresh AK-signed quote over SHA-256 PCRs 0, 2, 4, and 7. The server validates the EK certificate against configured manufacturer roots, verifies the quote signature and nonce, and derives Secure Boot evidence from signed PCR 7.
 
-### 2. Cryptographic Storage Escrow
-- **Automated LUKS2 Escrow**: Discovers root and data encrypted block devices, auto-enrolls an ephemeral recovery passphrase into LUKS2 Keyslot 1 without persisting plaintext to disk.
-- **RSA-OAEP-4096 Envelope Encryption**: Encrypts recovery payloads client-side using the server's public Key Encryption Key (KEK).
-- **Dual-Control Audited Reveal**: Keys are decrypted on-demand with mandatory reason codes, full SIEM RFC 5424 syslog dispatch, and database audit logs.
+SpireUEM currently stores the latest verified PCR values; it does **not** compare them with an administrator-approved PCR baseline. An `ATTESTED` result proves quote authenticity, freshness, and nonzero PCR 7, not that firmware and boot measurements match a known-good value. Attestation status also does not currently gate delivery of assigned policy payloads.
 
-### 3. Declarative OS Baselines
-- **Kernel Tuning**: Atomic `/etc/sysctl.d/20-spire-*.conf` generation with live `sysctl -w` enforcement and rollback cleanup on policy revocation.
-- **GNOME Desktop Lockdown**: Declarative `/etc/dconf/db/local.d/` generation with `/etc/dconf/db/local.d/locks/` to strictly enforce screen lock timeouts, privacy masking, and login banners while locking settings against user override.
-- **APT Package Lifecycle**: Enforces mandatory package presence or absolute absence across fleet rings.
+### LUKS2 recovery-key escrow
 
-### 4. Partitioned Application Lifecycle
-- **Dual Catalog Paradigm**:
-  - `REQUIRED`: Non-optional enterprise software automatically installed and locked against removal.
-  - `AVAILABLE`: Self-service catalog published to Spire Hub for on-demand user installation.
-- **Multi-Distribution Delivery**: Orchestrates native Debian APT repositories, curated Flathub applications, and air-gapped custom `.flatpak` bundle uploads with SHA-256 verification.
+The agent generates a recovery key in memory and adds it to LUKS2 Keyslot 1 using `/etc/spire/luks-master.key`. It encrypts the key with an ephemeral AES-256-GCM DEK and wraps that DEK with the server's RSA-4096 OAEP-SHA256 KEK.
 
-### 5. Continuous CIS Benchmark Compliance
-- **Integrated OpenSCAP Engine**: Performs automated, non-disruptive CIS benchmark evaluations against Debian 12 datastreams.
-- **One-Click Auto-Remediation**: HTMX-driven administrative interface to transform failed compliance rules into live `SYSCTL_SETTING` policies instantly.
+A `SECURITY_ADMIN` or `SUPER_ADMIN` can reveal a recovery key with a mandatory reason. The reveal is recorded in PostgreSQL and forwarded as RFC 5424 syslog, and it queues automatic key rotation. Recovery-key reveal is not a two-person operation. Crypto-erase wipe is separate and requires two different `SUPER_ADMIN` users.
 
-### 6. Identity & Governance (RBAC & OIDC)
-- **Role-Based Access Control**:
-  - `SUPER_ADMIN`: Full system authority, global settings, cryptographic baseline configuration, and user provisioning.
-  - `SECURITY_ADMIN`: Policy authoring, application cataloging, CIS scans, and LUKS recovery reveal.
-  - `OPERATOR`: Fleet telemetry, device synchronization, reboot triggers, and remote diagnostics.
-  - `AUDITOR`: Read-only access to devices, policies, and compliance export reports.
-- **Enterprise SSO**: OpenID Connect (OIDC) authentication with RFC 7636 PKCE (`S256`), dynamic IdP group-to-role mappings, and Just-In-Time (JIT) administrative user provisioning.
+### Transport
 
-### 7. Real-Time Remote Assistance & Diagnostics
-- **Sub-Second Live Push**: Duplex WebSocket streaming (<300ms round-trip latency) for instantaneous check-in and patch run triggers.
-- **Browser-Based PTY Terminal**: Full VT100/ANSI interactive diagnostic shell powered by `xterm.js` and server-mediated pseudoterminal multiplexing.
-- **Attended Remote Assistance**: Desktop user prompt via Spire Hub requiring explicit user confirmation before administrative screen assistance commences.
+The server accepts one of four explicit deployment modes:
 
----
+- built-in TLS 1.2 or later;
+- a trusted TLS-terminating proxy;
+- loopback-only HTTP for local development;
+- explicit insecure HTTP for a lab.
 
-## Quickstart Guide
+The server and bootstrap refuse reachable plain HTTP unless the lab-only override is set. See [TLS deployment](docs/ADMIN_RUNBOOK.md#4-tls-is-required).
 
-### Prerequisites
-- **Control Plane**: Go 1.22+, Docker & Docker Compose, PostgreSQL 16+
-- **Client Systems**: Debian 12 (Bookworm) with Flatpak and OpenSCAP (`libopenscap8`, `ssg-debian12`)
+## Features
 
-### 1. Launch Control Plane via Docker Compose
-Clone the repository and spin up the production test stack:
+- Declarative package, Flatpak, systemd, sysctl, APT, dconf, nftables, local-account, CA-certificate, NetworkManager, usbguard, and auditd policy engines.
+- Required and optional application assignment through Spire Hub.
+- OpenSCAP execution and selected one-click remediation mappings.
+- Debian Security Tracker CVE matching. Automatic feed import is off by default.
+- Device version reporting, minimum-version enforcement, and maintenance-window self-update with size and SHA-256 verification. Update packages are not independently signed by this mechanism.
+- TOTP MFA, recovery codes, scoped personal access tokens, local accounts, and OIDC with PKCE.
+- Signed webhooks, Slack-compatible webhooks, SMTP alerts, and RFC 5424 syslog forwarding.
+- Root PTY sessions, queued commands, attended remote assistance, session lock, lost mode, recovery-key rotation, and two-person signed wipe orders.
+- Multi-instance migration coordination and asynchronous device-frame routing. Interactive PTY and remote-assistance streams require the admin and device connection on the same instance.
+- Tag-scoped `OPERATOR` and `SECURITY_ADMIN` accounts, including filtered dashboard, vulnerability, and audit views.
+
+## Quickstart: test stack
+
+Requirements: Go 1.26+, Docker with Compose, `nfpm`, and `psql` for the full test harness.
+
 ```bash
 git clone https://github.com/graynetwork/spire-uem.git
 cd spire-uem
-
-# Launch PostgreSQL 16 and SpireUEM Control Plane
 docker compose -f docker-compose.test.yml up -d --build
 ```
-The administrative control plane is now live at `http://localhost:18080/admin`.
-- Default Username: `admin`
-- Password: the value of `SPIRE_ADMIN_PASSWORD` (the test stack defaults it to `spire-e2e-breakglass-pw`; production must set its own, minimum 12 characters)
 
-### 2. Generate Enrollment Token
-Log into the SpireUEM web console, navigate to **Settings** $\rightarrow$ **Enrollment Tokens**, and click **Generate Token**, or use the API:
+The test-only control plane is available at `http://localhost:18080/admin`:
+
+- username: `admin`
+- password: `SPIRE_ADMIN_PASSWORD`, defaulting to `spire-e2e-breakglass-pw` in the test Compose file
+
+The test stack enables insecure HTTP, simulated TPM support, and an unauthenticated test callback. Never copy those settings into production. Follow [the production runbook](docs/ADMIN_RUNBOOK.md) for a real deployment.
+
+## Enroll the standard agent
+
+Set **Settings → General → server base URL** to the public HTTPS address first. On a Debian endpoint:
+
 ```bash
-curl -s -u "admin:${SPIRE_ADMIN_PASSWORD:-spire-e2e-breakglass-pw}" -X POST http://localhost:18080/admin/settings/tokens \
-  -H "Content-Type: application/json" \
-  -d '{"description":"Workstation Ring Token","target_ring":"GENERAL","max_uses":50}'
+curl -fsSLo /tmp/spire-install.sh https://spire.example.com/install.sh
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com
 ```
 
-### 3. Enroll a Linux Endpoint
-On the target Debian endpoint, run the single-command zero-touch bootstrap:
-```bash
-curl -sSL https://<spire-server>/install.sh | sudo bash -s -- \
-  --server-url https://<spire-server> \
-  --token <ENROLLMENT_TOKEN>
-```
-The server and agent require TLS outside loopback; see "TLS is required" in `docs/ADMIN_RUNBOOK.md` (lab-only plain HTTP needs `SPIRE_ALLOW_INSECURE_HTTP=1` on the server and `--allow-insecure-http` on the bootstrap). The agent automatically registers hardware UUID, extracts TPM capabilities, initializes `/run/spire/agent.sock`, and connects the duplex WebSocket stream.
+The standard agent generates an enrollment key, stages itself as `PENDING_APPROVAL`, and waits for an administrator to approve it. It stores the resulting bearer token at `/etc/spire/token`.
 
----
+Dynamic `spire_tok_...` enrollment tokens are used through `POST /api/v1/enrollment/register` by provisioning clients. The current bootstrap does not accept `--token`, and `spired` does not call that endpoint itself. Valid deployment-ring values are `CANARY`, `BETA`, `PILOT`, and `PRODUCTION`; normal device-ring administration uses `CANARY`, `PILOT`, and `PRODUCTION`.
 
-## Verification & Test Harness
+## Verification
 
-SpireUEM includes an end-to-end integration and qualification suite:
+Run the containerized integration suite:
 
 ```bash
-# Run complete 38-step containerized integration test suite
 ./scripts/test_e2e.sh
 ```
 
-### Test Harness Coverage:
-1. Binary compilation and `.deb` package generation via `nfpm`.
-2. Secure cookie session validation, CSRF middleware enforcement, and HTTP headers (`nosniff`, `DENY`).
-3. Operations dashboard real-time ribbon metrics and Chart.js feeds.
-4. Device approval, tag targeting (`laptop` vs `kiosk`), and patch ring assignment (`ALPHA`, `BETA`, `GENERAL`).
-5. TPM 2.0 challenge-response attestation and fail-closed simulation verification.
-6. LUKS2 envelope escrow, RSA-OAEP decrypt verification, and audited recovery key reveal.
-7. Declarative DConf profile, keyfile locking, and GNOME wallpaper distribution.
-8. Sysctl kernel parameter enforcement (`/etc/sysctl.d/`) and dynamic rollback on policy deletion.
-9. APT package management and automated background unattended-upgrades verification.
-10. Partitioned application delivery: required system Flatpak bundles vs user-managed self-service catalog.
-11. Full CIS benchmark compliance scanning and one-click auto-remediation.
-12. WebSocket push latency and live interactive PTY terminal streaming.
-13. Attended remote assistance authorization protocol.
-14. System settings persistence, SIEM RFC 5424 syslog event dispatch, and dynamic token lifecycle.
-15. Enterprise RBAC role hierarchy enforcement and OIDC claim group resolution with JIT user provisioning.
+The suite builds the binaries and Debian package, creates a fresh PostgreSQL database, applies migrations, and exercises authentication, CSRF, device approval, tag scoping, policy reconciliation, TPM simulation, LUKS escrow, application delivery, OpenSCAP, WebSockets, PTY, remote assistance, alerts, CVE matching, and migration behavior.
 
-For physical bare-metal hardware qualification, see [`docs/BARE_METAL_RUNBOOK.md`](docs/BARE_METAL_RUNBOOK.md) and [`scripts/test_baremetal.sh`](scripts/test_baremetal.sh).
+For physical TPM and LUKS qualification, use [the bare-metal runbook](docs/BARE_METAL_RUNBOOK.md) and [`scripts/test_baremetal.sh`](scripts/test_baremetal.sh).
 
----
+## Documentation
 
-## Documentation Index
-
-- **[System Architecture & Threat Model](docs/ARCHITECTURE.md)**: Deep dive into IPC socket permissions (`SO_PEERCRED`), mutual TLS, TPM quotes, and LUKS2 escrow design.
-- **[Administrator Operations Guide](docs/ADMIN_GUIDE.md)**: Production manual for policies, application deployment, OIDC SSO integration, and audit compliance.
-- **[Desktop Client & Spire Hub Manual](docs/DESKTOP_CLIENT_GUIDE.md)**: IT support and user handbook for the GTK4 client application.
-- **[Bare-Metal Hardware Runbook](docs/BARE_METAL_RUNBOOK.md)**: Qualification procedures for physical TPM 2.0 chips, Secure Boot, and LUKS installations.
-- **[Enterprise Competitive Analysis](docs/COMPETITIVE_ANALYSIS.md)**: In-depth technical comparison against Microsoft Intune, Canonical Landscape, and Chef/Ansible.
-
----
+- [Architecture and security boundaries](docs/ARCHITECTURE.md)
+- [Administrator guide](docs/ADMIN_GUIDE.md)
+- [Production operations runbook](docs/ADMIN_RUNBOOK.md)
+- [Spire Hub and local troubleshooting](docs/DESKTOP_CLIENT_GUIDE.md)
+- [Bare-metal qualification](docs/BARE_METAL_RUNBOOK.md)
+- [Dated competitive comparison](docs/COMPETITIVE_ANALYSIS.md)
 
 ## License
 
-SpireUEM is distributed under the Apache License 2.0. See [`LICENSE`](LICENSE) for details.
+Licensed under the [Apache License 2.0](LICENSE).

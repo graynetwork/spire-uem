@@ -52,20 +52,34 @@ SQL
 2. Create the environment configuration file at `/etc/spire-server.env` (mode `0600`):
    ```bash
    sudo tee /etc/spire-server.env >/dev/null <<'EOF'
-   SPIRE_SERVER_LISTEN_ADDR=:8080
-   SPIRE_DB_DSN=postgres://spire:CHANGE_ME_STRONG_DB_PASSWORD@127.0.0.1:5432/spire_uem?sslmode=disable
+   SPIRE_LISTEN_ADDR=:8443
+   DATABASE_URL=postgres://spire:CHANGE_ME_STRONG_DB_PASSWORD@127.0.0.1:5432/spire_uem?sslmode=disable
+   SPIRE_MIGRATIONS_PATH=/opt/spire-uem/migrations
    SPIRE_ADMIN_USER=admin
    SPIRE_ADMIN_PASSWORD=CHANGE_ME_STRONG_ADMIN_PASSWORD
+   # Built-in TLS. The server requires both files and permits TLS 1.2 or later.
+   SPIRE_TLS_CERT_FILE=/etc/spire/tls/server.crt
+   SPIRE_TLS_KEY_FILE=/etc/spire/tls/server.key
    # PEM bundle of TPM manufacturer CA certificates (roots + intermediates).
    # Without it, hardware TPM attestations are reported FAILED.
    SPIRE_TPM_EK_ROOTS=/etc/spire/tpm-ca-bundle.pem
    # At least 32 random characters, e.g. `openssl rand -hex 32`. Keeps admins signed in across restarts.
    SPIRE_SESSION_SECRET=CHANGE_ME_64_HEX_CHARS
-   # Only behind a TLS-terminating reverse proxy that clients cannot bypass:
+   # Use this only instead of built-in TLS, behind a TLS proxy clients cannot bypass:
    # SPIRE_TRUST_PROXY=true
    EOF
    sudo chmod 0600 /etc/spire-server.env
    ```
+
+   Before starting the service, install the certificate and private key named above:
+
+   ```bash
+   sudo install -d -m 0750 /etc/spire/tls
+   sudo install -m 0644 /path/to/server.crt /etc/spire/tls/server.crt
+   sudo install -m 0600 /path/to/server.key /etc/spire/tls/server.key
+   ```
+
+   If a reverse proxy terminates TLS instead, remove the two `SPIRE_TLS_*` variables, bind `spire-server` to loopback, and set `SPIRE_TRUST_PROXY=true`.
 
    Security-relevant settings:
 
@@ -76,12 +90,12 @@ SQL
    | `SPIRE_SIMULATE_TPM2` / `SPIRE_ALLOW_SIMULATED_TPM` | Accept software-simulated TPM attestations. **Test environments only**: a simulated attestation proves nothing about the device. |
    | `SPIRE_ENABLE_TEST_ENDPOINTS` | Registers the unauthenticated `/auth/oidc/test-callback` used by the E2E suite. **Never set in production**: it lets any caller mint an admin session. |
    | `SPIRE_SESSION_SECRET` | Key that signs admin session cookies. If unset (or under 32 characters) a random key is generated per process and every restart signs all admins out. |
-   | `SPIRE_TRUST_PROXY` | Trust `X-Forwarded-For`, `X-Real-IP` and `X-Forwarded-Proto` from a reverse proxy. Set it only when clients cannot reach the server except through that proxy; otherwise they can spoof their IP in audit logs. Required when `enforce_https` is on, since the server itself speaks plain HTTP: it refuses to start with `enforce_https` and no trusted proxy. |
+   | `SPIRE_TRUST_PROXY` | Trust `X-Forwarded-For`, `X-Real-IP` and `X-Forwarded-Proto` from a reverse proxy. Set it only when clients cannot reach the server except through that proxy; otherwise they can spoof their IP in audit logs. With `enforce_https`, either configure built-in TLS or a trusted TLS proxy. |
    | `general.server_base_url` (Settings → General) | The server's public URL. Used for the OIDC redirect URI and written into `/install.sh`. Until it is changed from the seeded `http://localhost:8080`, `/install.sh` uses the request's Host header instead (validated as a plain host name). Set it before onboarding devices. |
 
    **Sessions** are recorded server-side. Logging out ends the session, and disabling an account or changing its password or role ends all of that account's sessions immediately.
 
-   **Roles.** `OPERATOR` and above can run arbitrary shell commands as root (`/bin/sh -c`) and open root terminals on every enrolled device. Treat those roles as root on the whole fleet: grant them only to people you would give root on every endpoint, and use `AUDITOR` for read-only access.
+   **Roles.** `OPERATOR` and above can run arbitrary shell commands as root (`/bin/sh -c`) and open root terminals on every device within their tag scope. An unscoped account has that authority across the fleet. Grant these roles only to people trusted with root on the devices they can reach; use `AUDITOR` for read-only access.
 
 3. Create `/etc/systemd/system/spire-server.service`:
    ```ini
@@ -174,13 +188,12 @@ Set **Settings → General → server base URL** to the `https://` address agent
 SpireUEM requires **zero inbound ports** on managed Debian desktop endpoints. All communication is initiated outbound by `spired` to `spire-server`.
 
 ### 4.1 Control Plane Firewall (`ufw`)
-Allow inbound TCP port `8080` (direct) or `80`/`443` (when fronted by Caddy/Nginx TLS reverse proxy) from your management and endpoint subnets:
+Allow the built-in TLS port from endpoint and management subnets, or expose only the TLS proxy on 443. Do not expose a plaintext control-plane listener:
 ```bash
-# Direct HTTP/8080 access on LAN
-sudo ufw allow from 192.168.1.0/24 to any port 8080 proto tcp comment "SpireUEM Control Plane"
+# Built-in TLS example from section 2.3
+sudo ufw allow from 192.168.1.0/24 to any port 8443 proto tcp comment "SpireUEM TLS Control Plane"
 
-# Or if using a TLS Reverse Proxy (Nginx / Caddy)
-sudo ufw allow 80/tcp comment "SpireUEM HTTP Redirect"
+# Or a TLS reverse proxy
 sudo ufw allow 443/tcp comment "SpireUEM HTTPS Ingress"
 sudo ufw reload
 ```
@@ -189,26 +202,45 @@ sudo ufw reload
 
 ## 5. Bare-Metal Endpoint Onboarding Flow
 
-### Step 1: Run Single-Command Bootstrap on the Target Debian Machine
-On any physical or virtual Debian 12/13 (`amd64`) machine with network reachability to `spire-server`:
-```bash
-curl -sSL https://<server-host>/install.sh | sudo bash
-# Lab network without TLS only:
-# curl -sSL http://<server-ip>:8080/install.sh | sudo bash -s -- --allow-insecure-http
-```
-What this command performs automatically:
-1. Verifies root privileges (`EUID == 0`) and `amd64` architecture.
-2. Downloads `/dist/spire-agent_0.1.0_amd64.deb` from `spire-server`.
-3. Installs the package via `dpkg -i` (`/usr/local/bin/spired` and `/lib/systemd/system/spired.service`).
-4. Writes `/etc/spire/config.yaml` (mode `0600`) pointing to `http://<server-ip>:8080`.
-5. Reloads `systemd`, enables `spired.service`, and starts the daemon immediately.
+### Step 1: Run the bootstrap on the target Debian machine
 
-### Step 2: Tag & Approve Endpoint in the Admin Web UI
-1. Open `http://<server-ip>:8080/admin/devices` and authenticate with `SPIRE_ADMIN_USER` / `SPIRE_ADMIN_PASSWORD`.
+Set **Settings → General → server base URL** to the public HTTPS URL first. Download the script so the operator can inspect it before running it:
+
+```bash
+curl -fsSLo /tmp/spire-install.sh https://spire.example.com/install.sh
+less /tmp/spire-install.sh
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com
+```
+
+The direct `.deb` path relies on deployment TLS and does not independently verify a package signature. For production fleets, initialize and publish the signed APT repository (`make init-repo`, then `make publish-deb`) and use:
+
+```bash
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com --use-apt-repo
+```
+
+For an isolated lab only, both server and bootstrap need explicit insecure-HTTP overrides:
+
+```bash
+curl -fsSLo /tmp/spire-install.sh http://<server-ip>:8080/install.sh
+sudo bash /tmp/spire-install.sh --server-url http://<server-ip>:8080 --allow-insecure-http
+```
+
+The bootstrap:
+
+1. verifies root privileges and `amd64` architecture;
+2. installs the agent from the direct `.deb` or signed APT repository;
+3. installs `/usr/local/bin/spired`, `/usr/bin/spire-ctl`, Spire Hub, and `spired.service`;
+4. writes `/etc/spire/config.yaml` with the selected server URL and `/etc/spire/token` path;
+5. enables and starts `spired.service`.
+
+The standard bootstrap does not accept a dynamic enrollment token. It uses the administrator-approval flow below. Dynamic `spire_tok_...` tokens are for provisioning clients that call `POST /api/v1/enrollment/register` directly.
+
+### Step 2: Tag and approve the endpoint
+1. Open `https://spire.example.com/admin/devices` and authenticate.
 2. Locate the newly staged endpoint (`status = PENDING_APPROVAL`).
-3. Assign optional fleet tags (e.g., `laptop`, `kiosk`, `engineering`) and click **Save**.
+3. Assign optional fleet tags and a valid ring, then click **Save**.
 4. Click **Approve**.
-5. On its next poll cycle (default `5s`), `spired` claims its single-use bearer token (the server releases it only to the agent holding the enrollment key that first staged the device, see below), persists it to `/etc/spire/agent.token` (mode `0600`), caches its active policy set to `/etc/spire/policy-cache.json`, and enforces all assigned policies.
+5. On its next poll (10 seconds in the generated config), `spired` claims its single-use bearer token. The server releases it only to the agent holding the enrollment key that first staged the device. The agent writes `/etc/spire/token` with mode `0600`, caches active policy in `/etc/spire/policy-cache.json`, and begins enforcement.
 
 ### Enrollment keys and re-installing an agent
 On first start `spired` generates a random enrollment key and stores it in `/etc/spire/enrollment.key` (mode `0600`), next to the token. The server binds the device record to that key when the device is first staged, and refuses any later enroll request for the same hardware UUID that presents a different key. Knowing a machine's hardware UUID is therefore not enough to collect its token.
@@ -224,7 +256,7 @@ If you reinstall the OS or delete `/etc/spire/`, the new agent has a new key and
 sudo journalctl -u spired.service -f
 ```
 Key log markers:
-- `[spired] device approved! Token persisted to /etc/spire/agent.token (mode 0600)` — Enrollment completed.
+- `[spired] device approved! Token persisted to /etc/spire/token (mode 0600)` — Enrollment completed.
 - `[WARN] Server unreachable; falling back to local policy cache` — Agent is operating in offline resilience mode and enforcing cached policies.
 - `[spired] flushed N buffered offline reports` — Agent reconnected to `spire-server` and uploaded buffered offline compliance reports.
 
@@ -260,10 +292,10 @@ sudo /usr/local/bin/spired -config /etc/spire/config.yaml -once
 Administrators and auditors can export a complete compliance snapshot via the **Export Audit** buttons on `/admin/devices` or via CLI:
 ```bash
 # Export CSV Audit Report
-curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=csv" -o compliance-audit.csv
+curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "https://spire.example.com/admin/compliance/export?format=csv" -o compliance-audit.csv
 
 # Export JSON Audit Report
-curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "http://<server-ip>:8080/admin/compliance/export?format=json" -o compliance-audit.json
+curl -sSL -u "admin:${SPIRE_ADMIN_PASSWORD}" "https://spire.example.com/admin/compliance/export?format=json" -o compliance-audit.json
 ```
 
 ---
@@ -392,13 +424,7 @@ is stable across convergence cycles (it is not regenerated once a valid keyfile 
 - **At rest:** sealed with the server's RSA-OAEP-4096 + AES-256-GCM KEK envelope (the same scheme as
   LUKS recovery-key escrow) before the policy payload is persisted. The stored payload holds only
   ciphertext, and the admin UI never displays a secret back after save.
-- **In transit:** the server unseals secrets **just-in-time** when building a device's check-in
-  response, so only the authenticated agent receives plaintext. **The control-plane binary serves
-  plain HTTP**; transport confidentiality for the check-in channel (and therefore for these
-  secrets) depends on the deployment's TLS-terminating reverse proxy (set `SPIRE_TRUST_PROXY=true`
-  and, for redirect enforcement, `enforce_https`). Terminate TLS at the proxy in any environment
-  carrying network secrets. EAP-TLS client **private keys** are delivered in the payload the same
-  way (plaintext only to the agent over the proxied channel); treat the proxy as mandatory.
+- **In transit:** the server unseals secrets **just-in-time** when building a device's check-in response, so only the authenticated agent receives plaintext. Transport confidentiality depends on built-in TLS or a TLS-terminating reverse proxy. Never enable `SPIRE_ALLOW_INSECURE_HTTP` on a network carrying these secrets. EAP-TLS client **private keys** are delivered to the agent in the policy payload over that protected channel; treat TLS as mandatory.
 
 ### 8.2 USB_DEVICE_CONTROL (usbguard)
 
@@ -625,12 +651,9 @@ applied inside an active maintenance window. The agent reports `SUCCESS`/`FAILED
 back on its next check-in; a failed update backs off (no hot retry loop).
 
 ### 11.4 Integrity — read this before trusting the hash
-The SHA-256 in the descriptor is fetched from the **same server** that serves the `.deb`, so
-it protects against **transport corruption / truncation, not a compromised server**: an
-attacker who controls the server controls both the artifact and its advertised hash. The APT
-repo served at `/apt/*` is **unsigned** (no GPG `Release.gpg`/`InRelease` in this build). For
-a deployment where the control plane is plain HTTP, terminate TLS at a trusted reverse proxy
-(see §4) and treat server compromise as out of scope for this mechanism.
+The SHA-256 in a self-update descriptor is fetched from the **same server** that serves the `.deb`, so it protects against transport corruption and truncation, not a compromised server. An attacker controlling the server controls both the artifact and its advertised hash. The self-update path does not independently verify a package signature.
+
+SpireUEM can separately publish a GPG-signed APT repository with `reprepro` (`make init-repo`, then `make publish-deb`). Prefer that repository for production installation and routine package management. Regardless of package source, protect the control-plane channel with built-in TLS or a trusted TLS proxy.
 
 ### 11.5 Operator steps to publish a new agent version
 1. Build the new agent `.deb` and place it in the server's dist dir (`SPIRE_DIST_DIR`, default
@@ -640,9 +663,7 @@ a deployment where the control plane is plain HTTP, terminate TLS at a trusted r
 3. Watch the version badges on `/admin/devices` advance as agents check in and self-update;
    failed updates surface on the device drawer with their error message.
 
-**Limits / out of scope:** no artifact signing (unsigned repo, see §7.4); the agent updates
-to exactly the ring target (no partial/percentage rollout within a ring beyond ring
-membership); `dev` builds are intentionally never touched.
+**Limits / out of scope:** self-update has no independent artifact-signature check (the separately generated APT repository can be GPG-signed; see section 11.4); the agent updates to exactly the ring target, with no percentage rollout within a ring beyond ring membership; `dev` builds are intentionally never touched.
 ## 12. Lost-Device Actions (Lock / Mark Lost / Crypto-Erase Wipe / Recovery-Key Rotation)
 
 All four actions are driven from the device detail page on `/admin/devices` and are delivered
@@ -909,10 +930,7 @@ read-only and not scoped here. A user with an empty tag set is unrestricted.
 
 - Set a user's allowed tags in **Settings → Users** (edit a user), or via the user API
   (`allowed_tags` on create/update).
-- Enforcement is **server-side on every device-targeted admin route** (device detail,
-  commands, terminal, remote-assist, reboot, patch, scans, approve/revoke, tags, ring, LUKS
-  reveal), applied in one central middleware so a new device route cannot silently bypass it.
-  A regression test enumerates the device routes and fails if one is not scoped.
+- Enforcement is **server-side on every device-targeted admin route**. URL-based device routes share central middleware; handlers whose device ID comes from a request body or query parameter perform an explicit scope check. A regression test enumerates the device routes and fails if one is not scoped.
 - An out-of-scope device returns **404** (its existence is hidden from the operator), not 403.
 - A scoped user **cannot edit a device's tags to remove it from their own scope** (tag
   escape): the new tag set must still contain at least one of their allowed tags.
