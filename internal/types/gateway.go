@@ -84,7 +84,7 @@ type RemoteAssistRequestPayload struct {
 // RemoteAssistResponsePayload reports user consent and connection credentials for remote assistance.
 type RemoteAssistResponsePayload struct {
 	SessionID    string `json:"session_id"`
-	Status       string `json:"status"` // APPROVED, REJECTED_BY_USER, FAILED
+	Status       string `json:"status"` // APPROVED, REJECTED_BY_USER, NO_ACTIVE_USER_SESSION, CONSENT_UNAVAILABLE
 	Credentials  string `json:"credentials,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,10 +24,65 @@ func teardownRemoteDesktop(ctx context.Context) {
 	}
 }
 
-// HandleRemoteAssistRequest checks the active seat0 desktop session via loginctl,
-// prompts the user for attended remote assistance confirmation (up to 60s timeout)
-// via zenity or org.freedesktop.Notifications, and initializes gnome-remote-desktop
-// or returns NO_ACTIVE_USER_SESSION / REJECTED_BY_USER.
+// consentDecision is the outcome of asking the desktop user for remote-assist consent.
+type consentDecision int
+
+const (
+	consentRejected    consentDecision = iota // user clicked No, closed the dialog, or it timed out
+	consentApproved                           // user explicitly clicked Yes
+	consentUnavailable                        // no interactive dialog could be shown
+)
+
+// consentPrompter and consentNotifier are variables so tests can replace them.
+var (
+	consentPrompter     = zenityConsentPrompt
+	consentNotifier     = notifyUser
+	activeSessionLookup = inventory.GetActiveSessionDetails
+)
+
+// zenityConsentPrompt shows a Yes/No dialog to the seat0 user. Only exit status 0
+// (an explicit Yes) approves. A missing zenity binary means no consent can be given;
+// a desktop notification is never treated as consent.
+func zenityConsentPrompt(ctx context.Context, username, uid, promptText string) consentDecision {
+	zenityPath, err := exec.LookPath("zenity")
+	if err != nil {
+		return consentUnavailable
+	}
+	dbusAddr := fmt.Sprintf("unix:path=/run/user/%s/bus", uid)
+	args := []string{"--question", "--title=SpireUEM Remote Assistance", "--text=" + promptText, "--timeout=60"}
+	var cmd *exec.Cmd
+	if runuserPath, rErr := exec.LookPath("runuser"); rErr == nil {
+		full := append([]string{"-u", username, "--", "env", "DBUS_SESSION_BUS_ADDRESS=" + dbusAddr, "DISPLAY=:0", zenityPath}, args...)
+		cmd = exec.CommandContext(ctx, runuserPath, full...)
+	} else {
+		cmd = exec.CommandContext(ctx, zenityPath, args...)
+		cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS="+dbusAddr, "DISPLAY=:0")
+	}
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return consentRejected // 1 = No, 5 = timeout, others = dialog failure
+		}
+		return consentUnavailable // could not start the dialog at all
+	}
+	return consentApproved
+}
+
+// notifyUser best-effort shows an informational desktop notification. It never approves anything.
+func notifyUser(ctx context.Context, uid, summary, body string) {
+	notifyPath, err := exec.LookPath("notify-send")
+	if err != nil || strings.TrimSpace(uid) == "" {
+		return
+	}
+	cmd := exec.CommandContext(ctx, notifyPath, "-u", "critical", "-a", "SpireUEM", summary, body)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus", uid), "DISPLAY=:0")
+	_ = cmd.Run()
+}
+
+// HandleRemoteAssistRequest checks the active seat0 desktop session via loginctl and
+// asks the user for consent with a 60-second zenity Yes/No dialog. Only an explicit Yes
+// approves. It returns NO_ACTIVE_USER_SESSION, REJECTED_BY_USER, CONSENT_UNAVAILABLE
+// (no dialog could be shown), or APPROVED with RDP details.
 func HandleRemoteAssistRequest(parentCtx context.Context, req types.RemoteAssistRequestPayload) types.RemoteAssistResponsePayload {
 	ctx, cancel := context.WithTimeout(parentCtx, 60*time.Second)
 	defer cancel()
@@ -50,7 +107,7 @@ func HandleRemoteAssistRequest(parentCtx context.Context, req types.RemoteAssist
 		}
 	}
 
-	username, uid, err := inventory.GetActiveSessionDetails()
+	username, uid, err := activeSessionLookup()
 	if (err != nil || strings.TrimSpace(username) == "" || strings.TrimSpace(uid) == "") && decisionOverride != "APPROVE" {
 		teardownRemoteDesktop(ctx)
 		return types.RemoteAssistResponsePayload{
@@ -60,37 +117,27 @@ func HandleRemoteAssistRequest(parentCtx context.Context, req types.RemoteAssist
 		}
 	}
 
-	approved := false
+	decision := consentApproved
 	if decisionOverride == "APPROVE" {
-		approved = true
-	} else if username != "" && uid != "" {
-		dbusSocket := fmt.Sprintf("/run/user/%s/bus", uid)
-		dbusAddr := fmt.Sprintf("unix:path=%s", dbusSocket)
+		log.Printf("[spired] remote assist session=%s approved by local override file/env, not by the desktop user", req.SessionID)
+	} else {
 		promptText := fmt.Sprintf("Administrator '%s' is requesting attended remote desktop assistance. Allow screen sharing?", req.AdminActor)
-
-		if zenityPath, lookErr := exec.LookPath("zenity"); lookErr == nil {
-			var cmd *exec.Cmd
-			if runuserPath, rErr := exec.LookPath("runuser"); rErr == nil {
-				cmd = exec.CommandContext(ctx, runuserPath, "-u", username, "--",
-					"env", "DBUS_SESSION_BUS_ADDRESS="+dbusAddr, "DISPLAY=:0",
-					zenityPath, "--question", "--title=SpireUEM Remote Assistance", "--text="+promptText, "--timeout=60")
-			} else {
-				cmd = exec.CommandContext(ctx, zenityPath, "--question", "--title=SpireUEM Remote Assistance", "--text="+promptText, "--timeout=60")
-				cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS="+dbusAddr, "DISPLAY=:0")
-			}
-			if runErr := cmd.Run(); runErr == nil {
-				approved = true
-			}
-		} else if notifyPath, nErr := exec.LookPath("notify-send"); nErr == nil {
-			cmd := exec.CommandContext(ctx, notifyPath, "-u", "critical", "-a", "SpireUEM", "SpireUEM Remote Assistance Requested", promptText)
-			cmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS="+dbusAddr, "DISPLAY=:0")
-			if runErr := cmd.Run(); runErr == nil {
-				approved = true
-			}
-		}
+		decision = consentPrompter(ctx, username, uid, promptText)
 	}
 
-	if !approved {
+	switch decision {
+	case consentApproved:
+		// fall through to session setup below
+	case consentUnavailable:
+		teardownRemoteDesktop(ctx)
+		consentNotifier(ctx, uid, "SpireUEM Remote Assistance",
+			fmt.Sprintf("Administrator '%s' requested remote assistance. It was refused because no consent dialog is available on this device.", req.AdminActor))
+		return types.RemoteAssistResponsePayload{
+			SessionID:    req.SessionID,
+			Status:       "CONSENT_UNAVAILABLE",
+			ErrorMessage: "No interactive consent dialog (zenity) is available on the device; remote assistance refused",
+		}
+	default:
 		teardownRemoteDesktop(ctx)
 		return types.RemoteAssistResponsePayload{
 			SessionID:    req.SessionID,

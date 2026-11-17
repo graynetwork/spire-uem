@@ -56,7 +56,7 @@ The two cache files are plaintext JSON protected by filesystem permissions. They
 
 ### Spire Hub
 
-Spire Hub is a Python GTK4/Libadwaita application with a Go launcher. It runs as the active graphical user and uses the local UNIX socket for status, sync, catalog, install, and uninstall operations. Remote-assistance consent is handled by `spired` with a `zenity` prompt, not by Spire Hub.
+Spire Hub is a Python GTK4/Libadwaita application with a Go launcher. It runs as the active graphical user and uses the local UNIX socket for status, sync, catalog, install, and uninstall operations. Remote-assistance consent is handled by `spired` with a `zenity` Yes/No prompt, not by Spire Hub. Without a working `zenity` dialog the request fails closed.
 
 ## 2. Transport
 
@@ -150,4 +150,5 @@ The separately published APT repository can be generated and signed with `reprep
 - First-contact wipe-signing-key trust depends on transport TLS.
 - Self-update has no independent artifact signature.
 - `spired` runs as unrestricted root.
-- The notification-only remote-assistance fallback does not provide genuine interactive consent and should be hardened.
+- Remote assistance returns a generated PIN that is not applied to GNOME Remote Desktop credentials.
+- A root-owned test override can approve remote assistance without the desktop user.
