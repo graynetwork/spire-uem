@@ -32,6 +32,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -50,9 +51,14 @@ type Handler struct {
 	enforceHTTPS     bool
 	alertStore       *db.AlertStore
 	alertMgr         *alerts.Manager
+	// wfEngine drives automation/remediation workflows (resume on approval, etc.).
+	wfEngine *workflows.Engine
 	// deviceMTLSMode is shown read-only on the Settings page (off | optional | required).
 	deviceMTLSMode string
 }
+
+// SetWorkflowEngine wires the workflow engine used by the workflow admin + approval handlers.
+func (h *Handler) SetWorkflowEngine(e *workflows.Engine) { h.wfEngine = e }
 
 // SetDeviceMTLSMode records the device mutual-TLS mode for the read-only Settings display.
 func (h *Handler) SetDeviceMTLSMode(mode string) {

@@ -21,6 +21,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 var (
@@ -334,6 +335,9 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 					"withheld":    mode == types.EnforcementEnforce,
 				},
 			})
+			h.emitWorkflowEvent(r.Context(), workflows.EventAttestationFailed, dev.ID, map[string]any{
+				"reason": trust.Reason, "enforcement": string(mode),
+			})
 		}
 	}
 
@@ -383,6 +387,11 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	// and the last active user the agent reported. Shown on the device page when LOST.
 	seenIP := clientIP(r)
 	_ = h.repo.UpdateDeviceSeenFacts(r.Context(), dev.ID, seenIP, strings.TrimSpace(req.ActiveSession))
+
+	// Raise workflow events this check-in produced (agent started, active session change,
+	// primary address change). Best-effort: never fails the check-in. `dev` here is the
+	// device as it was BEFORE this check-in, so the comparison sees the real transition.
+	h.emitCheckinWorkflowEvents(r.Context(), dev, &req, seenIP)
 
 	// Append lost-device action directives to this check-in's command list. These are
 	// synthetic (not persisted command rows): the lost directive is re-delivered every

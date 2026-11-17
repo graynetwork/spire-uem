@@ -316,3 +316,38 @@ func validateParams(params []types.ScriptParam) error {
 	}
 	return nil
 }
+
+// GetScriptVersionByNumber returns a script's version by its integer version number, or nil
+// (ErrScriptVersionNotFound) if the script or that version no longer exists. Used by the
+// run_script workflow action to pin a specific version.
+func (r *Repository) GetScriptVersionByNumber(ctx context.Context, scriptID string, version int) (*types.ScriptVersion, error) {
+	var v types.ScriptVersion
+	var params []byte
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, script_id, version, content, sha256, params, created_by, created_at
+		FROM script_versions WHERE script_id=$1 AND version=$2`, scriptID, version).
+		Scan(&v.ID, &v.ScriptID, &v.Version, &v.Content, &v.SHA256, &params, &v.CreatedBy, &v.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrScriptVersionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get script version by number: %w", err)
+	}
+	_ = json.Unmarshal(params, &v.Params)
+	return &v, nil
+}
+
+// GetCurrentScriptVersion returns the script's current (published) version — the one
+// SetCurrentScriptVersion marked — or nil (ErrScriptVersionNotFound) if the script has no
+// current version or was deleted. Used by the run_script workflow action when no explicit
+// version is given.
+func (r *Repository) GetCurrentScriptVersion(ctx context.Context, scriptID string) (*types.ScriptVersion, error) {
+	s, err := r.GetScript(ctx, scriptID)
+	if err != nil {
+		return nil, err
+	}
+	if s == nil || s.CurrentVersionID == nil || *s.CurrentVersionID == "" {
+		return nil, ErrScriptVersionNotFound
+	}
+	return r.GetScriptVersion(ctx, *s.CurrentVersionID)
+}

@@ -91,6 +91,24 @@ type Manager struct {
 
 	mu  sync.RWMutex
 	cfg Config
+
+	// onOffline, when set, is called once per detected offline device each tick. The wiring
+	// layer uses it to forward a device_offline signal to the workflow event log, keeping the
+	// alerts package free of any workflow dependency. Best-effort; must not block.
+	onOffline func(ctx context.Context, deviceID, hostname string, minutes int)
+}
+
+// SetOfflineHook installs a callback invoked for each device the offline ticker finds offline.
+func (m *Manager) SetOfflineHook(fn func(ctx context.Context, deviceID, hostname string, minutes int)) {
+	m.mu.Lock()
+	m.onOffline = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) offlineHook() func(context.Context, string, string, int) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.onOffline
 }
 
 // NewManager constructs a Manager over store with the given initial config.

@@ -3,18 +3,21 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/spire-uem/spire-uem/internal/types"
 )
 
-// ScriptTarget selects devices for a script run. Exactly one of DeviceIDs, Tags or Ring is the
-// primary selector; a tag-scoped admin's ScopeTags, when non-nil, is intersected with the
-// result so a scoped admin can never target a device outside their scope. A group target can
-// be added later behind this same resolver without changing callers.
+// ScriptTarget selects devices for a script run. Exactly one of DeviceIDs, Tags, Ring or
+// GroupID is the primary selector; a tag-scoped admin's ScopeTags, when non-nil, is
+// intersected with the result so a scoped admin can never target a device outside their
+// scope. The GroupID target lets an on-demand run target a dynamic device group.
 type ScriptTarget struct {
 	DeviceIDs []string
 	Tags      []string
 	Ring      *types.DeploymentRing
+	// GroupID targets the current members of a dynamic device group.
+	GroupID string
 	// ScopeTags limits the resolved set to devices carrying at least one of these tags. Nil
 	// means unscoped (the admin is not tag-limited).
 	ScopeTags []string
@@ -42,8 +45,15 @@ func (r *Repository) ResolveScriptTargetDevices(ctx context.Context, t ScriptTar
 	case len(t.Tags) > 0:
 		query = `SELECT id FROM devices WHERE status = 'APPROVED' AND tags && $1::text[] AND (NOT $2::bool OR tags && $3::text[])`
 		args = []any{t.Tags, scoped, scopeTags}
+	case strings.TrimSpace(t.GroupID) != "":
+		// Group target: the APPROVED devices currently materialised in the group's membership,
+		// intersected with the admin's tag scope.
+		query = `SELECT d.id FROM devices d
+			JOIN group_memberships gm ON gm.device_id = d.id
+			WHERE gm.group_id = $1::uuid AND d.status = 'APPROVED' AND (NOT $2::bool OR d.tags && $3::text[])`
+		args = []any{t.GroupID, scoped, scopeTags}
 	default:
-		return nil, fmt.Errorf("script target selects no devices (give device ids, tags, or a ring)")
+		return nil, fmt.Errorf("script target selects no devices (give device ids, tags, a ring, or a group)")
 	}
 
 	rows, err := r.pool.Query(ctx, query, args...)

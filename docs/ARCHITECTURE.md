@@ -425,24 +425,76 @@ parameter values are never rendered in the UI, never logged, and never stored in
 
 ### Known gaps
 
-- Targeting supports explicit device ids, tags and ring. Dynamic groups are being built in
-  parallel; the target resolver is a small interface so a group target can be added without
-  changing callers, but group targeting is not implemented here.
-- Scheduled (cron) and agent-start script triggers are modelled (the run `trigger` column and
-  the server-side cron helper), and the directive carries everything the agent needs; the
-  per-schedule server loop that enqueues scheduled runs is left to the scheduling worker and is
-  not wired in this change. On-demand runs and sensor scheduling are fully wired.
+- Targeting supports explicit device ids, tags, ring and (added by the workflows feature) a
+  dynamic group. `ResolveScriptTargetDevices` now accepts a `GroupID` that resolves to the
+  group's current members, intersected with the admin's tag scope.
+- Scheduled (cron) and agent-start script triggers are now wired by the automation workflows
+  engine (`internal/workflows`): a `run_script` workflow action queues a run with the
+  `scheduled` trigger from a cron schedule and the `agent_start` trigger from the
+  `agent_started` event, through the existing `QueueScriptRun` path. On-demand runs and sensor
+  scheduling remain as before.
 - The agent writes scripts under `/run/spire/scripts`; an in-image script is not tamper-proof
   against a root user already on the endpoint, the same honest limitation as other root-executed
   policy types.
 - There is no admin HTML page for scripts/sensors in this change; the admin surface is the JSON
   API under `/admin/scripts` and `/admin/sensors`. A UI can be layered on later.
 
+## 10a. Automation and remediation workflows (internal/workflows, internal/db/workflow_*.go)
+
+A durable event log (`workflow_events`) is written best-effort at the points an automation may
+care about: device enrolled/approved, inventory attribute changed, compliance transition, new
+CVE matched, device offline (from the alerts offline ticker via a hook), patch/agent-update
+failed, attestation failure, agent started (an optional `agent_started` flag on the first
+check-in after the agent process starts — old agents never send it), active-session change and
+primary-address change. Writing an event never fails or slows the action that produced it:
+`Repository.EmitEvent` logs and swallows any error.
+
+The engine runs on every instance. It claims events with `FOR UPDATE SKIP LOCKED` and claims a
+scheduled workflow's per-minute fire by inserting a `(workflow_id, minute)` row whose primary
+key makes the claim atomic, so each event and each scheduled fire is handled exactly once
+cluster-wide. Processed events and schedule-fire rows are reaped after a bounded retention, so a
+server restart with unprocessed events resumes cleanly.
+
+A workflow (`workflows` table, `version` bumped on every edit) has one event trigger with an
+optional JSON field filter OR a cron schedule over a group/tags/ring target; a group-rule
+condition evaluated against the candidate device at run time (reusing the grouprule compiler
+against the single device, fail-closed on a broken rule); and `then`/`else` action lists. The
+engine reads the CURRENT definition at evaluation time, so a workflow edited or disabled while
+events are queued is evaluated as it is now, and the exact version is recorded on the run.
+
+Actions are deterministic and bounded: add/remove tag, set ring, add/remove the device from a
+group's static include list, run a library script version (queued through `QueueScriptRun` with
+the `scheduled`/`agent_start` trigger), send an alert, lock sessions, quarantine (configurable
+tag), and require approval (pauses the remaining actions; a `SECURITY_ADMIN` approves/rejects or
+it expires, after which the parked tail never runs). No wipe, lost mode or recovery-key reveal is
+representable. Safety: workflow-caused changes are marked (`workflow_caused`) and skipped by the
+engine (loop suppression); a per workflow+device cooldown (default 1h) and a global per-minute
+action budget bound volume; a dry-run mode records intended effects without changing anything.
+Every run and action is recorded (`workflow_runs`, `workflow_run_actions`) and audited with actor
+`workflow:<name>`.
+
+Fail-open vs fail-closed: a broken condition fails the run (closed — never fires actions on an
+unevaluable condition); a device revoked or deleted between event and action is skipped; a
+deleted/absent script version makes the `run_script` action fail (recorded), never panics;
+budget exhaustion stops the rest of a run. Event emission is deliberately fail-OPEN (best
+effort) because it must never block the operation that produced it.
+
+RBAC and scope: `SECURITY_ADMIN`+ create/edit, `AUDITOR`+ view. A tag-scoped admin's workflow
+carries their scope (`creator_scoped_tags`); at run time the engine re-reads the device and the
+executors refuse any device outside that scope, refuse to add a tag outside it, and refuse a tag
+removal that would move the device out of scope. A late-added action (e.g. "start patch
+campaign") registers on the action `Registry` without changing the engine.
+
+
+
 ## 11. Known security gaps
 
 - The enrollment-token per-IP failure rate limiter is an in-memory sliding counter, adequate for a single control-plane process. In a multi-instance deployment it is per-process, so N instances allow roughly N× the failures before throttling; move it to shared state if that matters (same caveat as the admin PAT limiter). The max-uses consume is NOT affected — it is an atomic DB update and holds across instances.
 
-- Scheduled and agent-start script runs are modelled (trigger column, directive type) but no server loop enqueues them yet; on-demand runs, sensors and `SCRIPT_POLICY` are fully wired. Remediation workflows (Phase 2, next) will add the schedule and event triggers.
+- Scheduled and agent-start script runs are now wired by the automation workflows engine
+  (§10a): a `run_script` workflow action queues a run with the `scheduled` trigger from a cron
+  schedule and the `agent_start` trigger from the `agent_started` event. On-demand runs, sensors
+  and `SCRIPT_POLICY` remain fully wired as before.
 - A device can report only sensors that are enabled, currently target it and were dispatched to it, but it can still report any value for those: a root user on the endpoint controls its own sensor results, as with inventory.
 - Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
   Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent

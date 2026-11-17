@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 // cveImportBatch is how many feed entries are buffered before a CopyFrom flush during an
@@ -196,6 +197,20 @@ func (r *Repository) ReplaceDeviceCVEMatches(ctx context.Context, deviceID strin
 	}
 	defer tx.Rollback(ctx)
 
+	// Capture the prior CVE id set BEFORE deleting, so we can raise a cve_matched event only
+	// for genuinely new matches (not on every recompute of the same set).
+	prior := map[string]struct{}{}
+	prows, perr := tx.Query(ctx, `SELECT DISTINCT cve_id FROM device_cve_matches WHERE device_id = $1`, deviceID)
+	if perr == nil {
+		for prows.Next() {
+			var id string
+			if prows.Scan(&id) == nil {
+				prior[id] = struct{}{}
+			}
+		}
+		prows.Close()
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM device_cve_matches WHERE device_id = $1`, deviceID); err != nil {
 		return fmt.Errorf("delete old device cve matches: %w", err)
 	}
@@ -216,7 +231,28 @@ func (r *Repository) ReplaceDeviceCVEMatches(ctx context.Context, deviceID strin
 			return fmt.Errorf("insert device cve matches: %w", err)
 		}
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Raise cve_matched for each NEW cve id (best-effort; never fails the recompute). The
+	// urgency is normalised to high for the "high**" variants so a trigger filter on
+	// urgency=high catches both. One event per newly-seen CVE id.
+	seen := map[string]struct{}{}
+	for _, m := range matches {
+		if _, had := prior[m.CVEID]; had {
+			continue
+		}
+		if _, dup := seen[m.CVEID]; dup {
+			continue
+		}
+		seen[m.CVEID] = struct{}{}
+		urgency := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.Urgency)), "**")
+		r.EmitEvent(ctx, workflows.EventCVEMatched, deviceID, map[string]any{
+			"id": m.CVEID, "urgency": urgency, "source_package": m.SourcePackage,
+		}, false)
+	}
+	return nil
 }
 
 // ListDeviceCVEMatches returns a device's CVE matches, ordered by urgency (high first)

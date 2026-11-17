@@ -337,3 +337,51 @@ detect; if non-compliant and a remediate step is set it runs remediate and detec
 reporting compliance from that second detect. On unassignment the agent runs `remove` once if
 set. If a referenced version has been deleted the policy reports FAILED and does nothing, so a
 deleted script never leaves a device in an unknown state.
+
+## Automation and remediation workflows
+
+A **workflow** reacts to something that happens in the fleet, or runs on a schedule, and takes
+bounded actions on each matching device. `SECURITY_ADMIN`+ create and edit workflows; `AUDITOR`+
+can view workflows and their run history. A tag-scoped admin's workflow only ever fires for
+devices in their tag scope, and can only make tag/ring/group changes inside that scope.
+
+A workflow has:
+
+- **A trigger** — exactly one of:
+  - an **event** (one kind, with an optional filter on event fields), chosen from: device
+    enrolled, device approved, inventory attribute changed, compliance changed, CVE matched,
+    device offline, patch failed, agent update failed, attestation failed, baseline mismatch,
+    agent started, active session changed, primary address changed. Example filter:
+    `{"urgency":"high"}` on a CVE-matched trigger, or `{"key":"sec.firewall_active"}` on an
+    attribute-changed trigger.
+  - a **schedule** — a standard 5-field cron expression evaluated once per minute, over a target
+    (a dynamic group, a tag set, or a ring).
+- **A condition** (optional) — a rule in the same language as dynamic groups, evaluated against
+  the candidate device at run time. If it is false, the `else` actions run instead of `then`.
+- **`then` / `else` actions** — any of: add tag, remove tag, set ring, add the device to / remove
+  it from a group's static include list, run a library script version (with parameters), send an
+  alert, lock the device's sessions, quarantine (adds the configured quarantine tag, default
+  `quarantine`), or require approval.
+
+**Require-approval** pauses the run: the actions after it do not run until a `SECURITY_ADMIN`
+approves (from the pending-approvals list) or rejects it, or it expires (default 24h), after
+which the remaining actions are abandoned.
+
+**Scheduled and agent-start script runs.** A `run_script` action on a scheduled workflow queues
+the run with the `scheduled` trigger; on an "agent started" workflow it uses the `agent_start`
+trigger. This is how you run a script on every device in a group each night, or once each time an
+agent restarts.
+
+**Safety.** Workflows are deterministic and bounded. A change a workflow makes never triggers
+another workflow (loop suppression). Each workflow is rate-limited per device by a **cooldown**
+(default 1 hour) and the whole fleet is bounded by a **global per-minute action budget**. Turn on
+**dry run** to see what a workflow *would* do (recorded in its run history) without changing
+anything. Every run and every action is written to the audit log with actor `workflow:<name>`.
+
+A device that is revoked between the event and the action is skipped; a run_script action whose
+script version was deleted fails and is recorded (it never leaves the device in an unknown
+state).
+
+The admin surface is a JSON API: `GET/POST /admin/workflows`, `POST /admin/workflows/{id}`,
+`POST /admin/workflows/{id}/toggle`, `DELETE /admin/workflows/{id}`, `GET /admin/workflows/runs`,
+`GET /admin/workflows/approvals`, and `POST /admin/workflows/approvals/{id}/approve|reject`.

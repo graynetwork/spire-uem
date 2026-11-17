@@ -133,5 +133,8 @@ func (m *Manager) checkOffline(ctx context.Context) {
 			Hostname: d.Hostname,
 			Details:  map[string]any{"hostname": d.Hostname, "offline_minutes": d.Minutes},
 		})
+		if hook := m.offlineHook(); hook != nil {
+			hook(ctx, d.ID, d.Hostname, d.Minutes)
+		}
 	}
 }

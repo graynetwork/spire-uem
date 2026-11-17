@@ -1325,3 +1325,55 @@ parameter to restrict results to the group's members.
 - `SPIRE_GROUP_RECOMPUTE_INTERVAL=30s` shortens the sweep for debugging (minimum 30s).
 - Membership events in `group_membership_events` show entered/left transitions with reasons.
   Capped at 500 per group; older events are trimmed on each recompute.
+
+## Automation and remediation workflows
+
+The workflow engine runs in-process on every `spire-server` instance and starts automatically;
+there is nothing to enable. It owns four loops: event drain, schedule evaluation,
+approval-expiry, and a reaper.
+
+**Tables.**
+- `workflow_events` — the durable event log. `status` is PENDING → PROCESSING → PROCESSED/FAILED.
+  Events are claimed with `FOR UPDATE SKIP LOCKED`, so two instances never process one event
+  twice. `workflow_caused = true` marks an event produced by a workflow action; the engine skips
+  it (loop suppression). Processed/failed rows older than the retention (7 days) are reaped.
+- `workflows` — definitions. `version` bumps on every edit, so a run records the exact version it
+  evaluated even if the workflow changed while events were queued.
+- `workflow_runs` / `workflow_run_actions` — one row per (workflow, device) evaluation and one
+  per action, with the trigger, condition result, branch, each action's result and detail.
+- `workflow_approvals` — paused runs awaiting a `SECURITY_ADMIN` decision; `resume_actions` is the
+  parked tail. Expired approvals finalize the run EXPIRED and never run the tail.
+- `workflow_cooldowns` — per (workflow, device) last-fired time; a run within the cooldown window
+  is suppressed and recorded SKIPPED.
+- `workflow_action_budget` — per-UTC-minute count of actions actually taken, shared across
+  instances; when it reaches the per-minute budget the rest of a run is stopped.
+- `workflow_schedule_fires` — one `(workflow_id, minute)` row per scheduled fire; the primary key
+  makes the per-minute claim atomic across instances.
+
+**A backlog of PENDING events** usually means the engine is not draining (a crashed instance, or
+a flood of events). Check the pending count:
+
+```sql
+SELECT status, COUNT(*) FROM workflow_events GROUP BY status;
+```
+
+PROCESSING rows whose `locked_at` is older than 5 minutes are reclaimed automatically (a crash
+between claim and finish does not strand an event).
+
+**A workflow is not firing.** Confirm it is `enabled`, that its `trigger_kind` matches the event
+(or its `schedule_cron` matches the minute), that its condition is true for the device, and that
+it is not inside its cooldown. The run history (`GET /admin/workflows/runs?workflow_id=...`)
+records SKIPPED runs with the reason ("within cooldown window", "device revoked", "device outside
+the workflow creator's tag scope").
+
+**An agent-start workflow never fires for some devices.** Only agents new enough to send the
+`agent_started` flag on their first post-start check-in trigger it; an old agent never sends the
+flag, so the workflow simply never fires for it (by design — no error).
+
+**Scheduled runs did not happen.** The cron is evaluated once per minute; a server that was down
+for that minute misses it (there is no catch-up). Only one instance fires each minute
+(`workflow_schedule_fires`).
+
+**Tuning.** The engine's defaults (event batch 50, action budget 200/min, approval TTL 24h, event
+retention 7 days, quarantine tag `quarantine`) are compiled in via `workflows.DefaultConfig()`;
+adjust in `cmd/spire-server/main.go` if a deployment needs different bounds.
