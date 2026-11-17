@@ -257,7 +257,36 @@ so in the result message; every later update has a fallback.
 The separately published APT repository can still be generated and signed with `reprepro`;
 production onboarding should prefer the signed-manifest path and/or the signed APT repo.
 
-## 8. Known security gaps
+## 8. Inventory
+
+Agents collect a rich hardware/software/network/security snapshot (`internal/inventory`) and
+send it in `CheckinRequest.Inventory` at most once per `inventory_interval` (default 6h),
+forced on first check-in after start and on admin request. Every collector reads through an
+injectable filesystem root and command runner, so tests use fixtures and no collector ever
+touches the real host under test. The agent caps the encoded report (512 KiB) and, if it is
+still too large, drops to a counts-only report with a `truncated` flag rather than send
+something the server will reject.
+
+The server treats the report as untrusted, best-effort telemetry. On check-in it: drops a
+report over 1 MiB whole; sanitises every string (length-capped, control bytes stripped) and
+every list (count-capped, malformed/duplicate entries dropped with a parse-warning count);
+flattens the scalar facts into typed `device_attributes` (source `inventory`, a fixed closed
+key catalogue, `internal/db/inventory_keys.go`) via the existing `ReplaceDeviceAttributes`
+contract; and replaces the per-device list tables (packages, kernel modules, listening
+sockets, local accounts, CA certificates, USB devices) inside one transaction. None of this
+can fail a check-in — policy delivery never depends on inventory. A device that never reports
+has no inventory attributes and the UI shows "no inventory reported", so old agents keep
+working unchanged.
+
+Change history (`device_inventory_changes`) is diffed before each overwrite and bounded to the
+most recent 500 rows per device. Fleet search (`SearchInventory`) builds only parameterised
+SQL: attribute keys are validated and passed as parameters, the comparison operator is chosen
+from a fixed allowlist (never built from input), and every query is tag-scoped through the same
+`DeviceScope` used elsewhere, so a scoped operator cannot see or export a device outside their
+tags. Export (CSV/JSON) and the admin-requested refresh are audited (`INVENTORY_EXPORT`,
+`INVENTORY_REFRESH`); the refresh rides the existing device command queue.
+
+## 9. Known security gaps
 
 - Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
   Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent
@@ -277,3 +306,4 @@ production onboarding should prefer the signed-manifest path and/or the signed A
 - `spired` runs as unrestricted root.
 - Remote assistance returns a generated PIN that is not applied to GNOME Remote Desktop credentials.
 - A root-owned test override can approve remote assistance without the desktop user.
+- Inventory is unauthenticated, best-effort telemetry: the server validates and clamps it but does not prove a reported fact is true, so an attacker with a device's bearer token could report false inventory. Nothing security-relevant is enforced from it — it informs search, display, and change history only. Values a collector cannot read are omitted rather than defaulted, so absence is not distinguishable from a false "off"; firewall/auditd/usbguard and per-product states reflect what the agent could detect on that host.

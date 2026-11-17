@@ -118,6 +118,11 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Head("/compliance/export", h.ExportComplianceAudit)
 		r.Get("/audit/events", h.ListSystemAuditEventsJSON)
 
+		// Fleet inventory search + export (tag-scoped; AUDITOR+ read-only view).
+		r.Get("/inventory", h.InventorySearchPage)
+		r.Get("/inventory/export", h.ExportInventory)
+		r.Head("/inventory/export", h.ExportInventory)
+
 		r.Get("/vulnerabilities", h.VulnerabilitiesPage)
 
 		r.Get("/patch-windows", func(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +151,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/remote-assist", h.RequestRemoteAssist)
 			// Lock all graphical sessions now (lost-device action). OPERATOR+.
 			r.Post("/devices/{id}/lock", h.LockDevice)
+			// Request a fresh rich inventory report from the device (tag-scoped, audited).
+			r.Post("/devices/{id}/inventory/refresh", h.RequestInventoryRefresh)
 		})
 
 		// ------------------------------------------------------------------

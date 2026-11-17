@@ -75,6 +75,10 @@ type AgentConfig struct {
 	// fingerprint. Either removes first-contact trust in the wipe-signing key.
 	ServerCAFile   string
 	ServerCASHA256 string
+	// InventoryInterval is how often the agent collects and sends a full rich inventory
+	// report (inventory_interval / SPIRE_INVENTORY_INTERVAL; default 6h). A report rides on
+	// an ordinary check-in; most check-ins carry none. A restart forces one fresh report.
+	InventoryInterval time.Duration
 }
 
 // DefaultReleaseKeysDir is where the agent package installs the pinned release public keys.
@@ -114,6 +118,7 @@ func Load(configPath string) *Config {
 			// RELAXES this for the unsigned-to-signed transition window.
 			RequireSignedUpdates: true,
 			ReleaseKeysDir:       DefaultReleaseKeysDir,
+			InventoryInterval:    6 * time.Hour,
 		},
 	}
 
@@ -220,6 +225,11 @@ func Load(configPath string) *Config {
 	if v := os.Getenv("SPIRE_POLL_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.Agent.PollInterval = d
+		}
+	}
+	if v := os.Getenv("SPIRE_INVENTORY_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.Agent.InventoryInterval = d
 		}
 	}
 
@@ -345,6 +355,10 @@ func parseSimpleYAML(path string, cfg *Config) {
 			case "poll_interval":
 				if d, err := time.ParseDuration(val); err == nil {
 					cfg.Agent.PollInterval = d
+				}
+			case "inventory_interval":
+				if d, err := time.ParseDuration(val); err == nil && d > 0 {
+					cfg.Agent.InventoryInterval = d
 				}
 			}
 		}

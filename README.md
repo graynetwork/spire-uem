@@ -81,6 +81,7 @@ An internal ECDSA P-256 device CA issues a client-auth leaf to each device at to
 - Required and optional application assignment through Spire Hub.
 - OpenSCAP execution and selected one-click remediation mappings.
 - Debian Security Tracker CVE matching. Automatic feed import is off by default.
+- Rich hardware, software, network, and security inventory collected by the agent (at most once per `inventory_interval`, default 6h; forced on first check-in after start and on admin request). Scalar facts are stored as typed device attributes; packages, kernel modules, listening sockets, local accounts, CA certificates, and USB devices are stored in dedicated tables replaced per report. Field-level change history (added/removed/modified), a tag-scoped fleet inventory search page, and tag-scoped CSV/JSON export. An old agent reports nothing and the device shows "no inventory reported".
 - Device version reporting, minimum-version enforcement, and maintenance-window self-update with size and SHA-256 verification, an independent Ed25519 release-signature check (signing key held off the control plane, public keys pinned in the agent package; required by default), and automatic rollback to the previous package when a new agent fails to confirm healthy.
 - TOTP MFA, recovery codes, scoped personal access tokens, local accounts, and OIDC with PKCE.
 - Signed webhooks, Slack-compatible webhooks, SMTP alerts, and RFC 5424 syslog forwarding.

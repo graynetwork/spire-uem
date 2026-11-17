@@ -1,0 +1,117 @@
+{{define "inventory_content"}}
+<div class="space-y-5">
+    <div class="flex items-start justify-between">
+        <div>
+            <h1 class="text-lg font-semibold text-white">Fleet Inventory Search</h1>
+            <p class="text-xs text-slate-500 mt-0.5">Search devices by hardware/software attribute, installed package, listening port, or local admin account. Results respect your tag scope.</p>
+        </div>
+    </div>
+
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-4">
+        <form method="get" action="/admin/inventory" class="space-y-3"
+              hx-get="/admin/inventory" hx-target="#inventory-results" hx-swap="innerHTML" hx-push-url="true">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Attribute</label>
+                    <input list="inv-attr-keys" name="attr_key" placeholder="hw.memory_mb"
+                           class="w-full bg-[#141b2a] border border-[#1a2234] rounded px-2 py-1.5 text-xs text-slate-200 font-mono">
+                    <datalist id="inv-attr-keys">
+                        {{range .AttributeKeys}}<option value="{{.Key}}">{{.Key}} ({{.Type}})</option>{{end}}
+                    </datalist>
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Operator</label>
+                    <select name="attr_op" class="w-full bg-[#141b2a] border border-[#1a2234] rounded px-2 py-1.5 text-xs text-slate-200">
+                        <option value="eq">= equals</option>
+                        <option value="ne">&ne; not equal</option>
+                        <option value="gt">&gt; greater than</option>
+                        <option value="lt">&lt; less than</option>
+                        <option value="ge">&ge; at least</option>
+                        <option value="le">&le; at most</option>
+                        <option value="contains">contains</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Value</label>
+                    <input name="attr_val" placeholder="8192"
+                           class="w-full bg-[#141b2a] border border-[#1a2234] rounded px-2 py-1.5 text-xs text-slate-200 font-mono">
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Package name</label>
+                    <input name="pkg" value="{{.FilterPkg}}" placeholder="openssl"
+                           class="w-full bg-[#141b2a] border border-[#1a2234] rounded px-2 py-1.5 text-xs text-slate-200 font-mono">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Listening port</label>
+                    <input name="port" value="{{.FilterPort}}" placeholder="22" inputmode="numeric"
+                           class="w-full bg-[#141b2a] border border-[#1a2234] rounded px-2 py-1.5 text-xs text-slate-200 font-mono">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1">Local admin user</label>
+                    <input name="admin" value="{{.FilterAdmin}}" placeholder="jdoe"
+                           class="w-full bg-[#141b2a] border border-[#1a2234] rounded px-2 py-1.5 text-xs text-slate-200 font-mono">
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded bg-blue-600 hover:bg-blue-500 text-white">Search</button>
+                <a href="/admin/inventory" class="px-3 py-1.5 text-xs font-medium rounded bg-[#141b2a] border border-[#1a2234] text-slate-300 hover:text-white">Clear</a>
+                {{if .HasQuery}}
+                <a href="/admin/inventory/export?format=csv&{{.RawQuery}}" class="ml-auto px-3 py-1.5 text-xs font-medium rounded bg-[#141b2a] border border-[#1a2234] text-slate-300 hover:text-white">Export CSV</a>
+                <a href="/admin/inventory/export?format=json&{{.RawQuery}}" class="px-3 py-1.5 text-xs font-medium rounded bg-[#141b2a] border border-[#1a2234] text-slate-300 hover:text-white">Export JSON</a>
+                {{end}}
+            </div>
+        </form>
+    </div>
+
+    <div id="inventory-results">
+        {{template "inventory_results" .}}
+    </div>
+</div>
+{{end}}
+
+{{define "inventory_results"}}
+{{if .SearchError}}
+<div class="p-3 rounded-md bg-red-500/10 border border-red-500/30 text-xs text-red-300">{{.SearchError}}</div>
+{{else if .HasQuery}}
+<div class="bg-[#0f1420] border border-[#1a2234] rounded-lg overflow-hidden">
+    <div class="px-4 py-2.5 border-b border-[#1a2234] flex items-center justify-between">
+        <span class="text-xs font-semibold text-white">Matching Devices</span>
+        <span class="text-[11px] font-mono text-slate-400 tabular-nums">{{.ResultCount}} result{{if ne .ResultCount 1}}s{{end}}</span>
+    </div>
+    {{if .Results}}
+    <table class="w-full text-xs">
+        <thead class="bg-[#0b0f18] text-slate-500">
+            <tr>
+                <th class="text-left px-4 py-2 font-medium">Hostname</th>
+                <th class="text-left px-4 py-2 font-medium">OS</th>
+                <th class="text-left px-4 py-2 font-medium">CPU</th>
+                <th class="text-right px-4 py-2 font-medium">Memory (MB)</th>
+                <th class="text-left px-4 py-2 font-medium">Primary IPv4</th>
+                <th class="text-right px-4 py-2 font-medium">Packages</th>
+                <th class="text-left px-4 py-2 font-medium">Collected</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-[#141b2a]">
+            {{range .Results}}
+            <tr class="hover:bg-[#141b2a]">
+                <td class="px-4 py-2"><a href="/admin/devices/{{.DeviceID}}" class="text-blue-400 hover:text-blue-300 font-mono">{{.Hostname}}</a></td>
+                <td class="px-4 py-2 text-slate-300">{{if .OSName}}{{.OSName}}{{else}}—{{end}}</td>
+                <td class="px-4 py-2 text-slate-300 truncate max-w-[16rem]" title="{{.CPUModel}}">{{if .CPUModel}}{{.CPUModel}}{{else}}—{{end}}</td>
+                <td class="px-4 py-2 text-right font-mono tabular-nums text-slate-300">{{if .MemoryMB}}{{.MemoryMB}}{{else}}—{{end}}</td>
+                <td class="px-4 py-2 font-mono text-slate-300">{{if .PrimaryIPv4}}{{.PrimaryIPv4}}{{else}}—{{end}}</td>
+                <td class="px-4 py-2 text-right font-mono tabular-nums text-slate-300">{{if .PackageCount}}{{.PackageCount}}{{else}}—{{end}}</td>
+                <td class="px-4 py-2 text-slate-400">{{if .CollectedAt}}{{timeAgo .CollectedAt}}{{else}}<span class="text-amber-400">no inventory</span>{{end}}</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+    {{else}}
+    <div class="px-4 py-6 text-center text-xs text-slate-500">No devices match this search.</div>
+    {{end}}
+</div>
+{{else}}
+<div class="px-4 py-6 text-center text-xs text-slate-500">Enter a filter above to search the fleet inventory.</div>
+{{end}}
+{{end}}

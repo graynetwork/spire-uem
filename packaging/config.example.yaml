@@ -17,6 +17,12 @@ agent:
   token_path: "/etc/spire/token"
   checkin_interval: "5m"
   poll_interval: "10s"
+  # How often the agent collects and sends a full rich hardware/software/network/security
+  # inventory report (Go duration; default 6h). A report rides on an ordinary check-in, so
+  # most check-ins carry none; a report is forced on first check-in after start and on an
+  # admin refresh request. Lower it for fresher inventory at the cost of slightly larger
+  # occasional check-ins.
+  inventory_interval: "6h"
   # Independent signed agent updates. require_signed_updates DEFAULTS TO TRUE: the agent
   # refuses any update whose Ed25519 manifest does not verify under a pinned release key.
   # Set it to false ONLY during the unsigned-to-signed transition (unsigned updates then

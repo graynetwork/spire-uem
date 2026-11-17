@@ -1075,6 +1075,11 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 	// Device client certificate (mTLS): the most recent leaf, for the cert-status panel.
 	deviceCert, _ := h.repo.GetLatestDeviceCertificate(r.Context(), dev.ID)
 
+	// Rich inventory snapshot + change history for the inventory panel. HasInventory is
+	// false for a device that never reported (old agent / pre-feature); the template then
+	// shows "no inventory reported".
+	deviceInventory, _ := h.repo.GetDeviceInventory(r.Context(), dev.ID)
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(types.DeviceDetailResponse{
@@ -1150,6 +1155,7 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"AdminRole":          string(AdminRoleFromContext(r.Context())),
 		"DeviceCert":         deviceCert,
 		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
+		"Inventory":          deviceInventory,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

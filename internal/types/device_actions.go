@@ -11,6 +11,12 @@ import (
 // bytes after the prefix are a JSON-encoded ActionDirective.
 const ActionDirectivePrefix = "__spire_action__:"
 
+// InventoryRefreshCommand is a queued command string that asks the agent to collect and send
+// a fresh rich inventory report on its next check-in, bypassing the normal inventory_interval
+// cadence. The agent recognizes it, arms a one-shot force flag, triggers a check-in, and
+// reports the command completed. It carries no arguments and touches no shell.
+const InventoryRefreshCommand = "__spire_inventory_refresh__"
+
 // ActionKind enumerates the structured lost-device actions dispatched over the command queue.
 type ActionKind string
 
