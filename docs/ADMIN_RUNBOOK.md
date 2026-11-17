@@ -1069,3 +1069,93 @@ read-only and not scoped here. A user with an empty tag set is unrestricted.
   of their devices, plus their own actions. Other admins' changes to policies, settings and
   out-of-scope devices are hidden, and so are the raw RFC 5424 syslog frames, which cannot be
   filtered by device. Use an AUDITOR or SUPER_ADMIN account for the full log.
+
+## 15. TPM PCR Baselines & Attestation Enforcement
+
+SpireUEM compares each verified TPM quote against administrator-approved PCR baselines and
+can withhold sealed network-profile secrets from untrusted devices. This section is the
+operational runbook; the concepts are in `ARCHITECTURE.md` §4 and `ADMIN_GUIDE.md` §10.
+
+### 15.1 Data model and tables
+
+- `tpm_pcr_baselines` — approved SHA-256 PCR sets (PCRs 0, 2, 4, 7), optional `scope_tags` /
+  `scope_ring`, `active`, `version`, `supersedes`. A trigger (`tpm_pcr_baselines_immutable`)
+  rejects any UPDATE except toggling `active`, so baselines are append-only versions.
+- `device_tpm_baseline_exceptions` — per-device exceptions (`reason`, `expires_at`).
+- `device_attestation_results` — bounded per-device history (newest 50), carrying the status,
+  matching `baseline_id`, and `mismatched_pcrs`.
+- Settings (`system_settings`, category `crypto`): `crypto.attestation_enforcement`
+  (`off` | `warn` | `enforce`, default `off`) and `crypto.attestation_max_age_hours`
+  (default 24). Migrations: `000040` (tables + settings), `000041` (enum values
+  `BASELINE_MATCH` / `BASELINE_MISMATCH` + the `baseline_id` / `mismatched_pcrs` columns on
+  `device_tpm_attestation`).
+
+### 15.2 Approving a baseline after a firmware or bootloader update
+
+A legitimate firmware, option-ROM, bootloader, shim, or Secure Boot dbx update changes PCRs
+0/2/4/7. Every affected device will flip to `BASELINE_MISMATCH` and (under `enforce`) lose its
+sealed secrets. Procedure:
+
+1. Roll the firmware/bootloader change to a **small pilot ring first** (e.g. CANARY).
+2. Let the pilot devices re-attest (force a check-in from the device page if needed). Confirm
+   their new measurements are consistent across identical hardware/firmware.
+3. On one representative, up-to-date device, open the device → attestation panel → **Approve
+   current measurements**. Scope the new baseline to the tags/ring of the affected fleet
+   segment (do not approve fleet-wide from one model unless the fleet is homogeneous).
+4. This creates a **new version** that supersedes and deactivates the prior baseline. Devices
+   matching the new values return to `BASELINE_MATCH` on their next quote.
+5. Roll the firmware change to the rest of the fleet; widen or add baselines per hardware
+   class as needed. Keep baselines scoped by hardware tag when fleets are heterogeneous — one
+   fleet-wide baseline cannot match two different firmware images.
+
+Never hand-edit a baseline row in SQL to "fix" PCR values: the immutability trigger blocks it,
+and it would bypass the audit trail. Always create a new version.
+
+### 15.3 Granting and expiring exceptions
+
+For a device that legitimately cannot match yet (awaiting a firmware re-approval, hardware
+RMA, lab machine), grant a time-boxed exception: device → attestation panel → **Grant
+exception**. A reason is mandatory and the expiry is capped at 30 days. An unexpired exception
+makes the device trusted regardless of its attestation result; it expires automatically — there
+is no silent permanent bypass. Grant, expiry window, and the result are written to the audit
+log (`ATTESTATION_EXCEPTION_GRANT`). Prefer approving a correct baseline over stacking
+exceptions; exceptions are for the transition, not the steady state.
+
+### 15.4 Rolling out enforcement: off → warn → enforce
+
+Enforcement gates only **sealed network-profile secrets** (Wi-Fi PSK, 802.1X password,
+WireGuard PSK). Roll it out gradually (PCR Baselines page, SUPER_ADMIN):
+
+1. **off (baseline the fleet).** Create baselines and let devices attest. Watch the dashboard
+   **Attestation Untrusted** count and each device's result until mismatches are explained
+   (missing baseline, stale result, genuinely drifted device).
+2. **warn.** Secrets are still delivered, but every untrusted device now raises an attestation
+   alert at check-in. Use this to find the long tail — devices that never re-attest, no-TPM
+   devices, devices needing a baseline you have not approved — without breaking connectivity.
+   Tune `attestation_max_age_hours` so a normally-checking-in device never goes stale between
+   check-ins.
+3. **enforce.** Untrusted devices stop receiving sealed network-profile secrets. The carrying
+   `NETWORK_PROFILE` policies arrive marked withheld; the agent reports them NON_COMPLIANT and
+   does **not** write a blank keyfile or remove an already-working profile. A device that is
+   already connected keeps its existing keyfile; the withhold bites when a profile must be
+   (re)written. Before flipping to enforce, drive the untrusted count to zero (or cover the
+   remainder with scoped exceptions).
+
+   Enforcement withholds only sealed secrets. An EAP-TLS client private key is not sealed and
+   is still delivered to an untrusted device. Until it is, prefer password-based EAP or
+   WireGuard for networks that must depend on attestation.
+
+**Rollback.** Set enforcement back to `warn` or `off` at any time; the next check-in of each
+device delivers secrets again. No data is lost — withholding only omits plaintext from the
+check-in response; the sealed envelopes remain in the policy payload at rest.
+
+### 15.5 Verification
+
+- Device shows `BASELINE_MATCH` and **TRUSTED** in its attestation panel after a good quote.
+- Forcing a mismatch (e.g. a deliberately wrong baseline) flips the device to
+  `BASELINE_MISMATCH`, lists the differing PCRs, and raises an alert.
+- Under `enforce`, an untrusted device's check-in response carries the NETWORK_PROFILE policy
+  with `"secrets_withheld": true` and no ciphertext; the agent's compliance report shows the
+  policy NON_COMPLIANT with a withhold reason.
+- The dashboard **Attestation Untrusted** count matches the number of untrusted in-scope
+  devices for your tag scope.

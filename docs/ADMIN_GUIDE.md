@@ -156,3 +156,37 @@ Compliance exports are available at:
 - `GET /admin/compliance/export?format=json`
 
 Browser sessions need CSRF tokens for state changes. Basic authentication and personal access tokens are intended for scripted API calls.
+
+## 10. TPM attestation baselines and enforcement
+
+**PCR Baselines** (sidebar → PCR Baselines, SECURITY_ADMIN and above) hold the
+administrator-approved SHA-256 values for the attested PCRs (0, 2, 4, 7). Each verified TPM
+quote is compared against the active baselines whose scope matches the device.
+
+**Creating a baseline.** Two sources:
+
+- *Manual values* — paste the 64-character hex SHA-256 digest for each PCR, on the PCR
+  Baselines page.
+- *Approve current measurements* — open a device whose latest quote is verified and use
+  **Approve current measurements** in its attestation panel. This copies that device's
+  quote-proven PCR values into a new baseline.
+
+Optionally scope a baseline to device **tags** and/or a **ring**; an empty scope applies to
+every device. Baselines are **immutable**: to change one, create a new version (the old
+version is deactivated automatically and recorded as superseded). A tag-scoped operator may
+only create baselines that include at least one of their assigned tags.
+
+**Outcomes.** With a matching active baseline a device reads `BASELINE_MATCH`; with in-scope
+baselines but no match it reads `BASELINE_MISMATCH` (the device panel lists the differing
+PCRs and an alert fires); with no in-scope baseline it stays `ATTESTED`.
+
+**Exceptions.** On the device attestation panel, SECURITY_ADMIN+ can grant a time-boxed
+exception (mandatory reason, expiry at most 30 days). An unexpired exception makes the device
+trusted regardless of its result; grant and expiry are audited.
+
+**Enforcement** (PCR Baselines page, SUPER_ADMIN only): `crypto.attestation_enforcement` is
+`off` (default), `warn`, or `enforce`, and `crypto.attestation_max_age_hours` (default 24)
+sets how long a result stays fresh. In `enforce`, an untrusted device receives no sealed
+network-profile secrets — affected policies arrive marked withheld and the agent skips them
+without writing a blank credential or disturbing a working profile. The dashboard shows an
+**Attestation Untrusted** count honouring your tag scope.

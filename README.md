@@ -52,7 +52,7 @@ flowchart TD
 
 The agent performs TPM2 credential activation and submits a fresh AK-signed quote over SHA-256 PCRs 0, 2, 4, and 7. The server validates the EK certificate against configured manufacturer roots, verifies the quote signature and nonce, and derives Secure Boot evidence from signed PCR 7.
 
-SpireUEM currently stores the latest verified PCR values; it does **not** compare them with an administrator-approved PCR baseline. An `ATTESTED` result proves quote authenticity, freshness, and nonzero PCR 7, not that firmware and boot measurements match a known-good value. Attestation status also does not currently gate delivery of assigned policy payloads.
+SpireUEM maintains administrator-approved PCR baselines and compares each verified quote against the active in-scope baseline: a match reads `BASELINE_MATCH`, a verified quote with no matching baseline reads `BASELINE_MISMATCH` (recording the differing PCRs and alerting), and a device with no in-scope baseline stays `ATTESTED`. A trust decision combines the latest result, a configurable max age, and optional time-boxed per-device exceptions. Attestation enforcement (`off` | `warn` | `enforce`, default `off`) can withhold sealed network-profile secrets from untrusted devices; in `enforce`, affected policies are delivered with an explicit withheld marker and the agent skips them rather than writing a blank credential. A baseline encodes a trusted snapshot of PCR values, not an independent semantic verification of firmware or boot measurements. See [ARCHITECTURE.md §4](docs/ARCHITECTURE.md) and [ADMIN_RUNBOOK.md §15](docs/ADMIN_RUNBOOK.md).
 
 ### LUKS2 recovery-key escrow
 

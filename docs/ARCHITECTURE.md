@@ -112,13 +112,60 @@ The IPC routes are `GET /v1/status`, `POST /v1/sync`, `GET /v1/catalog`, `POST /
 4. The server verifies the EK certificate against `SPIRE_TPM_EK_ROOTS`, validates the challenge secret and AK signature, and checks that the reported PCR values produce the signed PCR digest.
 5. PCR 7 must be nonzero for the result to be `ATTESTED`; an all-zero PCR 7 produces `POLICY_VIOLATION`.
 
+### Approved PCR baselines and trust (implemented)
+
+The server maintains administrator-approved PCR baselines and compares each verified quote
+against them.
+
+- A **baseline** pins expected SHA-256 values for the attested PCR set (0, 2, 4, 7), with an
+  optional scope (device tags and/or ring; empty scope = all devices). Baselines are
+  **immutable**: an edit creates a new version that supersedes and deactivates the previous
+  one. A database trigger rejects any in-place change to a baseline row other than its
+  `active` flag.
+- On each **verified quote** (verified exactly as above — quote verification is unchanged):
+  - no active in-scope baseline → `ATTESTED` (unchanged meaning);
+  - an active in-scope baseline matches every pinned PCR → `BASELINE_MATCH`;
+  - in-scope baselines exist but none match → `BASELINE_MISMATCH`, recording the differing
+    PCR indices and raising the attestation alert with that PCR diff.
+  The server keeps a bounded per-device history (newest 50 results).
+- **Trust** is derived from the latest result plus `crypto.attestation_max_age_hours`
+  (default 24) and any unexpired device exception. A device is trusted when its latest result
+  is `BASELINE_MATCH`, or `ATTESTED` with no in-scope baseline, and is within max age; or it
+  holds an unexpired exception (reason + mandatory expiry, at most 30 days, audited).
+  Everything else — mismatch, failed, policy violation, stale, a no-TPM device without an
+  exception, or never attested — is untrusted.
+- **Secret gating** (`crypto.attestation_enforcement`, SUPER_ADMIN, default `off`):
+  - `off` — secrets are delivered as before;
+  - `warn` — secrets are delivered, but an untrusted device raises an alert at check-in;
+  - `enforce` — an untrusted device receives **no** sealed network-profile secrets: the
+    carrying `NETWORK_PROFILE` policies are delivered with an explicit `secrets_withheld`
+    marker and their sealed envelopes stripped. The agent treats a withheld policy as a
+    skipped / non-compliant item: it never writes a keyfile with a blank or placeholder
+    secret, and never removes an already-working profile on account of the withhold.
+  - If the enforcement setting cannot be read from the database, the server treats the mode
+    as `enforce` for that check-in.
+  - Only **sealed** fields are withheld (Wi-Fi PSK and EAP passwords, 802.1X passwords,
+    WireGuard peer pre-shared keys). An EAP-TLS client private key is stored in the policy
+    payload unencrypted and is still delivered to untrusted devices.
+  - With no baseline in scope, `ATTESTED` counts as trusted: `enforce` then only requires a
+    fresh, valid quote with Secure Boot evidence, not known-good measurements.
+- A challenge-stage failure (invalid EK certificate or attestation key) is recorded in the
+  attestation history, so it revokes trust immediately rather than when the previous result
+  goes stale.
+- A tag-scoped `SECURITY_ADMIN` can create baselines only within their tags and can deactivate
+  only baselines scoped entirely to their tags.
+
 ### Current limits
 
-SpireUEM does not maintain administrator-approved PCR baselines and does not compare a new quote with previous values. A verified quote proves that the named TPM signed the current PCR values after the server's challenge. It does not prove that firmware, option ROM, bootloader, or Secure Boot databases match a known-good version.
+A verified quote proves that the named TPM signed the current PCR values after the server's
+challenge, and (with baselines configured) that those values match an approved known-good
+set. It still does not independently measure firmware, option ROM, bootloader, or Secure Boot
+database contents beyond what the PCRs reflect; a baseline encodes a trusted snapshot of those
+measurements, not a semantic understanding of them. The latest verified values continue to
+replace the previous values in `device_tpm_attestation`.
 
-The latest verified values replace the previous values in `device_tpm_attestation`. Attestation failure updates device status and can raise an alert, but it does not currently withhold assigned policy or decrypted network-profile secrets.
-
-Software-simulated attestation exists only for tests and must be explicitly enabled on both sides. It proves freshness and signature self-consistency, not hardware state.
+Software-simulated attestation exists only for tests and must be explicitly enabled on both
+sides. It proves freshness and signature self-consistency, not hardware state.
 
 ## 5. LUKS2 recovery-key escrow
 
@@ -212,8 +259,12 @@ production onboarding should prefer the signed-manifest path and/or the signed A
 
 ## 8. Known security gaps
 
-- No approved PCR baseline comparison.
-- Attestation status does not gate policy-secret delivery.
+- Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
+  Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent
+  verification of firmware/bootloader contents; enforcement gates only sealed
+  network-profile secrets, not all assigned policy; the trust decision uses the latest
+  recorded result, so a device that never re-attests after its result goes stale stays
+  untrusted until it does; EAP-TLS client private keys are unsealed and not withheld.
 - Device mutual TLS and certificate pinning exist but default to `optional`; `required` must be turned on, and only `required` mode refuses an uncertified device.
 - A device whose certificate has lapsed can obtain a new one with its bearer token alone, so a stolen token remains sufficient for such a device.
 - First-contact wipe-signing-key trust depends on transport TLS unless the agent pins the server with `server_ca_file` / `server_ca_sha256`.

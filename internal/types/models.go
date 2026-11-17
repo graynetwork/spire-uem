@@ -706,6 +706,13 @@ type AssignedPolicy struct {
 	RequiresReboot          bool                      `json:"requires_reboot,omitempty"`
 	WithinMaintenanceWindow bool                      `json:"within_maintenance_window"`
 	Version                 int                       `json:"version"`
+	// SecretsWithheld is set by the server when attestation enforcement is ON and the device
+	// is untrusted: the policy's sealed secrets were NOT unsealed and are absent from Payload.
+	// The agent MUST treat such a policy as a skipped/non-compliant item — it must never
+	// write a keyfile with a blank/placeholder secret, and must not remove an already-working
+	// profile on account of it. WithheldReason is a short human-readable explanation.
+	SecretsWithheld bool   `json:"secrets_withheld,omitempty"`
+	WithheldReason  string `json:"withheld_reason,omitempty"`
 }
 
 // CommandDTO is dispatched to a device in CheckinResponse.
