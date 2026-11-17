@@ -372,6 +372,11 @@ func CleanupOrphanedPolicies(
 				ExecutionOutput:  meta,
 			})
 
+		case types.PolicyTypeScriptPolicy:
+			// SCRIPT_POLICY runs its optional `remove` step in spired's executePoliciesAndCleanup,
+			// which has a script runner this function does not. Emit nothing here so there is no
+			// double REVOKED report; polID is already marked reported above.
+
 		default:
 			meta, _ := json.Marshal(map[string]any{
 				"action":     "policy_unmanaged",

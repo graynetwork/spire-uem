@@ -334,6 +334,38 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] warning: failed to claim queued commands for %s: %v", dev.ID, err)
 	}
 
+	// Resolve SCRIPT_POLICY version references into runnable detect/remediate/remove steps
+	// (content + sha256). A deleted version is flagged so the agent reports FAILED safely.
+	if resolved, rerr := h.repo.ResolveScriptPolicyPayloads(r.Context(), policies); rerr != nil {
+		log.Printf("[api] warning: failed to resolve SCRIPT_POLICY payloads for %s: %v", dev.ID, rerr)
+	} else {
+		policies = resolved
+	}
+
+	// Reusable scripts and sensors. A run left RUNNING past a generous cutoff (an agent that
+	// restarted mid-run) is marked INTERRUPTED so it is reported, not lost. Then claim queued
+	// script runs and the sensors now due, both atomically so a second server instance does
+	// not re-dispatch them. Clearing stale sensor attributes removes readings for sensors the
+	// device no longer matches (disabled, deleted, or out of target).
+	if n, serr := h.repo.RequeueStaleRunningScriptRuns(r.Context(), dev.ID, 2*time.Hour); serr != nil {
+		log.Printf("[api] warning: requeue stale script runs for %s: %v", dev.ID, serr)
+	} else if n > 0 {
+		log.Printf("[api] marked %d stale RUNNING script run(s) INTERRUPTED for %s", n, dev.ID)
+	}
+	scriptDirectives, serr := h.repo.ClaimScriptDirectivesForDevice(r.Context(), dev.ID)
+	if serr != nil {
+		log.Printf("[api] warning: claim script directives for %s: %v", dev.ID, serr)
+	}
+	if cleared, cerr := h.repo.ClearStaleSensorAttributesForDevice(r.Context(), dev.ID, dev.Tags, dev.PatchRing); cerr != nil {
+		log.Printf("[api] warning: clear stale sensor attrs for %s: %v", dev.ID, cerr)
+	} else if len(cleared) > 0 {
+		log.Printf("[api] cleared %d stale sensor attribute(s) for %s: %v", len(cleared), dev.ID, cleared)
+	}
+	sensorDirectives, serr := h.repo.ClaimDueSensorDirectivesForDevice(r.Context(), dev.ID, dev.Tags, dev.PatchRing, time.Now().UTC())
+	if serr != nil {
+		log.Printf("[api] warning: claim sensor directives for %s: %v", dev.ID, serr)
+	}
+
 	// Record the location-ish facts the server already has: the IP this check-in came from
 	// and the last active user the agent reported. Shown on the device page when LOST.
 	seenIP := clientIP(r)
@@ -345,8 +377,8 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	// claimed atomically so its cancellation window closes exactly once.
 	queuedCommands = append(queuedCommands, h.pendingActionDirectives(r.Context(), dev)...)
 
-	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d",
-		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands))
+	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d scripts=%d sensors=%d",
+		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands), len(scriptDirectives), len(sensorDirectives))
 	writeJSON(w, http.StatusOK, types.CheckinResponse{
 		DeviceID:                dev.ID,
 		Status:                  dev.Status,
@@ -358,6 +390,8 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		ServerKEKPublicPEM:      h.repo.KEKPublicPEM(),
 		AgentUpdate:             h.computeAgentUpdateDirective(r, dev, req.AgentVersion),
 		WipeSigningPublicKey:    h.repo.WipeSigningPublicKeyBase64(),
+		ScriptDirectives:        scriptDirectives,
+		SensorDirectives:        sensorDirectives,
 	})
 }
 

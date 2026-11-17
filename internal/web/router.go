@@ -111,6 +111,14 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Get("/policies/host-compliance", h.HostPoliciesCompliancePartial)
 		r.Get("/policies/wallpapers/{filename}", h.ServeWallpaperPreview)
 
+		// Reusable scripts & custom sensors: read views (AUDITOR+). Secret parameter VALUES
+		// are never rendered (only the sealed declaration flag), so listing is read-only-safe.
+		r.Get("/scripts", h.ListScripts)
+		r.Get("/scripts/{id}", h.GetScript)
+		r.Get("/sensors", h.ListSensors)
+		r.Get("/devices/{id}/script-runs", h.ListDeviceScriptRuns)
+		r.Get("/devices/{id}/sensors/{name}", h.ListDeviceSensorResults)
+
 		r.Get("/applications", h.ListApplications)
 		r.Get("/applications/{id}/edit", h.EditApplicationModal)
 
@@ -146,6 +154,10 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/remote-assist", h.RequestRemoteAssist)
 			// Lock all graphical sessions now (lost-device action). OPERATOR+.
 			r.Post("/devices/{id}/lock", h.LockDevice)
+
+			// Run a reusable script against devices/tags/ring (same authority as a queued root
+			// command). Tag-scoped operators can only reach devices in their scope. OPERATOR+.
+			r.Post("/scripts/{id}/run", h.RunScript)
 		})
 
 		// ------------------------------------------------------------------
@@ -190,6 +202,19 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/applications/{id}/delete", h.DeleteApplication)
 
 			r.Post("/patch-windows", h.CreatePatchWindow)
+
+			// Reusable scripts & custom sensors: create/edit/delete. SECURITY_ADMIN+.
+			r.Post("/scripts", h.CreateScript)
+			r.Post("/scripts/{id}", h.UpdateScriptMeta)
+			r.Delete("/scripts/{id}", h.DeleteScript)
+			r.Post("/scripts/{id}/delete", h.DeleteScript)
+			r.Post("/scripts/{id}/versions", h.AddScriptVersion)
+			r.Post("/scripts/{id}/versions/{versionID}/current", h.SetCurrentScriptVersion)
+
+			r.Post("/sensors", h.CreateSensor)
+			r.Post("/sensors/{id}", h.UpdateSensor)
+			r.Delete("/sensors/{id}", h.DeleteSensor)
+			r.Post("/sensors/{id}/delete", h.DeleteSensor)
 		})
 
 		// ------------------------------------------------------------------

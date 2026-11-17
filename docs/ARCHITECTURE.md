@@ -278,6 +278,8 @@ Tokens are stored as SHA-256 hashes; the secret is shown once at creation and on
 
 - The enrollment-token per-IP failure rate limiter is an in-memory sliding counter, adequate for a single control-plane process. In a multi-instance deployment it is per-process, so N instances allow roughly N× the failures before throttling; move it to shared state if that matters (same caveat as the admin PAT limiter). The max-uses consume is NOT affected — it is an atomic DB update and holds across instances.
 
+- Scheduled and agent-start script runs are modelled (trigger column, directive type) but no server loop enqueues them yet; on-demand runs, sensors and `SCRIPT_POLICY` are fully wired. Remediation workflows (Phase 2, next) will add the schedule and event triggers.
+- A device can report only sensors that are enabled, currently target it and were dispatched to it, but it can still report any value for those: a root user on the endpoint controls its own sensor results, as with inventory.
 - Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
   Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent
   verification of firmware/bootloader contents; enforcement gates only sealed
@@ -296,3 +298,87 @@ Tokens are stored as SHA-256 hashes; the secret is shown once at creation and on
 - `spired` runs as unrestricted root.
 - Remote assistance returns a generated PIN that is not applied to GNOME Remote Desktop credentials.
 - A root-owned test override can approve remote assistance without the desktop user.
+
+
+## Reusable scripts, custom sensors, and SCRIPT_POLICY
+
+### Data model
+
+- `scripts` holds the mutable metadata of a program: name, a fixed interpreter (`bash` ->
+  `/bin/bash`, `python3` -> `/usr/bin/python3`; nothing else is accepted), a run-as identity
+  (`root` or `active_user`), a timeout (default 300 s, max 3600 s) and an output cap (default
+  64 KiB, max 1 MiB). `current_version_id` points at the version dispatched for an on-demand
+  run.
+- `script_versions` holds immutable snapshots: content, its sha256, the parameter schema, and
+  `created_by`. Editing content or parameters always creates a new version; prior versions are
+  never mutated, so a sensor or policy that pins a version id keeps running the exact bytes it
+  referenced. A version can be marked current again.
+- Parameter names match `^[A-Z][A-Z0-9_]{0,31}$`; types are `string` / `integer` / `boolean`;
+  a parameter may be required, have a default, and be marked secret.
+- `script_runs` is one execution of a version on one device, with trigger (`on_demand`,
+  `scheduled`, `agent_start`), status, exit code, capped stdout/stderr, duration and the
+  non-secret parameter values. `script_run_secrets` stores secret parameter values sealed with
+  the server RSA-OAEP-4096 + AES-256-GCM envelope (the same `SealSecret`/`OpenSecret` used for
+  LUKS escrow), opened only when the directive for the target device is built.
+- `sensors` is a script version run on a schedule (minimum interval 15 minutes) whose trimmed
+  stdout is parsed to a declared type and written as the device attribute `sensor.<name>` under
+  the source `sensor:<name>`. `sensor_results` keeps a bounded per device+sensor history.
+  `sensor_device_state` records when a sensor was last dispatched to a device so a restart or a
+  second server instance does not re-dispatch it every check-in.
+
+### Execution path
+
+Scripts and sensors travel on new check-in response fields (`script_directives`,
+`sensor_directives`), not on the legacy queued-command channel. Both are `omitempty`, so an
+older agent that does not know them ignores them, and an older server that never sets them is
+indistinguishable from today's behaviour. The server claims queued runs and due sensors inside
+one transaction each (`FOR UPDATE SKIP LOCKED`), so a run or a sensor window is dispatched
+exactly once even with two server instances sharing a database.
+
+The agent (`internal/engine/script.go`) enforces the security boundary for every run:
+
+1. recompute the content sha256 and refuse to run on a mismatch;
+2. resolve the interpreter against the fixed allowlist (the interpreter name is never placed on
+   a command line, only its resolved absolute path is exec'd);
+3. write the content to a fresh `0700` file in a `0700` root-owned directory (`/run/spire/scripts`);
+4. exec the interpreter directly on the file path — never `sh -c`;
+5. pass parameters ONLY as `SPIRE_PARAM_<NAME>` environment variables, assigned verbatim, so a
+   shell metacharacter in a value stays literal and never reaches a shell;
+6. for `active_user`, `runuser -u <seat0 user> --` the interpreter, failing with a clear status
+   when there is no graphical session;
+7. run in its own process group and kill the whole group on timeout (a backgrounded child cannot
+   outlive the deadline); cap combined output; remove the file afterwards.
+
+A run interrupted by an agent restart is reported `INTERRUPTED`, not lost: the server marks a
+run left `RUNNING` past a two-hour cutoff `INTERRUPTED` at the next check-in.
+
+`SCRIPT_POLICY` references script versions for `detect` (exit 0 == compliant), `remediate` and
+an optional `remove`. The server resolves those version ids into runnable steps (content +
+sha256) before sending them; a referenced version that was deleted is flagged so the agent
+reports `FAILED` and runs nothing. The agent runs detect; if non-compliant and a remediate step
+exists, it runs remediate then detect again and reports compliance from the second detect. On
+unassignment the agent runs `remove` once if set (reported `REVOKED`).
+
+### Authorization and scoping
+
+Create / edit / delete of scripts and sensors is `SECURITY_ADMIN`+; running a script is
+`OPERATOR`+ (the same authority as a queued root command). A tag-scoped admin's run target
+(device ids, tags or ring) is intersected with their allowed tags, and only `APPROVED` devices
+are selected, so a scoped operator can never reach a device outside their scope. Every create,
+change, delete and run is written to the system audit log with the acting admin. Secret
+parameter values are never rendered in the UI, never logged, and never stored in the clear.
+
+### Known gaps
+
+- Targeting supports explicit device ids, tags and ring. Dynamic groups are being built in
+  parallel; the target resolver is a small interface so a group target can be added without
+  changing callers, but group targeting is not implemented here.
+- Scheduled (cron) and agent-start script triggers are modelled (the run `trigger` column and
+  the server-side cron helper), and the directive carries everything the agent needs; the
+  per-schedule server loop that enqueues scheduled runs is left to the scheduling worker and is
+  not wired in this change. On-demand runs and sensor scheduling are fully wired.
+- The agent writes scripts under `/run/spire/scripts`; an in-image script is not tamper-proof
+  against a root user already on the endpoint, the same honest limitation as other root-executed
+  policy types.
+- There is no admin HTML page for scripts/sensors in this change; the admin surface is the JSON
+  API under `/admin/scripts` and `/admin/sensors`. A UI can be layered on later.

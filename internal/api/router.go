@@ -90,6 +90,8 @@ func registerRoutes(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, 
 			r.Get("/status", h.GetDeviceStatus)
 			r.Post("/report", h.Report)
 			r.Post("/commands/report", h.ReportCommand)
+			r.Post("/scripts/report", h.ReportScriptRuns)
+			r.Post("/sensors/report", h.ReportSensors)
 			r.Post("/benchmarks/report", h.ReportBenchmarkResults)
 			r.Post("/attest/challenge", h.AttestChallenge)
 			r.Post("/attest/verify", h.AttestVerify)

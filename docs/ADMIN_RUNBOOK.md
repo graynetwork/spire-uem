@@ -1180,3 +1180,44 @@ check-in response; the sealed envelopes remain in the policy payload at rest.
   policy NON_COMPLIANT with a withhold reason.
 - The dashboard **Attestation Untrusted** count matches the number of untrusted in-scope
   devices for your tag scope.
+
+
+## Reusable scripts, custom sensors, and SCRIPT_POLICY
+
+### Migrations
+
+Migrations `000045` (scripts + immutable versions), `000046` (script runs, sealed run secrets,
+sensors, sensor results, per-device sensor schedule state) and `000047` (adds `SCRIPT_POLICY`
+to the `policy_type` enum) are applied by the standard migration runner at server start, each
+in its own transaction under the migration advisory lock. `000047` uses
+`ALTER TYPE policy_type ADD VALUE IF NOT EXISTS`, the same idempotent pattern as the earlier
+policy-type additions.
+
+### Operational notes
+
+- Scripts run on endpoints as root (or the active seat user) with a timeout and an output cap.
+  A script is written to a `0700` file in a root-owned `0700` directory (`/run/spire/scripts`),
+  run by the fixed interpreter directly (never a shell), fed parameters only through
+  `SPIRE_PARAM_<NAME>` environment variables, and removed afterwards. The agent verifies each
+  version's sha256 before running and refuses a mismatch.
+- Secret script parameters are sealed with the server KEK and opened only when the directive
+  for the target device is built. If the server KEK is unavailable a run with secret parameters
+  is refused at queue time rather than sent without its secret.
+- A run left `RUNNING` past two hours (an agent that restarted mid-run) is marked `INTERRUPTED`
+  at the device's next check-in, so it is reported rather than lost.
+- Sensors are dispatched only when due (minimum interval 15 minutes); the per-device dispatch
+  state is in the database, so a server restart or a second server instance does not
+  re-dispatch a sensor every check-in.
+- Script and sensor directives ride on new `omitempty` check-in response fields, so an older
+  agent safely ignores them and the server behaves exactly as before for a device with none.
+
+### Verification
+
+- After deploying, `GET /admin/scripts` and `GET /admin/sensors` should return `200` with the
+  expected definitions. Queue a run with `POST /admin/scripts/{id}/run` against a test device
+  and confirm `GET /admin/devices/{id}/script-runs` shows the run move from `QUEUED` to a
+  terminal status after the device checks in.
+- Confirm secret parameters never appear in `script_runs.params` or in the audit log; the
+  `script_run_secrets` ciphertext must not contain the plaintext.
+- Confirm a scoped operator cannot run a script against a device outside their tags (the run
+  endpoint returns "no in-scope approved devices matched this target").

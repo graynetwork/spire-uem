@@ -78,7 +78,9 @@ An internal ECDSA P-256 device CA issues a client-auth leaf to each device at to
 ## Features
 
 - Declarative package, Flatpak, systemd, sysctl, APT, dconf, nftables, local-account, CA-certificate, NetworkManager, usbguard, and auditd policy engines.
-- Automated endpoint enrollment with hashed, rotatable enrollment tokens: per-token deployment ring, tags, max uses, expiry, optional require-approval and allowed-hostname pattern; one-request registration binding hardware UUID, enrollment key and device CSR; per-token enrollment history and per-IP rate limiting on failed attempts.- Required and optional application assignment through Spire Hub.
+- Automated endpoint enrollment with hashed, rotatable enrollment tokens: per-token deployment ring, tags, max uses, expiry, optional require-approval and allowed-hostname pattern; one-request registration binding hardware UUID, enrollment key and device CSR; per-token enrollment history and per-IP rate limiting on failed attempts.
+- Reusable, immutably-versioned scripts (bash or python3 only) run on endpoints as root or the active user with sha256 verification, environment-only parameters, a per-script timeout and output cap, and sealed secret parameters; custom sensors that run a script version on a schedule and store a typed result as a device attribute; and a `SCRIPT_POLICY` desired-state type (detect / remediate / optional remove).
+- Required and optional application assignment through Spire Hub.
 - OpenSCAP execution and selected one-click remediation mappings.
 - Debian Security Tracker CVE matching. Automatic feed import is off by default.
 - Device version reporting, minimum-version enforcement, and maintenance-window self-update with size and SHA-256 verification, an independent Ed25519 release-signature check (signing key held off the control plane, public keys pinned in the agent package; required by default), and automatic rollback to the previous package when a new agent fails to confirm healthy.
