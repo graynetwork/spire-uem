@@ -259,6 +259,8 @@ production onboarding should prefer the signed-manifest path and/or the signed A
 
 ## 8. Known security gaps
 
+- Scheduled and agent-start script runs are modelled (trigger column, directive type) but no server loop enqueues them yet; on-demand runs, sensors and `SCRIPT_POLICY` are fully wired. Remediation workflows (Phase 2, next) will add the schedule and event triggers.
+- A device can report only sensors that are enabled, currently target it and were dispatched to it, but it can still report any value for those: a root user on the endpoint controls its own sensor results, as with inventory.
 - Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
   Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent
   verification of firmware/bootloader contents; enforcement gates only sealed

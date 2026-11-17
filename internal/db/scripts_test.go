@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"errors"
 	"context"
 	"path/filepath"
 	"testing"
@@ -269,6 +270,37 @@ func TestSensorTypingOwnershipAndCleanup(t *testing.T) {
 		t.Fatalf("create sensor: %v", err)
 	}
 
+	// A reading for a sensor that was never dispatched to this device is refused.
+	if _, err := repo.RecordSensorResult(ctx, dev.ID, sensor, types.SensorResultReport{SensorName: sensorName, ExitCode: 0, RawValue: "1"}); !errors.Is(err, db.ErrSensorNotDispatched) {
+		t.Fatalf("undispatched reading must be refused, got %v", err)
+	}
+	// A device the sensor does not target cannot report it, even after its own check-in.
+	other := mkDevice(t, repo, ctx, []string{"othertag-" + suffix}, "")
+	ds, err := repo.ClaimDueSensorDirectivesForDevice(ctx, other.ID, other.Tags, other.PatchRing, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ds {
+		if d.SensorName == sensorName {
+			t.Fatalf("sensor %s must not be dispatched to an untargeted device", sensorName)
+		}
+	}
+	if _, err := repo.RecordSensorResult(ctx, other.ID, sensor, types.SensorResultReport{SensorName: sensorName, ExitCode: 0, RawValue: "7"}); !errors.Is(err, db.ErrSensorNotDispatched) {
+		t.Fatalf("untargeted device reading must be refused, got %v", err)
+	}
+	// Dispatch to the targeted device, as its check-in would.
+	ds2, err := repo.ClaimDueSensorDirectivesForDevice(ctx, dev.ID, dev.Tags, dev.PatchRing, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched := false
+	for _, d := range ds2 {
+		dispatched = dispatched || d.SensorName == sensorName
+	}
+	if !dispatched {
+		t.Fatalf("sensor %s should be dispatched to the targeted device", sensorName)
+	}
+
 	// Record a good integer reading -> writes sensor.<name> under source sensor:<name>.
 	updated, err := repo.RecordSensorResult(ctx, dev.ID, sensor, types.SensorResultReport{SensorName: sensorName, ExitCode: 0, RawValue: "42"})
 	if err != nil || !updated {
@@ -311,6 +343,10 @@ func TestSensorTypingOwnershipAndCleanup(t *testing.T) {
 	cleared, err := repo.ClearStaleSensorAttributesForDevice(ctx, dev.ID, dev.Tags, dev.PatchRing)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
+	}
+	// A late reading for the now-disabled sensor must not bring its attribute back.
+	if _, err := repo.RecordSensorResult(ctx, dev.ID, sensor, types.SensorResultReport{SensorName: sensorName, ExitCode: 0, RawValue: "5"}); !errors.Is(err, db.ErrSensorNotDispatched) {
+		t.Fatalf("reading for a disabled sensor must be refused, got %v", err)
 	}
 	if len(cleared) != 1 || cleared[0] != sensorName {
 		t.Fatalf("cleanup cleared %v, want [%s]", cleared, sensorName)

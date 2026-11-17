@@ -223,11 +223,36 @@ func (r *Repository) ClaimDueSensorDirectivesForDevice(ctx context.Context, devi
 	return out, nil
 }
 
+// ErrSensorNotDispatched means a device reported a reading for a sensor that is disabled,
+// does not target it, or was never dispatched to it. The reading is refused.
+var ErrSensorNotDispatched = errors.New("sensor is not active for this device")
+
 // RecordSensorResult parses a reported sensor reading to its declared type and writes it as
 // the device attribute sensor.<name> (source sensor:<name>), keeping a bounded history. A
 // non-zero exit or a parse failure records an error row and leaves the last good attribute
 // value untouched. Returns true if the attribute value was updated.
 func (r *Repository) RecordSensorResult(ctx context.Context, deviceID string, sensor *types.Sensor, rep types.SensorResultReport) (updated bool, err error) {
+	// Only accept a reading for a sensor that is enabled, currently targets this device, and
+	// was dispatched to it. Without this a device could write sensor.<name> attributes for
+	// sensors that never ran on it, and those attributes feed group rules and reports.
+	var accepted bool
+	if err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM sensors s
+			JOIN devices d ON d.id = $1
+			JOIN sensor_device_state st ON st.sensor_id = s.id AND st.device_id = d.id
+			WHERE s.id = $2
+			  AND s.enabled = TRUE
+			  AND (s.target_tags = '{}' OR s.target_tags && d.tags)
+			  AND (s.target_ring IS NULL OR s.target_ring = d.patch_ring::text)
+			  AND st.last_dispatched_at IS NOT NULL
+		)`, deviceID, sensor.ID).Scan(&accepted); err != nil {
+		return false, fmt.Errorf("check sensor dispatch: %w", err)
+	}
+	if !accepted {
+		return false, ErrSensorNotDispatched
+	}
 	if rep.Error != "" || rep.ExitCode != 0 {
 		msg := rep.Error
 		if msg == "" {
