@@ -45,7 +45,23 @@ type AgentConfig struct {
 	// AllowInsecureHTTP lets the agent talk to a non-loopback server over plain HTTP
 	// (allow_insecure_http / SPIRE_AGENT_ALLOW_INSECURE_HTTP=1). Lab networks only.
 	AllowInsecureHTTP bool
+	// RequireSignedUpdates makes the agent refuse any self-update whose independent
+	// Ed25519 manifest does not verify under a pinned release key
+	// (require_signed_updates / SPIRE_AGENT_REQUIRE_SIGNED_UPDATES). It DEFAULTS TO TRUE:
+	// a fresh install, and any config that does not set the key, require signed updates.
+	// Set it false ONLY for the transition window while unsigned agents are still being
+	// replaced by signed ones; an unsigned update then installs but logs a loud warning
+	// on every attempt. See docs/ADMIN_RUNBOOK.md "Unsigned-to-signed transition".
+	RequireSignedUpdates bool
+	// ReleaseKeysDir is the directory of pinned release-signing trust anchors (*.pub),
+	// shipped INSIDE the agent package so the server can never supply them
+	// (release_keys_dir / SPIRE_AGENT_RELEASE_KEYS_DIR). Defaults to
+	// /usr/share/spire/release-keys.
+	ReleaseKeysDir string
 }
+
+// DefaultReleaseKeysDir is where the agent package installs the pinned release public keys.
+const DefaultReleaseKeysDir = "/usr/share/spire/release-keys"
 
 // Config aggregates server and agent configurations.
 type Config struct {
@@ -73,6 +89,10 @@ func Load(configPath string) *Config {
 			TokenPath:       "/etc/spire/token",
 			CheckinInterval: 5 * time.Minute,
 			PollInterval:    5 * time.Second,
+			// Signed updates are required by default; a config or env value only ever
+			// RELAXES this for the unsigned-to-signed transition window.
+			RequireSignedUpdates: true,
+			ReleaseKeysDir:       DefaultReleaseKeysDir,
 		},
 	}
 
@@ -138,6 +158,12 @@ func Load(configPath string) *Config {
 	}
 	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_ALLOW_INSECURE_HTTP")); v != "" {
 		cfg.Agent.AllowInsecureHTTP = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_REQUIRE_SIGNED_UPDATES")); v != "" {
+		cfg.Agent.RequireSignedUpdates = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_RELEASE_KEYS_DIR")); v != "" {
+		cfg.Agent.ReleaseKeysDir = v
 	}
 	if v := os.Getenv("SPIRE_SERVER_URL"); v != "" {
 		cfg.Agent.ServerURL = strings.TrimRight(v, "/")
@@ -241,6 +267,12 @@ func parseSimpleYAML(path string, cfg *Config) {
 				}
 			case "allow_insecure_http":
 				cfg.Agent.AllowInsecureHTTP = strings.EqualFold(val, "true") || val == "1"
+			case "require_signed_updates":
+				cfg.Agent.RequireSignedUpdates = strings.EqualFold(val, "true") || val == "1"
+			case "release_keys_dir":
+				if val != "" {
+					cfg.Agent.ReleaseKeysDir = val
+				}
 			case "checkin_interval":
 				if d, err := time.ParseDuration(val); err == nil {
 					cfg.Agent.CheckinInterval = d

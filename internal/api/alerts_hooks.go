@@ -62,3 +62,40 @@ func (h *Handler) maybeAlertComplianceDrift(ctx context.Context, dev *types.Devi
 		Details:  map[string]any{"hostname": dev.Hostname, "policies": drifted},
 	})
 }
+
+// maybeAlertAgentUpdateFailed raises an agent_update_failed alert when an agent reports a
+// FAILED self-update (including a signature/verification failure) or a ROLLED_BACK outcome.
+// The notifier's dedupe ledger throttles repeats per device.
+func (h *Handler) maybeAlertAgentUpdateFailed(ctx context.Context, dev *types.Device, res *types.AgentUpdateResult) {
+	if h.notifier == nil || res == nil {
+		return
+	}
+	status := strings.ToUpper(strings.TrimSpace(res.Status))
+	if status != types.AgentUpdateFailed && status != types.AgentUpdateRolledBack {
+		return
+	}
+	severity := alerts.SeverityWarning
+	subject := fmt.Sprintf("Agent self-update to %s FAILED on device %s", res.TargetVersion, dev.Hostname)
+	if status == types.AgentUpdateRolledBack {
+		severity = alerts.SeverityCritical
+		subject = fmt.Sprintf("Agent update to %s ROLLED BACK on device %s (new agent never confirmed healthy)", res.TargetVersion, dev.Hostname)
+	} else if strings.Contains(strings.ToLower(res.Message), "verif") || strings.Contains(strings.ToLower(res.Message), "signature") || strings.Contains(strings.ToLower(res.Message), "manifest") {
+		// A signature/verification failure is a stronger signal than a transient download error.
+		severity = alerts.SeverityCritical
+		subject = fmt.Sprintf("Agent update to %s REFUSED on device %s: signature/verification failure", res.TargetVersion, dev.Hostname)
+	}
+	h.notify(ctx, alerts.Event{
+		Kind:     alerts.EventAgentUpdateFailed,
+		Severity: severity,
+		Subject:  subject,
+		DeviceID: dev.ID,
+		Hostname: dev.Hostname,
+		Details: map[string]any{
+			"hostname":       dev.Hostname,
+			"target_version": res.TargetVersion,
+			"from_version":   res.FromVersion,
+			"status":         status,
+			"message":        res.Message,
+		},
+	})
+}

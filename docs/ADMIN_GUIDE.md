@@ -113,7 +113,9 @@ OIDC state is stored in PostgreSQL and is safe across multiple server instances.
 
 The Vulnerabilities page imports Debian Security Tracker data and matches installed source-package versions by release codename. Automatic import is off by default. A `SUPER_ADMIN` can enable it; a `SECURITY_ADMIN` or `SUPER_ADMIN` can import immediately or upload an offline feed.
 
-Under **Settings → Agent Rollout**, a `SUPER_ADMIN` can set a target version per ring and a minimum supported version. Agents verify the advertised size and SHA-256 before installation. The descriptor and package come from the same server, so this detects corruption, not control-plane compromise; packages are not independently signed by self-update.
+Under **Settings → Agent Rollout**, a `SUPER_ADMIN` can set a target version per ring and a minimum supported version. Agents verify the advertised size and SHA-256 before installation, AND an independent Ed25519 release signature when a signed manifest is published beside the package. The signing key is held off the control plane and the public key is pinned inside the agent package, so a compromised control plane cannot push a forged agent to agents that require signed updates. Agents require signed updates by default; see the [production operations runbook](ADMIN_RUNBOOK.md) for signing a release, key rotation, and the unsigned-to-signed transition.
+
+Each device's row shows its agent version and self-update status. A failed or refused update shows **FAILED**; an update whose new agent never confirmed healthy and was automatically reverted shows **ROLLED_BACK → previous version**. Both raise an alert through the configured channels (`agent_update_failed`), a signature/verification failure and a rollback at critical severity.
 
 ## 7. Commands, terminal, and remote assistance
 

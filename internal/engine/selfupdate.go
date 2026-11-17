@@ -43,7 +43,17 @@ type SelfUpdater struct {
 	downloadDir string
 	statePath   string
 	now         func() time.Time
+	// sig carries the pinned release trust anchors and require_signed flag. Nil means
+	// signature verification is not configured (legacy behaviour: size+sha only).
+	sig *signatureConfig
+	// rollback stages the previous package and arms an independent rollback trigger before
+	// install. Nil disables rollback staging (used by tests that only exercise verification).
+	rollback *Rollbacker
 }
+
+// SetRollbacker attaches a Rollbacker so a successful install is preceded by staging the
+// previous package and arming an independent rollback trigger.
+func SetRollbacker(u *SelfUpdater, rb *Rollbacker) { u.rollback = rb }
 
 // NewSelfUpdater builds a SelfUpdater. A nil installer defaults to SystemdRunInstaller.
 func NewSelfUpdater(client *http.Client, serverURL, currentVersion string, installer Installer) *SelfUpdater {
@@ -114,8 +124,31 @@ func (u *SelfUpdater) ApplyDirective(ctx context.Context, d *types.AgentUpdateDi
 		return u.finish(result, types.AgentUpdateFailed, "download: "+err.Error())
 	}
 
-	if err := verifyArtifact(debPath, d.Artifact); err != nil {
+	// Independent signature verification (requirement 4). When a signed manifest is present
+	// it is the authority; when it is absent and require_signed is off, fall back to the
+	// legacy size+sha256 check with a loud warning.
+	signed, err := u.verifySignedUpdate(ctx, debPath, d, token)
+	if err != nil {
 		return u.finish(result, types.AgentUpdateFailed, "verify: "+err.Error())
+	}
+	if signed == nil {
+		// Unsigned transition path: verify size+sha against the server descriptor only.
+		if err := verifyArtifact(debPath, d.Artifact); err != nil {
+			return u.finish(result, types.AgentUpdateFailed, "verify: "+err.Error())
+		}
+		logUnsignedWarning(target)
+	}
+	// (When signed != nil, verifySignedUpdate already checked the bytes against the SIGNED
+	// size+sha256, which is strictly stronger than verifyArtifact.)
+
+	// Stage the previous package and arm the independent rollback trigger BEFORE install, so
+	// a new agent that never confirms healthy is reverted without needing the new binary.
+	if u.rollback != nil {
+		if rec, armErr := u.rollback.StageAndArm(ctx, u.currentVer, target); armErr != nil {
+			return u.finish(result, types.AgentUpdateFailed, "rollback arm: "+armErr.Error())
+		} else if rec != nil {
+			// Log only; the record is also persisted on disk for the trigger.
+		}
 	}
 
 	if err := u.installer(ctx, debPath); err != nil {

@@ -8,3 +8,10 @@ agent:
   token_path: "/etc/spire/token"
   checkin_interval: "5m"
   poll_interval: "10s"
+  # Independent signed agent updates. require_signed_updates DEFAULTS TO TRUE: the agent
+  # refuses any update whose Ed25519 manifest does not verify under a pinned release key.
+  # Set it to false ONLY during the unsigned-to-signed transition (unsigned updates then
+  # install with a loud warning). release_keys_dir holds the pinned trust anchors shipped
+  # in the package; leave it at the default unless you relocate them.
+  require_signed_updates: true
+  release_keys_dir: "/usr/share/spire/release-keys"

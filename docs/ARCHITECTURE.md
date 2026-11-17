@@ -138,9 +138,59 @@ Queued root commands retain command text and output. Interactive PTY auditing re
 
 ## 7. Update integrity
 
-Self-update verifies the package size and SHA-256 advertised by the same server that hosts the package. This detects corruption and truncation. It does not protect against a compromised control plane because the server controls both bytes and digest. The self-update path does not verify an independent package signature.
+Self-update verifies the package size and SHA-256 advertised by the control plane, AND, when
+a signed manifest is present, an independent Ed25519 signature over the package made with a
+release key held OFF the control plane.
 
-The separately published APT repository can be generated and signed with `reprepro`; production onboarding should prefer that signed path.
+### Independently signed update manifests
+
+Release engineering generates an Ed25519 release key pair with `spire-release keygen`. The
+private key never touches the control plane (ideally offline or HSM-backed); the public key
+ships INSIDE the agent package at `/usr/share/spire/release-keys/<key_id>.pub` and is pinned
+by the agent. The server never holds the private key and never serves the trust anchors, so a
+compromised control plane cannot forge or substitute a trust anchor.
+
+For each release, `spire-release sign` emits a detached `<deb>.manifest.json` beside the
+`.deb`. The manifest's signed payload is a canonical JSON object `{version, package,
+architecture, sha256, size, issued_at, expires_at, key_id}`; `CanonicalBytes` fixes key order
+and UTC timestamp formatting so the signed bytes are independent of field order or timezone.
+Manifests expire (default 90 days) to bound replay of an old-but-valid signature.
+
+The server serves the manifest beside the `.deb` through the same `/dist` path and puts its
+location in the check-in update directive (`artifact.manifest_url`). It computes nothing and
+signs nothing.
+
+Before installing, the agent verifies, in order, and refuses on any failure:
+
+1. the manifest signature is valid under a pinned key, the `key_id` is known, and the
+   manifest is within its validity window;
+2. the manifest's package and architecture match this agent (`spire-agent` / `amd64`);
+3. the manifest version equals the directive's target and is strictly greater than the
+   running version (no downgrade);
+4. the downloaded bytes' SHA-256 and size equal the SIGNED manifest values;
+5. the server-advertised SHA-256 and size equal the manifest, else the update is refused as a
+   server that disagrees with the signed record.
+
+`require_signed_updates` (config/env, default **true** for new installs) makes the agent
+refuse any update without a valid manifest. It may be set false ONLY during the
+unsigned-to-signed transition, in which case an unsigned update installs but the agent logs a
+loud per-update warning. See `docs/ADMIN_RUNBOOK.md`.
+
+### Automatic rollback
+
+Before installing, the agent stages the currently installed package under
+`/var/lib/spire/updates/previous/`, clears any stale health marker, and arms an independent
+rollback trigger (a `systemd-run` transient timer, or the packaged
+`spire-agent-rollback.timer`). The new agent writes a health marker only after it starts and
+completes one successful check-in. The rollback trigger runs `spired --rollback-check`, which
+reads the on-disk arm record and health marker and reinstalls the staged previous package if
+the marker is absent past the deadline (default 10 minutes). Because the trigger and the
+staged package do not depend on the new binary, a crash-looping or broken new agent is still
+reverted. After a rollback the restored agent reports `ROLLED_BACK` once on its next check-in,
+which the UI surfaces and which raises an alert through the existing hooks.
+
+The separately published APT repository can still be generated and signed with `reprepro`;
+production onboarding should prefer the signed-manifest path and/or the signed APT repo.
 
 ## 8. Known security gaps
 
@@ -148,6 +198,11 @@ The separately published APT repository can be generated and signed with `reprep
 - Attestation status does not gate policy-secret delivery.
 - No mutual TLS or device certificate pinning.
 - First-contact wipe-signing-key trust depends on transport TLS.
-- Self-update has no independent artifact signature.
+- Self-update verifies an independent Ed25519 release signature when a manifest is present
+  and `require_signed_updates` is true (the default). Remaining limits: the release public
+  keys are pinned at package-build time, so trusting a new signing key requires shipping a new
+  package (there is no in-band key-distribution channel, by design); and with
+  `require_signed_updates` set false for the transition, an unsigned update still installs
+  (with a loud warning).
 - `spired` runs as unrestricted root.
 - The notification-only remote-assistance fallback does not provide genuine interactive consent and should be hardened.

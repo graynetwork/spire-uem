@@ -44,6 +44,36 @@ func TestArtifactResolver_MissingFileErrors(t *testing.T) {
 	}
 }
 
+func TestArtifactResolver_SetsManifestURLWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	name := debFileName("0.2.0")
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("deb"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ar := newArtifactResolver(dir)
+
+	// No manifest yet → ManifestURL empty.
+	a, err := ar.Resolve("0.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ManifestURL != "" {
+		t.Errorf("expected empty ManifestURL with no manifest, got %q", a.ManifestURL)
+	}
+
+	// Drop a manifest beside the .deb → ManifestURL set.
+	if err := os.WriteFile(filepath.Join(dir, name+".manifest.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	a, err = ar.Resolve("0.2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ManifestURL != "/dist/"+name+".manifest.json" {
+		t.Errorf("ManifestURL = %q, want /dist/%s.manifest.json", a.ManifestURL, name)
+	}
+}
+
 func TestArtifactResolver_CacheInvalidatesOnMtime(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, debFileName("0.3.0"))

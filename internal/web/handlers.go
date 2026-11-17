@@ -813,20 +813,33 @@ func (h *Handler) ServeBootstrapScript(w http.ResponseWriter, r *http.Request) {
 // ServeDebPackage handles GET/HEAD /dist/{filename}, serving dist/*.deb from the filesystem.
 func (h *Handler) ServeDebPackage(w http.ResponseWriter, r *http.Request) {
 	filename := filepath.Base(chi.URLParam(r, "filename"))
-	if filename == "" || filename == "." || filename == ".." || !strings.HasSuffix(filename, ".deb") {
+	isDeb := strings.HasSuffix(filename, ".deb")
+	// The detached Ed25519 update manifest lives beside the .deb as <deb>.manifest.json and
+	// is served through the same public path so the agent can fetch it with its bearer token.
+	isManifest := strings.HasSuffix(filename, ".deb.manifest.json")
+	if filename == "" || filename == "." || filename == ".." || (!isDeb && !isManifest) {
 		http.Error(w, "Invalid package filename", http.StatusBadRequest)
 		return
 	}
 
-	debPath := filepath.Join("dist", filename)
+	// Serve from SPIRE_DIST_DIR when set (matching the artifact resolver), else dist/.
+	distDir := strings.TrimSpace(os.Getenv("SPIRE_DIST_DIR"))
+	if distDir == "" {
+		distDir = "dist"
+	}
+	debPath := filepath.Join(distDir, filename)
 	info, err := os.Stat(debPath)
 	if err != nil || info.IsDir() {
 		http.Error(w, "Package not found", http.StatusNotFound)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.debian.binary-package")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	if isManifest {
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "application/vnd.debian.binary-package")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	}
 	http.ServeFile(w, r, debPath)
 }
 

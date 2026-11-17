@@ -67,10 +67,11 @@ func (ar *artifactResolver) Resolve(version string) (*types.AgentArtifact, error
 		sum := ent.sha256
 		ar.mu.Unlock()
 		return &types.AgentArtifact{
-			Version: version,
-			URL:     "/dist/" + name,
-			SHA256:  sum,
-			Size:    info.Size(),
+			Version:     version,
+			URL:         "/dist/" + name,
+			SHA256:      sum,
+			Size:        info.Size(),
+			ManifestURL: ar.manifestURL(name),
 		}, nil
 	}
 	ar.mu.Unlock()
@@ -85,11 +86,23 @@ func (ar *artifactResolver) Resolve(version string) (*types.AgentArtifact, error
 	ar.mu.Unlock()
 
 	return &types.AgentArtifact{
-		Version: version,
-		URL:     "/dist/" + name,
-		SHA256:  sum,
-		Size:    info.Size(),
+		Version:     version,
+		URL:         "/dist/" + name,
+		SHA256:      sum,
+		Size:        info.Size(),
+		ManifestURL: ar.manifestURL(name),
 	}, nil
+}
+
+// manifestURL returns the public /dist path of the detached signed manifest for the given
+// .deb name when the file exists on disk beside the .deb, else "" (unsigned artifact). The
+// server only serves a manifest release engineering published; it never creates or signs one.
+func (ar *artifactResolver) manifestURL(debName string) string {
+	manifestName := debName + ".manifest.json"
+	if info, err := os.Stat(filepath.Join(ar.distDir, manifestName)); err == nil && !info.IsDir() {
+		return "/dist/" + manifestName
+	}
+	return ""
 }
 
 func hashFile(path string) (string, error) {

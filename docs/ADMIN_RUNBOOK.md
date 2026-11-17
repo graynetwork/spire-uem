@@ -650,20 +650,108 @@ does **not** kill itself when the package restart cycles `spired.service`. The u
 applied inside an active maintenance window. The agent reports `SUCCESS`/`FAILED` + a message
 back on its next check-in; a failed update backs off (no hot retry loop).
 
-### 11.4 Integrity — read this before trusting the hash
-The SHA-256 in a self-update descriptor is fetched from the **same server** that serves the `.deb`, so it protects against transport corruption and truncation, not a compromised server. An attacker controlling the server controls both the artifact and its advertised hash. The self-update path does not independently verify a package signature.
+### 11.4 Integrity — independently signed update manifests
+Size and SHA-256 alone come from the **same server** that serves the `.deb`, so by themselves
+they protect only against corruption and truncation, not a compromised control plane. SpireUEM
+adds an independent Ed25519 signature over each agent package, made with a release key held
+**off** the control plane. Agents require a valid signature by default
+(`require_signed_updates: true`), so a compromised server that controls the bytes and the
+advertised hash still cannot push a forged root agent.
 
-SpireUEM can separately publish a GPG-signed APT repository with `reprepro` (`make init-repo`, then `make publish-deb`). Prefer that repository for production installation and routine package management. Regardless of package source, protect the control-plane channel with built-in TLS or a trusted TLS proxy.
+#### 11.4.1 Generate a release key (`spire-release keygen`)
+Run on a secure host — ideally offline or an HSM-backed signer — NOT the control plane:
 
-### 11.5 Operator steps to publish a new agent version
-1. Build the new agent `.deb` and place it in the server's dist dir (`SPIRE_DIST_DIR`, default
-   `dist/`). Confirm it is reachable at `GET /dist/<file>.deb`.
+```sh
+spire-release keygen -out /secure/release-keys
+# prints: key_id: <id>, private key: /secure/release-keys/release.key (mode 0600),
+#         public key:  /secure/release-keys/<id>.pub
+```
+
+- The **private key** (`*.key`, PKCS#8 PEM, mode 0600) never leaves the signing host and is
+  never placed on the control plane. `spire-release` refuses to use a private key that is
+  group- or world-readable.
+- The **public key** (`<key_id>.pub`) is a trust anchor. Copy it into the agent source tree at
+  `packaging/release-keys/<key_id>.pub` and build a new agent package; it installs to
+  `/usr/share/spire/release-keys/<key_id>.pub` and the agent pins it. Replace the sample key
+  shipped in the repo with your own before production.
+
+#### 11.4.2 Sign a release (`spire-release sign`)
+After building the `.deb`:
+
+```sh
+spire-release sign -key /secure/release-keys/release.key -deb dist/spire-agent_0.2.0_amd64.deb
+# writes dist/spire-agent_0.2.0_amd64.deb.manifest.json (default 90-day validity)
+# or: make sign-deb RELEASE_KEY=/secure/release-keys/release.key VERSION=0.2.0
+```
+
+Place the `.deb` AND its `.manifest.json` together in the server's dist dir. The server serves
+the manifest at `GET /dist/<deb>.manifest.json` and advertises it automatically; it never needs
+the private key. Verify before publishing:
+
+```sh
+spire-release verify -deb dist/spire-agent_0.2.0_amd64.deb -keys packaging/release-keys
+```
+
+The agent's pre-install checks, any of which refuses the update: valid signature under a pinned
+key; known `key_id`; not expired; package/arch match; version equals the directive target and is
+strictly greater than the running version (no downgrade); downloaded bytes' sha256+size equal the
+SIGNED manifest; and the server-advertised sha/size equal the manifest.
+
+#### 11.4.3 Key rotation
+Multiple keys may be pinned at once. Keygen a new key, add its `.pub` to
+`packaging/release-keys/` and ship a new agent package so fielded agents trust BOTH keys, then
+start signing with the new key. Once every agent runs a package that trusts the new key, remove
+the old `.pub` and ship again.
+
+#### 11.4.4 Unsigned-to-signed transition (existing unsigned agents)
+Agents that predate signing cannot verify a manifest. To migrate without stranding them:
+
+1. Deploy a new agent package that **pins your release key** and ships with
+   `require_signed_updates: false` in `/etc/spire/config.yaml` (or set
+   `SPIRE_AGENT_REQUIRE_SIGNED_UPDATES=false`). While false, an unsigned update still installs
+   but the agent logs a loud SECURITY WARNING on every unsigned update.
+2. Start publishing signed manifests beside every `.deb` (step 11.4.2).
+3. Once the fleet is on the signing-aware agent and all releases are signed, flip
+   `require_signed_updates` back to **true** (the default for fresh installs) and ship once
+   more. From then on, unsigned or mis-signed updates are refused.
+
+SpireUEM can also publish a GPG-signed APT repository with `reprepro` (`make init-repo`, then
+`make publish-deb`); the signed-manifest path and the signed APT repo are complementary.
+Regardless of source, protect the control-plane channel with built-in TLS or a trusted proxy.
+
+### 11.5 Automatic rollback
+Before installing a new agent, `spired` stages the currently installed package under
+`/var/lib/spire/updates/previous/`, clears any stale health marker, and arms an **independent**
+rollback trigger (`systemd-run` transient timer, falling back to the packaged
+`spire-agent-rollback.timer`). The trigger runs `spired --rollback-check`, which does not depend
+on the new binary being healthy. The new agent writes `/var/lib/spire/updates/health-ok.json`
+only after it starts and completes one successful check-in. If that marker is absent when the
+deadline passes (default 10 minutes), the trigger reinstalls the staged previous `.deb`. The
+restored agent then reports `ROLLED_BACK` exactly once on its next check-in, which shows on the
+device page and raises an `agent_update_failed` alert.
+
+To exercise/verify rollback on an endpoint:
+
+```sh
+systemctl status spire-agent-rollback.timer spire-agent-rollback.service
+ls -l /var/lib/spire/updates /var/lib/spire/updates/previous
+journalctl -u spired | grep -i 'rollback\|health marker\|self-update'
+```
+
+### 11.6 Operator steps to publish a new agent version
+1. Build the new agent `.deb`, sign it (11.4.2), and place both the `.deb` and its
+   `.manifest.json` in the server's dist dir (`SPIRE_DIST_DIR`, default `dist/`). Confirm both
+   are reachable at `GET /dist/<file>.deb` and `GET /dist/<file>.deb.manifest.json`.
 2. In **Settings → Agent Rollout**, set the target version for the ring(s) you want to roll to
    (start with `CANARY`, promote outward). Optionally raise `rollout.minimum_version`.
-3. Watch the version badges on `/admin/devices` advance as agents check in and self-update;
-   failed updates surface on the device drawer with their error message.
+3. Watch the version badges on `/admin/devices` advance as agents check in and self-update.
+   `FAILED` (including a signature refusal) and `ROLLED_BACK` surface on the device drawer with
+   their message and raise alerts.
 
-**Limits / out of scope:** self-update has no independent artifact-signature check (the separately generated APT repository can be GPG-signed; see section 11.4); the agent updates to exactly the ring target, with no percentage rollout within a ring beyond ring membership; `dev` builds are intentionally never touched.
+**Limits / out of scope:** release public keys are pinned at package-build time, so trusting a
+new signing key requires shipping a new package (there is no in-band key-distribution channel,
+by design); the agent updates to exactly the ring target, with no percentage rollout within a
+ring beyond ring membership; `dev` builds are intentionally never touched.
 ## 12. Lost-Device Actions (Lock / Mark Lost / Crypto-Erase Wipe / Recovery-Key Rotation)
 
 All four actions are driven from the device detail page on `/admin/devices` and are delivered

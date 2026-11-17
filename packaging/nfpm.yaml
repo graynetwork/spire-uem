@@ -67,6 +67,29 @@ contents:
       owner: root
       group: root
 
+  - src: ./packaging/spire-agent-rollback.service
+    dst: /lib/systemd/system/spire-agent-rollback.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  - src: ./packaging/spire-agent-rollback.timer
+    dst: /lib/systemd/system/spire-agent-rollback.timer
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  # Pinned release-signing trust anchors for independent update-manifest verification.
+  # Shipped INSIDE the package so the control plane can never supply them.
+  - src: ./packaging/release-keys/*.pub
+    dst: /usr/share/spire/release-keys/
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
   - src: ./packaging/config.example.yaml
     dst: /etc/spire/config.yaml.example
     type: config
