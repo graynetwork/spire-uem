@@ -385,3 +385,70 @@ state).
 The admin surface is a JSON API: `GET/POST /admin/workflows`, `POST /admin/workflows/{id}`,
 `POST /admin/workflows/{id}/toggle`, `DELETE /admin/workflows/{id}`, `GET /admin/workflows/runs`,
 `GET /admin/workflows/approvals`, and `POST /admin/workflows/approvals/{id}/approve|reject`.
+
+## 11. Patch campaigns, risk acceptance, and automatic halting
+
+A patch campaign rolls a set of package upgrades out to a target set of devices in ordered
+stages, halting automatically if too many devices fail. Campaigns are managed by
+`SECURITY_ADMIN` and above; a tag-scoped admin sees and controls only campaigns within their
+tags and can target only their own devices.
+
+**Create a campaign** (`POST /admin/campaigns`). Choose exactly one target:
+- a dynamic group (`"target_kind":"group","group_id":"..."`),
+- a list of CVE ids (`"target_kind":"cve","cve_ids":["CVE-2024-...", ...]`) — each targeted
+  device gets work to bring the affected source package to the CVE's fixed version, only when a
+  fix is available; a CVE with no fix yields no work,
+- or explicit packages (`"target_kind":"packages","packages":["curl", ...]`) — every device that
+  has one of those packages installed is upgraded to the latest available.
+Optionally limit with `target_tags` and `target_ring`. Set `stages` (or accept the default
+CANARY -> PILOT -> PRODUCTION), `reboot_policy` (`never` / `notify` / `force`), `max_deferrals`,
+an optional `deadline_at`, a `blackout_cron` + `blackout_duration_minutes`, and
+`respect_maintenance_window`. Per-campaign `package_exclusions` drop named packages from the
+work. Package names and versions are validated against Debian rules at creation; an invalid name
+is rejected.
+
+**Stages.** Each stage has a minimum device count, a success threshold (e.g. 95%), a soak time,
+and a failure-halt threshold (a percentage of reporting devices and/or an absolute count).
+A stage promotes to the next automatically once its success threshold holds for the soak time
+(set a stage's promotion to manual to require a click instead). If the failure-halt threshold is
+exceeded the whole campaign halts automatically, an alert is raised, and nothing further is
+dispatched until you resume it — halting always takes precedence over promotion.
+
+**Controls.** `POST /admin/campaigns/{id}/start|pause|resume|cancel`. Resume clears a halt as
+well as a pause. `GET /admin/campaigns/{id}` returns the campaign, its per-device work, a report
+(device counts by stage and state, failure classes) and its event log.
+`GET /admin/campaigns/{id}/export?format=csv|json` exports the per-device work, tag-scoped.
+
+**How devices receive work.** There is nothing to trigger by hand. After you start a campaign,
+each device picks up its work at its next check-in when the campaign is running, no blackout
+window is active, the campaign's current stage matches the device's patch ring (a `CANARY` stage
+reaches only CANARY devices), and, if the campaign respects maintenance windows, the device is
+inside one. A server loop (every minute by default) then advances the campaign: it promotes a
+stage after its soak time, halts on failures, and completes the campaign. **A stage only advances
+once every device in it has a result**, so devices that are offline or have deferred keep it open.
+A device that does not run the new agent never reports and is counted as failed (`UNSUPPORTED`)
+after 24 hours.
+
+**End-user deferral.** Before installing, the active user is notified. If the server still allows
+deferral, Spire Hub shows an "Updates scheduled" row with a **Defer** button for about a minute; a
+deferral postpones that device's install by 4 hours (never past the deadline), up to
+`max_deferrals` times. After the deadline (if set) or once deferrals are used up, the install
+proceeds without a Defer button. Reboot policy: `never` does not reboot; `notify` tells the user a
+restart is needed; `force` only notifies before the deadline, and at or after it warns the user and
+restarts the computer five minutes later. If the agent is restarted mid-install the device is
+reported `INTERRUPTED` (not success).
+
+**Rollback.** The agent records each package's previous version when it upgrades it, and the
+rollback planner only ever targets packages the campaign upgraded, and only to a version that is
+still available from the device's repositories. **There is no admin rollback action yet**; it is
+not available from the UI or API in this release.
+
+**Risk acceptance and exclusions** (`/admin/risk-acceptances`). Accept a CVE and/or package for
+all devices, a group, or a tag set, with a required reason and an expiry (maximum 180 days).
+Accepted findings are excluded from new campaign work and shown as "accepted" rather than hidden;
+on the **Vulnerabilities** page an accepted CVE keeps its row with an "accepted" badge, the reason,
+the expiry date and who accepted it ("accepted on N of M" when only some hosts are covered), and the
+header counts open and accepted CVEs. The page only counts your own devices if you are tag-scoped.
+An acceptance stops applying the moment it expires and the finding is open again. A tag-scoped admin may only accept risk within
+their own tags and may not create a fleet-wide acceptance. Every create, control action and
+deletion is audited with the acting admin.

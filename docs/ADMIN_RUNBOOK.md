@@ -1213,46 +1213,6 @@ check-in response; the sealed envelopes remain in the policy payload at rest.
   devices for your tag scope.
 
 
-## Reusable scripts, custom sensors, and SCRIPT_POLICY
-
-### Migrations
-
-Migrations `000045` (scripts + immutable versions), `000046` (script runs, sealed run secrets,
-sensors, sensor results, per-device sensor schedule state) and `000047` (adds `SCRIPT_POLICY`
-to the `policy_type` enum) are applied by the standard migration runner at server start, each
-in its own transaction under the migration advisory lock. `000047` uses
-`ALTER TYPE policy_type ADD VALUE IF NOT EXISTS`, the same idempotent pattern as the earlier
-policy-type additions.
-
-### Operational notes
-
-- Scripts run on endpoints as root (or the active seat user) with a timeout and an output cap.
-  A script is written to a `0700` file in a root-owned `0700` directory (`/run/spire/scripts`),
-  run by the fixed interpreter directly (never a shell), fed parameters only through
-  `SPIRE_PARAM_<NAME>` environment variables, and removed afterwards. The agent verifies each
-  version's sha256 before running and refuses a mismatch.
-- Secret script parameters are sealed with the server KEK and opened only when the directive
-  for the target device is built. If the server KEK is unavailable a run with secret parameters
-  is refused at queue time rather than sent without its secret.
-- A run left `RUNNING` past two hours (an agent that restarted mid-run) is marked `INTERRUPTED`
-  at the device's next check-in, so it is reported rather than lost.
-- Sensors are dispatched only when due (minimum interval 15 minutes); the per-device dispatch
-  state is in the database, so a server restart or a second server instance does not
-  re-dispatch a sensor every check-in.
-- Script and sensor directives ride on new `omitempty` check-in response fields, so an older
-  agent safely ignores them and the server behaves exactly as before for a device with none.
-
-### Verification
-
-- After deploying, `GET /admin/scripts` and `GET /admin/sensors` should return `200` with the
-  expected definitions. Queue a run with `POST /admin/scripts/{id}/run` against a test device
-  and confirm `GET /admin/devices/{id}/script-runs` shows the run move from `QUEUED` to a
-  terminal status after the device checks in.
-- Confirm secret parameters never appear in `script_runs.params` or in the audit log; the
-  `script_run_secrets` ciphertext must not contain the plaintext.
-- Confirm a scoped operator cannot run a script against a device outside their tags (the run
-  endpoint returns "no in-scope approved devices matched this target").
-
 ## 16. Dynamic Device Groups & Saved Fleet Queries
 
 ### 16.1 Overview
@@ -1326,7 +1286,110 @@ parameter to restrict results to the group's members.
 - Membership events in `group_membership_events` show entered/left transitions with reasons.
   Capped at 500 per group; older events are trimmed on each recompute.
 
-## Automation and remediation workflows
+## 17. Patch Campaigns, Risk Acceptance & Automatic Halting
+
+Staged package-upgrade rollouts with automatic halting. Schema: migrations 000052-000055
+(`patch_campaigns`, `campaign_device_work`, `campaign_package_results`, `campaign_deferrals`,
+`risk_acceptances`, `campaign_events`).
+
+**Endpoints (SECURITY_ADMIN+, tag-scope aware):**
+- `GET/POST /admin/campaigns`, `GET /admin/campaigns/{id}`, `GET /admin/campaigns/{id}/export?format=csv|json`
+- `POST /admin/campaigns/{id}/{start|pause|resume|cancel}`
+- `GET/POST /admin/risk-acceptances`, `DELETE /admin/risk-acceptances/{id}`
+- Device (bearer): `POST /api/v1/desktop/campaign/defer`, `POST /api/v1/desktop/campaign/report`
+- Spire Hub (local, seat0/root): `POST /v1/campaign/defer` on the agent socket, which forwards
+  to the device defer endpoint with the device's own token.
+
+**Multi-instance safety.** Promotion and halting run inside a per-campaign Postgres advisory
+lock (keyspace base `0x636d7000`), so two control-plane instances evaluating the same campaign
+promote it exactly once. Dispatch to a device is an atomic conditional `UPDATE` (`PENDING ->
+DISPATCHED`), so a device is dispatched to once even under a race. These are distinct from the
+group-recompute advisory band (`0x67727000`).
+
+**Halt precedence.** The orchestrator checks the failure-halt threshold before promotion; a
+stage over its failure threshold halts even when its success gate is also met. A halt sets the
+campaign `HALTED`, records a `campaign_events` row, and raises an alert through the existing
+notifier. Resume (`/resume`) clears the halt and sets the campaign `RUNNING` again.
+
+**Unsupported old agents.** A device that is dispatched a campaign directive but never reports
+within `UnsupportedAgentTimeout` (24h) is marked `UNSUPPORTED` — a failure for stage math, never
+a silent success. Run this from the evaluation path (`MarkUnsupportedTimedOut`).
+
+**Operational behaviour.**
+- *Dispatch happens at check-in.* A device receives a campaign directive only while its
+  campaign is `RUNNING`, outside any blackout window, in the campaign's active stage ring (stage
+  names `CANARY`/`BETA`/`PILOT`/`PRODUCTION` gate on the device's `patch_ring`), and in its
+  maintenance window when the campaign requires one. A halted, paused or cancelled campaign
+  dispatches nothing.
+- *The evaluation loop runs on every server instance* (default every minute; set
+  `SPIRE_CAMPAIGN_EVAL_INTERVAL`, e.g. `30s`, minimum 5s). Check the server log for
+  `[campaignsync] campaign evaluation every ...`. Two instances are safe: promotion/halt is taken
+  under the per-campaign advisory lock after re-reading the campaign.
+- *A stage does not promote or complete while any of its devices is still pending.* Offline,
+  deferred or undispatched devices keep the stage open. To find them:
+  `SELECT d.hostname, w.state, w.deferred_until FROM campaign_device_work w JOIN devices d ON d.id=w.device_id WHERE w.campaign_id=... AND w.stage=<n> AND w.state NOT IN ('SUCCEEDED','FAILED','INTERRUPTED','UNSUPPORTED','REMOVED','EXCLUDED');`
+  Cancel the campaign, take the device out of the target, or wait for the 24h unsupported timeout.
+- *Halts raise a `patch_failed` alert* whose details include `campaign_id` and `reason`. Resume
+  clears the halt; the same stage is then evaluated again from its current results, so fix or
+  exclude the failing devices first or it will halt again.
+- *Old agents.* An agent that does not understand directives never reports; after 24h its work is
+  marked `UNSUPPORTED` (a failure for the halt math). Upgrade those agents first
+  (`SELECT hostname, agent_version FROM devices ...`).
+- *Agent restart mid-install.* The agent keeps `/var/lib/spire/campaign-inflight.json` (root,
+  0600). After a restart the next check-in reports the run as `INTERRUPTED` once. If you see a
+  device stuck `DISPATCHED`, check that file and the agent log for `campaign ... report failed`.
+- *Not available:* admin-triggered rollback (planner and agent executor exist, no endpoint yet).
+
+**Inspecting state.**
+- `SELECT state, current_stage, halted_reason FROM patch_campaigns WHERE id=...;`
+- Per-device: `SELECT device_id, stage, state, failure_class, deferrals_used FROM campaign_device_work WHERE campaign_id=...;`
+- Events: `SELECT kind, actor, detail, created_at FROM campaign_events WHERE campaign_id=... ORDER BY id DESC;`
+- Active acceptances: `SELECT cve_id, package, scope_kind, expires_at FROM risk_acceptances WHERE expires_at > now();`
+
+**Risk acceptance expiry** is enforced in work computation (`expires_at > now`), so an expired
+acceptance stops excluding work with no sweep needed. The 180-day cap is enforced at creation.
+
+## 18. Reusable scripts, custom sensors, and SCRIPT_POLICY
+
+### Migrations
+
+Migrations `000045` (scripts + immutable versions), `000046` (script runs, sealed run secrets,
+sensors, sensor results, per-device sensor schedule state) and `000047` (adds `SCRIPT_POLICY`
+to the `policy_type` enum) are applied by the standard migration runner at server start, each
+in its own transaction under the migration advisory lock. `000047` uses
+`ALTER TYPE policy_type ADD VALUE IF NOT EXISTS`, the same idempotent pattern as the earlier
+policy-type additions.
+
+### Operational notes
+
+- Scripts run on endpoints as root (or the active seat user) with a timeout and an output cap.
+  A script is written to a `0700` file in a root-owned `0700` directory (`/run/spire/scripts`),
+  run by the fixed interpreter directly (never a shell), fed parameters only through
+  `SPIRE_PARAM_<NAME>` environment variables, and removed afterwards. The agent verifies each
+  version's sha256 before running and refuses a mismatch.
+- Secret script parameters are sealed with the server KEK and opened only when the directive
+  for the target device is built. If the server KEK is unavailable a run with secret parameters
+  is refused at queue time rather than sent without its secret.
+- A run left `RUNNING` past two hours (an agent that restarted mid-run) is marked `INTERRUPTED`
+  at the device's next check-in, so it is reported rather than lost.
+- Sensors are dispatched only when due (minimum interval 15 minutes); the per-device dispatch
+  state is in the database, so a server restart or a second server instance does not
+  re-dispatch a sensor every check-in.
+- Script and sensor directives ride on new `omitempty` check-in response fields, so an older
+  agent safely ignores them and the server behaves exactly as before for a device with none.
+
+### Verification
+
+- After deploying, `GET /admin/scripts` and `GET /admin/sensors` should return `200` with the
+  expected definitions. Queue a run with `POST /admin/scripts/{id}/run` against a test device
+  and confirm `GET /admin/devices/{id}/script-runs` shows the run move from `QUEUED` to a
+  terminal status after the device checks in.
+- Confirm secret parameters never appear in `script_runs.params` or in the audit log; the
+  `script_run_secrets` ciphertext must not contain the plaintext.
+- Confirm a scoped operator cannot run a script against a device outside their tags (the run
+  endpoint returns "no in-scope approved devices matched this target").
+
+## 19. Automation and remediation workflows
 
 The workflow engine runs in-process on every `spire-server` instance and starts automatically;
 there is nothing to enable. It owns four loops: event drain, schedule evaluation,

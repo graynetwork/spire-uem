@@ -779,6 +779,45 @@ type CheckinResponse struct {
 	// SensorDirectives are the sensors due on this device at this check-in. Older agents
 	// ignore this field.
 	SensorDirectives []SensorDirective `json:"sensor_directives,omitempty"`
+	// CampaignDirectives are patch-campaign installs the server has claimed for this device
+	// at this check-in. The server applies every gate (campaign state, the device's ring in
+	// the active stage, blackout/maintenance windows, deadline/deferral rules) and claims the
+	// work atomically BEFORE it appears here, so each directive is a committed assignment the
+	// agent should execute. Older agents that do not understand this field ignore it; the
+	// server's unsupported-agent timeout then marks the claimed work UNSUPPORTED (never a
+	// silent success). omitempty so an old agent's response is byte-identical to before.
+	CampaignDirectives []CampaignDirective `json:"campaign_directives,omitempty"`
+}
+
+// CampaignDirective is one claimed patch-campaign install for a device. It is fully
+// self-contained: the agent needs nothing else to execute it (packages to upgrade, whether
+// the user may still defer, the reboot policy, and whether the deadline has passed). The
+// server decides deferral allowance and deadline; the agent never recomputes them.
+type CampaignDirective struct {
+	CampaignID string `json:"campaign_id"`
+	// Name is a human label used in the user notification.
+	Name string `json:"name,omitempty"`
+	// Packages is the validated [{package,target,from_cve}] work list.
+	Packages []CampaignPackageWork `json:"packages"`
+	// RebootPolicy is one of "never" / "notify" / "force".
+	RebootPolicy string `json:"reboot_policy"`
+	// MayDefer is true when the user may still defer this install (deferrals remain and the
+	// deadline has not passed). When false the install proceeds without offering a deferral.
+	MayDefer bool `json:"may_defer"`
+	// DeferralsLeft is how many deferrals remain (informational, for the Spire Hub button).
+	DeferralsLeft int `json:"deferrals_left,omitempty"`
+	// DeadlinePassed is true when the campaign deadline has passed: the install proceeds
+	// without deferral and a "force" reboot policy applies.
+	DeadlinePassed bool `json:"deadline_passed,omitempty"`
+}
+
+// CampaignPackageWork is one (package, target version) the agent must apply. It mirrors
+// campaign.PackageWork but lives in types to keep the agent/server wire contract in one place
+// without the agent importing the server-side campaign package.
+type CampaignPackageWork struct {
+	Package string `json:"package"`
+	Target  string `json:"target"`
+	FromCVE string `json:"from_cve,omitempty"`
 }
 
 // PolicyExecutionItem represents a single policy enforcement outcome reported by spired.

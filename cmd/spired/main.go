@@ -396,6 +396,14 @@ func main() {
 				runScriptDirectives(ctx, client, cfg.Agent.ServerURL, token, hwUUID, checkinResp.ScriptDirectives)
 				runSensorDirectives(ctx, client, cfg.Agent.ServerURL, token, hwUUID, checkinResp.SensorDirectives)
 
+				// Patch campaigns: first report any run a previous process left in flight
+				// (INTERRUPTED, or a finished result whose report never landed), then execute
+				// the directives the server claimed for this check-in. Older servers never
+				// send directives, so this is a no-op for them.
+				campDeps := newCampaignDeps(client, cfg.Agent.ServerURL, token, ipcSrv)
+				reportRecoveredCampaigns(ctx, campDeps)
+				runCampaignDirectives(ctx, campDeps, checkinResp.CampaignDirectives)
+
 				if attResp, attErr := engine.PerformTPMAttestation(ctx, client, cfg.Agent.ServerURL, token, hwUUID); attErr != nil {
 					log.Printf("[spired] warning: TPM 2.0 attestation failed: %v", attErr)
 				} else if attResp != nil {

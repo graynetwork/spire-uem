@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -23,6 +24,17 @@ func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[web] list fleet CVEs: %v", err)
 		http.Error(w, "Failed to load vulnerabilities", http.StatusInternalServerError)
 		return
+	}
+	// Mark findings covered by an active risk acceptance. They stay listed as "accepted"
+	// (with reason and expiry); on error they simply show as open (never hidden).
+	if aerr := h.repo.AnnotateFleetCVEsWithAcceptance(r.Context(), h.deviceScope(r), cves, time.Now().UTC()); aerr != nil {
+		log.Printf("[web] annotate accepted CVEs: %v", aerr)
+	}
+	acceptedCount := 0
+	for _, c := range cves {
+		if c.Accepted {
+			acceptedCount++
+		}
 	}
 	feedState, err := h.repo.GetCVEFeedState(r.Context())
 	if err != nil {
@@ -43,6 +55,8 @@ func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
 		"CSRFToken":        CSRFTokenFromContext(r.Context()),
 		"AdminUser":        AdminUserFromContext(r.Context()),
 		"FleetCVEs":        cves,
+		"AcceptedCVECount": acceptedCount,
+		"OpenCVECount":     len(cves) - acceptedCount,
 		"FeedState":        feedState,
 		"FlashMessage":     r.URL.Query().Get("msg"),
 		"TotalHostsCount":  summary.TotalDevices,

@@ -53,6 +53,9 @@ type AgentStatus struct {
 	SecurityPolicies  []types.PolicyStatusItem `json:"security_policies"`
 	MandatoryApps     []types.AppStatusItem    `json:"mandatory_apps"`
 	AvailableCatalog  []types.CatalogAppItem   `json:"available_catalog"`
+	// PendingCampaign is set while a patch-campaign install is announced to the user and may
+	// still be deferred from Spire Hub. Absent otherwise.
+	PendingCampaign *PendingCampaign `json:"pending_campaign,omitempty"`
 }
 
 type peerCredKey struct{}
@@ -77,6 +80,9 @@ type Server struct {
 	lastStatus       AgentStatus
 	assignedPolicies []types.AssignedPolicy
 	policyResults    []types.PolicyExecutionItem
+	campaignMu       sync.Mutex
+	pendingCampaign  *PendingCampaign
+	campaignDeferred map[string]bool
 }
 
 // SetEngineMutex binds the daemon's policy execution mutex so IPC install/uninstall operations serialize with check-in cycles.
@@ -241,6 +247,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/v1/catalog", s.handleCatalog)
 	mux.HandleFunc("/v1/install", s.handleInstall)
 	mux.HandleFunc("/v1/uninstall", s.handleUninstall)
+	mux.HandleFunc("/v1/campaign/defer", s.handleCampaignDefer)
 
 	srv := &http.Server{
 		Handler:           s.peerCredMiddleware(mux),
@@ -407,6 +414,7 @@ func (s *Server) buildPartitionedStatus(ctx context.Context) AgentStatus {
 	assigned := append([]types.AssignedPolicy(nil), s.assignedPolicies...)
 	results := append([]types.PolicyExecutionItem(nil), s.policyResults...)
 	s.mu.RUnlock()
+	st.PendingCampaign = s.PendingCampaignSnapshot()
 
 	pkgs, _ := inventory.GetInstalledPackages()
 	installedPkgs := engine.BuildInstalledPackageMap(pkgs)

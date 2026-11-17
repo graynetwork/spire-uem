@@ -383,6 +383,16 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] warning: claim sensor directives for %s: %v", dev.ID, serr)
 	}
 
+	// Patch-campaign directives: for every RUNNING campaign the server refreshes this
+	// device's work, applies the campaign/ring/blackout/maintenance gates and atomically
+	// claims any dispatchable install, returning it here. Best-effort: a failure must not
+	// fail the check-in, and an old agent simply ignores the omitempty field (the server's
+	// unsupported-agent timeout then marks the claimed work UNSUPPORTED, never success).
+	campaignDirectives, cerr := h.repo.DispatchCampaignDirectivesForDevice(r.Context(), dev, time.Now().UTC())
+	if cerr != nil {
+		log.Printf("[api] warning: campaign dispatch for %s: %v", dev.ID, cerr)
+	}
+
 	// Record the location-ish facts the server already has: the IP this check-in came from
 	// and the last active user the agent reported. Shown on the device page when LOST.
 	seenIP := clientIP(r)
@@ -399,8 +409,8 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	// claimed atomically so its cancellation window closes exactly once.
 	queuedCommands = append(queuedCommands, h.pendingActionDirectives(r.Context(), dev)...)
 
-	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d scripts=%d sensors=%d",
-		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands), len(scriptDirectives), len(sensorDirectives))
+	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d scripts=%d sensors=%d campaigns=%d",
+		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands), len(scriptDirectives), len(sensorDirectives), len(campaignDirectives))
 	writeJSON(w, http.StatusOK, types.CheckinResponse{
 		DeviceID:                dev.ID,
 		Status:                  dev.Status,
@@ -414,6 +424,7 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		WipeSigningPublicKey:    h.repo.WipeSigningPublicKeyBase64(),
 		ScriptDirectives:        scriptDirectives,
 		SensorDirectives:        sensorDirectives,
+		CampaignDirectives:      campaignDirectives,
 	})
 }
 

@@ -99,6 +99,8 @@ func registerRoutes(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, 
 			r.Get("/self-service/catalog", h.GetSelfServiceCatalog)
 			r.Post("/self-service/install", h.InstallSelfServicePolicy)
 			r.Post("/self-service/uninstall", h.UninstallSelfServicePolicy)
+			r.Post("/campaign/defer", h.DeferCampaign)
+			r.Post("/campaign/report", h.ReportCampaignResult)
 			r.Get("/bundles/{sha256}", h.DownloadBundle)
 			r.Get("/wallpapers/{filename}", h.DownloadWallpaper)
 		})
