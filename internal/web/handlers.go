@@ -28,6 +28,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/auth"
 	"github.com/spire-uem/spire-uem/internal/alerts"
+	spirecrypto "github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -221,6 +222,7 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		metrics.OpenCVEs = total
 		metrics.HighUrgencyCVEs = high
 	}
+	h.fillUntrustedCount(r, metrics)
 
 	data := map[string]any{
 		"Title":           "Operations Dashboard",
@@ -252,6 +254,7 @@ func (h *Handler) DashboardMetricsPartial(w http.ResponseWriter, r *http.Request
 		metrics.OpenCVEs = total
 		metrics.HighUrgencyCVEs = high
 	}
+	h.fillUntrustedCount(r, metrics)
 
 	data := map[string]any{
 		"Metrics": metrics,
@@ -980,6 +983,23 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		log.Printf("[web] get tpm attestation %s error: %v", id, err)
 	}
 
+	// Attestation trust panel: latest result, active exception, matching baseline, enforcement
+	// mode, and a bounded history. Computed with the same decision table used at check-in.
+	attExc, _ := h.repo.GetActiveBaselineException(r.Context(), dev.ID)
+	attLatest, _ := h.repo.GetLatestAttestationResult(r.Context(), dev.ID)
+	attHistory, _ := h.repo.ListAttestationResults(r.Context(), dev.ID, 20)
+	attMaxAge, _ := h.repo.AttestationMaxAge(r.Context())
+	attMode, _ := h.repo.AttestationEnforcementMode(r.Context())
+	attTrust := spirecrypto.EvaluateTrust(attLatest, attExc, attMaxAge, time.Now().UTC())
+	var matchingBaseline *types.TPMBaseline
+	var mismatchedPCRs []string
+	if attLatest != nil {
+		mismatchedPCRs = attLatest.MismatchedPCRs
+		if attLatest.BaselineID != nil && *attLatest.BaselineID != "" {
+			matchingBaseline, _ = h.repo.GetBaseline(r.Context(), *attLatest.BaselineID)
+		}
+	}
+
 	luksEscrows, err := h.repo.ListDeviceLUKSEscrows(r.Context(), dev.ID)
 	if err != nil {
 		log.Printf("[web] list luks escrows %s error: %v", id, err)
@@ -1067,6 +1087,16 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"PolicyDetails":      policies,
 		"Commands":           commands,
 		"TPMAttestation":     tpmAttestation,
+		"AttestationTrusted":    attTrust.Trusted,
+		"AttestationReason":     attTrust.Reason,
+		"AttestationHasException": attExc != nil,
+		"AttestationException":  attExc,
+		"AttestationLatest":     attLatest,
+		"AttestationHistory":    attHistory,
+		"AttestationMode":       string(attMode),
+		"MatchingBaseline":      matchingBaseline,
+		"MismatchedPCRs":        mismatchedPCRs,
+		"MaxExceptionDays":      types.MaxExceptionDays,
 		"LUKSEscrows":        luksEscrows,
 		"LUKSAuditLogs":      luksAuditLogs,
 		"RevealedKey":        revealed,

@@ -159,6 +159,16 @@ sudo ./scripts/test_baremetal.sh \
    ```text
    [spired] TPM 2.0 attestation completed status=ATTESTED secure_boot=true
    ```
+3. **Approve the qualified measurements as a PCR baseline (fleet onboarding):**
+   Once a representative, fully-updated reference unit of this hardware/firmware class reads
+   `ATTESTED`, approve its quote-proven PCR values as an approved baseline so sibling devices
+   are checked against a known-good set: in the admin UI open the device → attestation panel →
+   **Approve current measurements**, scoping the baseline to this hardware class's tags (and
+   ring, if used). Thereafter a matching unit reads `BASELINE_MATCH`; a unit whose boot chain
+   drifts reads `BASELINE_MISMATCH` with the differing PCR indices. See
+   `ADMIN_RUNBOOK.md` §15 for re-approving after a firmware/bootloader update and for the
+   `off → warn → enforce` secret-gating rollout. The required PCR set is exactly the SHA-256
+   bank 0, 2, 4, 7 verified in Phase 1.
 
 ---
 

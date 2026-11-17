@@ -168,6 +168,14 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			// Mark / clear LOST device mode (lost-device action). SECURITY_ADMIN+.
 			r.Post("/devices/{id}/lost", h.MarkDeviceLost)
 
+			// Approved PCR baselines (SECURITY_ADMIN+, tag-scope aware).
+			r.Get("/baselines", h.ListBaselinesPage)
+			r.Post("/baselines", h.CreateBaseline)
+			r.Post("/baselines/{id}/deactivate", h.DeactivateBaseline)
+			// Per-device attestation exception (reason + mandatory expiry). Scoped via the
+			// /admin/devices/{id}/... path through DeviceScopeMiddleware.
+			r.Post("/devices/{id}/attestation/exception", h.GrantBaselineException)
+
 			r.Post("/policies", h.CreatePolicy)
 			r.Post("/policies/from-template", h.CreatePolicyFromTemplate)
 			r.Post("/policies/{id}/toggle", h.TogglePolicy)
@@ -198,6 +206,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Get("/settings", h.SettingsPage)
 			r.Post("/vulnerabilities/auto-import", h.SetCVEAutoImport)
 			r.Post("/settings/{category}", h.SaveSettingsCategory)
+			// Attestation enforcement (mode + max age). SUPER_ADMIN only.
+			r.Post("/settings/attestation", h.SaveAttestationEnforcement)
 
 			// Personal access tokens — fleet-wide overview and revoke (any owner).
 			r.Get("/account/tokens/all", h.ListAllTokens)

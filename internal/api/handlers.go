@@ -262,8 +262,29 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// policy-types-b: unseal payload secrets (e.g. NETWORK_PROFILE PSK / EAP password) just-in-time
-	// so only the agent receives plaintext, over the deployment's TLS-terminating proxy.
-	h.unsealPolicyPayloadSecrets(policies)
+	// so only the agent receives plaintext, over the deployment's TLS-terminating proxy. Under
+	// attestation enforcement, an untrusted device has its sealed secrets withheld instead.
+	trust := h.gatePolicySecrets(r.Context(), dev, policies)
+	if !trust.Trusted {
+		// warn and enforce both reach here for an untrusted device; raise the attestation
+		// alert so an operator sees it. (In warn, secrets were still delivered.)
+		mode, _ := h.repo.AttestationEnforcementMode(r.Context())
+		if mode != types.EnforcementOff {
+			h.notify(r.Context(), alerts.Event{
+				Kind:     alerts.EventAttestationFailed,
+				Severity: alerts.SeverityWarning,
+				Subject:  "Untrusted device " + dev.Hostname + " at check-in (attestation " + string(mode) + ")",
+				DeviceID: dev.ID,
+				Hostname: dev.Hostname,
+				Details: map[string]any{
+					"hostname":    dev.Hostname,
+					"reason":      trust.Reason,
+					"enforcement": string(mode),
+					"withheld":    mode == types.EnforcementEnforce,
+				},
+			})
+		}
+	}
 
 	revokedPolicies, err := h.repo.GetRevokedPoliciesForDevice(r.Context(), dev.ID)
 	if err != nil {
@@ -631,31 +652,72 @@ func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] TPM attestation device=%s status=%s: %s", dev.ID, status, reason)
 	}
 
+	// provenHex is the quote-proven PCR set as lowercase hex, used both for persistence and
+	// for baseline comparison. Only the quote-proven values are ever trusted here.
+	provenHex := make(map[string]string, len(proven))
+	for idx, v := range proven {
+		provenHex[strconv.Itoa(idx)] = hex.EncodeToString(v)
+	}
+
+	// Approved-baseline comparison: only a genuinely ATTESTED quote (verified + Secure Boot)
+	// is eligible to be promoted to BASELINE_MATCH or demoted to BASELINE_MISMATCH. A FAILED
+	// or POLICY_VIOLATION verdict is left untouched — quote verification itself is unchanged.
+	var baselineID *string
+	var mismatchedPCRs []string
+	if status == types.AttestationAttested {
+		inScope, err := h.repo.ActiveBaselinesForDevice(r.Context(), dev.Tags, string(dev.PatchRing))
+		if err != nil {
+			log.Printf("[api] warning: load baselines for device=%s failed: %v", dev.ID, err)
+		} else {
+			status, baselineID, mismatchedPCRs = crypto.EvaluateBaselines(provenHex, inScope)
+			if status == types.AttestationBaselineMismatch {
+				reason = "verified quote does not match any approved baseline; differing PCRs " + strings.Join(mismatchedPCRs, ",")
+				log.Printf("[api] TPM attestation device=%s status=%s: %s", dev.ID, status, reason)
+			}
+		}
+	}
+
 	att := &types.DeviceTPMAttestation{
 		DeviceID:          dev.ID,
 		AttestationStatus: status,
 		SecureBootEnabled: secureBoot,
 		QuoteSignature:    req.QuoteSignature,
-		PCRValues:         map[string]string{},
+		PCRValues:         provenHex,
 	}
 	if staged != nil {
 		att.EKPublicPEM, att.AKPublicPEM = staged.EKPublicPEM, staged.AKPublicPEM
-	}
-	// Persist only PCR values the quote proved.
-	for idx, v := range proven {
-		att.PCRValues[strconv.Itoa(idx)] = hex.EncodeToString(v)
 	}
 	if err := h.repo.UpsertTPMAttestation(r.Context(), att); err != nil {
 		log.Printf("[api] failed to upsert TPM attestation for device=%s: %v", dev.ID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to persist attestation status"})
 		return
 	}
+	// Record the baseline comparison on the current row and append a bounded history entry.
+	if err := h.repo.UpdateBaselineCurrentState(r.Context(), dev.ID, baselineID, mismatchedPCRs); err != nil {
+		log.Printf("[api] warning: update baseline current state for device=%s failed: %v", dev.ID, err)
+	}
+	if err := h.repo.RecordAttestationResult(r.Context(), &types.AttestationResult{
+		DeviceID:       dev.ID,
+		Status:         status,
+		BaselineID:     baselineID,
+		MismatchedPCRs: mismatchedPCRs,
+		PCRValues:      provenHex,
+		SecureBoot:     secureBoot,
+	}); err != nil {
+		log.Printf("[api] warning: record attestation result for device=%s failed: %v", dev.ID, err)
+	}
 
 	log.Printf("[api] HTTP 200 TPM 2.0 attestation device=%s status=%s secure_boot=%v simulated=%v", dev.ID, status, secureBoot, req.Simulated)
-	if status == types.AttestationFailed || status == types.AttestationPolicyViolation {
+	// A FAILED/POLICY_VIOLATION quote, or a verified quote that fails the approved baseline,
+	// raises the existing attestation alert; a mismatch carries the differing PCR indices.
+	if status == types.AttestationFailed || status == types.AttestationPolicyViolation || status == types.AttestationBaselineMismatch {
 		sev := alerts.SeverityWarning
-		if status == types.AttestationPolicyViolation {
+		if status == types.AttestationPolicyViolation || status == types.AttestationBaselineMismatch {
 			sev = alerts.SeverityCritical
+		}
+		details := map[string]any{"hostname": dev.Hostname, "status": string(status), "reason": reason}
+		if len(mismatchedPCRs) > 0 {
+			details["mismatched_pcrs"] = mismatchedPCRs
 		}
 		h.notify(r.Context(), alerts.Event{
 			Kind:     alerts.EventAttestationFailed,
@@ -663,7 +725,7 @@ func (h *Handler) AttestVerify(w http.ResponseWriter, r *http.Request) {
 			Subject:  "TPM attestation " + string(status) + " for device " + dev.Hostname,
 			DeviceID: dev.ID,
 			Hostname: dev.Hostname,
-			Details:  map[string]any{"hostname": dev.Hostname, "status": string(status), "reason": reason},
+			Details:  details,
 		})
 	}
 	writeJSON(w, http.StatusOK, types.AttestationVerifyResponse{
