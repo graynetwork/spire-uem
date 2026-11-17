@@ -2686,6 +2686,9 @@ func (r *Repository) ListApplicationPoliciesWithAdoption(ctx context.Context) ([
 				WHERE d.status = 'APPROVED'
 				  AND (policies.target_tags = '{}' OR policies.target_tags && d.tags)
 				  AND (policies.target_ring IS NULL OR policies.target_ring = d.patch_ring)
+				  AND (COALESCE(policies.target_group_ids, '{}') = '{}'
+				       OR EXISTS (SELECT 1 FROM group_memberships gm
+				                  WHERE gm.device_id = d.id AND gm.group_id = ANY(policies.target_group_ids)))
 			) AS target_count,
 			(
 				SELECT COUNT(*)
@@ -2693,6 +2696,9 @@ func (r *Repository) ListApplicationPoliciesWithAdoption(ctx context.Context) ([
 				WHERE d.status = 'APPROVED'
 				  AND (policies.target_tags = '{}' OR policies.target_tags && d.tags)
 				  AND (policies.target_ring IS NULL OR policies.target_ring = d.patch_ring)
+				  AND (COALESCE(policies.target_group_ids, '{}') = '{}'
+				       OR EXISTS (SELECT 1 FROM group_memberships gm
+				                  WHERE gm.device_id = d.id AND gm.group_id = ANY(policies.target_group_ids)))
 				  AND (
 				      EXISTS (
 				          SELECT 1 FROM device_policies dp
@@ -2737,6 +2743,7 @@ func (r *Repository) ListApplicationPoliciesWithAdoption(ctx context.Context) ([
 			&p.Payload,
 			&p.TargetTags,
 			&p.TargetRing,
+			&p.TargetGroupIDs,
 			&p.PatchWindowID,
 			&p.RequiresReboot,
 			&p.IsSelfService,
