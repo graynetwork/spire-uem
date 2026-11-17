@@ -337,3 +337,51 @@ detect; if non-compliant and a remediate step is set it runs remediate and detec
 reporting compliance from that second detect. On unassignment the agent runs `remove` once if
 set. If a referenced version has been deleted the policy reports FAILED and does nothing, so a
 deleted script never leaves a device in an unknown state.
+
+## 11. Patch campaigns, risk acceptance, and automatic halting
+
+A patch campaign rolls a set of package upgrades out to a target set of devices in ordered
+stages, halting automatically if too many devices fail. Campaigns are managed by
+`SECURITY_ADMIN` and above; a tag-scoped admin sees and controls only campaigns within their
+tags and can target only their own devices.
+
+**Create a campaign** (`POST /admin/campaigns`). Choose exactly one target:
+- a dynamic group (`"target_kind":"group","group_id":"..."`),
+- a list of CVE ids (`"target_kind":"cve","cve_ids":["CVE-2024-...", ...]`) — each targeted
+  device gets work to bring the affected source package to the CVE's fixed version, only when a
+  fix is available; a CVE with no fix yields no work,
+- or explicit packages (`"target_kind":"packages","packages":["curl", ...]`) — every device that
+  has one of those packages installed is upgraded to the latest available.
+Optionally limit with `target_tags` and `target_ring`. Set `stages` (or accept the default
+CANARY -> PILOT -> PRODUCTION), `reboot_policy` (`never` / `notify` / `force`), `max_deferrals`,
+an optional `deadline_at`, a `blackout_cron` + `blackout_duration_minutes`, and
+`respect_maintenance_window`. Per-campaign `package_exclusions` drop named packages from the
+work. Package names and versions are validated against Debian rules at creation; an invalid name
+is rejected.
+
+**Stages.** Each stage has a minimum device count, a success threshold (e.g. 95%), a soak time,
+and a failure-halt threshold (a percentage of reporting devices and/or an absolute count).
+A stage promotes to the next automatically once its success threshold holds for the soak time
+(set a stage's promotion to manual to require a click instead). If the failure-halt threshold is
+exceeded the whole campaign halts automatically, an alert is raised, and nothing further is
+dispatched until you resume it — halting always takes precedence over promotion.
+
+**Controls.** `POST /admin/campaigns/{id}/start|pause|resume|cancel`. Resume clears a halt as
+well as a pause. `GET /admin/campaigns/{id}` returns the campaign, its per-device work, a report
+(device counts by stage and state, failure classes) and its event log.
+`GET /admin/campaigns/{id}/export?format=csv|json` exports the per-device work, tag-scoped.
+
+**End-user deferral.** Before installing, the active user is notified and may defer up to
+`max_deferrals` times from Spire Hub. After the deadline (if set) the install proceeds without
+further deferral; a `force` reboot policy reboots at the deadline with a warning.
+
+**Rollback.** An admin rollback reinstalls each package's recorded previous version when it is
+still available from the device's repositories; a package whose previous version is gone is
+reported "rollback unavailable", and a package the campaign did not upgrade is never downgraded.
+
+**Risk acceptance and exclusions** (`/admin/risk-acceptances`). Accept a CVE and/or package for
+all devices, a group, or a tag set, with a required reason and an expiry (maximum 180 days).
+Accepted findings are excluded from new campaign work and shown as "accepted" rather than hidden;
+an acceptance stops applying the moment it expires. A tag-scoped admin may only accept risk within
+their own tags and may not create a fleet-wide acceptance. Every create, control action and
+deletion is audited with the acting admin.

@@ -1325,3 +1325,49 @@ parameter to restrict results to the group's members.
 - `SPIRE_GROUP_RECOMPUTE_INTERVAL=30s` shortens the sweep for debugging (minimum 30s).
 - Membership events in `group_membership_events` show entered/left transitions with reasons.
   Capped at 500 per group; older events are trimmed on each recompute.
+
+## 17. Patch Campaigns, Risk Acceptance & Automatic Halting
+
+Staged package-upgrade rollouts with automatic halting. Schema: migrations 000052-000055
+(`patch_campaigns`, `campaign_device_work`, `campaign_package_results`, `campaign_deferrals`,
+`risk_acceptances`, `campaign_events`).
+
+**Endpoints (SECURITY_ADMIN+, tag-scope aware):**
+- `GET/POST /admin/campaigns`, `GET /admin/campaigns/{id}`, `GET /admin/campaigns/{id}/export?format=csv|json`
+- `POST /admin/campaigns/{id}/{start|pause|resume|cancel}`
+- `GET/POST /admin/risk-acceptances`, `DELETE /admin/risk-acceptances/{id}`
+- Device (bearer): `POST /api/v1/desktop/campaign/defer`, `POST /api/v1/desktop/campaign/report`
+- Spire Hub (local, seat0/root): `POST /v1/campaign/defer` on the agent socket, which forwards
+  to the device defer endpoint with the device's own token.
+
+**Multi-instance safety.** Promotion and halting run inside a per-campaign Postgres advisory
+lock (keyspace base `0x636d7000`), so two control-plane instances evaluating the same campaign
+promote it exactly once. Dispatch to a device is an atomic conditional `UPDATE` (`PENDING ->
+DISPATCHED`), so a device is dispatched to once even under a race. These are distinct from the
+group-recompute advisory band (`0x67727000`).
+
+**Halt precedence.** The orchestrator checks the failure-halt threshold before promotion; a
+stage over its failure threshold halts even when its success gate is also met. A halt sets the
+campaign `HALTED`, records a `campaign_events` row, and raises an alert through the existing
+notifier. Resume (`/resume`) clears the halt and sets the campaign `RUNNING` again.
+
+**Unsupported old agents.** A device that is dispatched a campaign directive but never reports
+within `UnsupportedAgentTimeout` (24h) is marked `UNSUPPORTED` — a failure for stage math, never
+a silent success. Run this from the evaluation path (`MarkUnsupportedTimedOut`).
+
+**Operational note — integration status.** The campaign primitives are complete and tested
+(targeting, work materialization, dispatch claim, deferral, result classification, orchestrator,
+rollback, reporting). The automatic check-in-time dispatch and a periodic leader-gated evaluation
+loop are the remaining wiring step (see ARCHITECTURE §10a "Known gaps"). To drive a campaign today
+an admin uses the control endpoints; evaluation happens when the orchestrator/materialization
+methods are invoked. When adding the loop, gate it on leader election like the group-recompute
+sweep and call `EvaluateCampaign` under `WithCampaignPromotionLock`.
+
+**Inspecting state.**
+- `SELECT state, current_stage, halted_reason FROM patch_campaigns WHERE id=...;`
+- Per-device: `SELECT device_id, stage, state, failure_class, deferrals_used FROM campaign_device_work WHERE campaign_id=...;`
+- Events: `SELECT kind, actor, detail, created_at FROM campaign_events WHERE campaign_id=... ORDER BY id DESC;`
+- Active acceptances: `SELECT cve_id, package, scope_kind, expires_at FROM risk_acceptances WHERE expires_at > now();`
+
+**Risk acceptance expiry** is enforced in work computation (`expires_at > now`), so an expired
+acceptance stops excluding work with no sweep needed. The 180-day cap is enforced at creation.

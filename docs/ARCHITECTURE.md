@@ -438,6 +438,92 @@ parameter values are never rendered in the UI, never logged, and never stored in
 - There is no admin HTML page for scripts/sensors in this change; the admin surface is the JSON
   API under `/admin/scripts` and `/admin/sensors`. A UI can be layered on later.
 
+## 10a. Patch campaigns, risk acceptance, and automatic halting
+
+A **patch campaign** is a staged rollout of package upgrades, stored in `patch_campaigns`
+with its ordered `stages` (JSONB), targeting, lifecycle state and soak/halt timing. Per-device
+work lives in `campaign_device_work` (one row per campaign+device: computed work list, state,
+failure class, deferral count, recorded previous versions for rollback), with per-package
+reported detail in `campaign_package_results`, deferral history in `campaign_deferrals`, and
+lifecycle transitions in `campaign_events`. Risk acceptances live in `risk_acceptances`.
+
+**Targeting** (`internal/db/campaign_target.go`) resolves candidate devices by one of a dynamic
+group, a CVE-id list (devices with that CVE open and a fixed version available), or explicit
+package names, intersected with optional tag/ring limits AND, for a tag-scoped creator, the
+creator's own tags — a scoped admin can never target devices outside their scope. For each
+targeted device, **work computation** (`internal/campaign/work.go`, pure) derives the
+`(package, target version)` list from the device's current CVE matches (to the fixed version)
+or the explicit list (to latest), dropping anything covered by an active risk acceptance or a
+per-campaign exclusion. It is recomputed as the device reports, so a CVE no longer matched and
+a device that left the target drop out automatically (the latter marked `REMOVED`). Two CVEs
+fixing the same package keep the higher fixed version.
+
+**Validation** (`internal/campaign/validate.go`) checks every package name (`^[a-z0-9][a-z0-9+.-]+$`)
+and version (Debian charset, leading digit) BEFORE it is stored or sent; the agent executor
+(`internal/engine/campaign_apt.go`) builds an exact argv for `apt-get install --only-upgrade -y`
+with fixed dpkg options and `DEBIAN_FRONTEND=noninteractive`, runs it through an injected runner
+with no shell, and classifies each package (upgraded / already current / held / not available /
+dpkg error) and the device (succeeded / failed / interrupted; a bare "success" is never
+trusted). An old agent that never acknowledges a dispatched directive is marked `UNSUPPORTED`
+after a timeout — a failure, not a success.
+
+**Stage math** (`internal/campaign/stage.go`, pure, clock-injected) computes the per-stage tally
+and the halt and promotion decisions. The orchestrator (`internal/engine/campaign_orchestrator.go`)
+applies **halt precedence**: it evaluates the failure-halt threshold first and, if exceeded,
+sets the campaign `HALTED`, raises an alert and dispatches nothing further until an admin
+resumes — it never promotes a halted stage even when the success gate is also met. Otherwise it
+maintains the soak clock (started when the success threshold is first met, reset if it stops
+being met) and promotes automatically after soak, awaits a manual promotion, or completes on the
+last stage. Promotion and halting run inside a **per-campaign Postgres advisory lock**
+(`WithCampaignPromotionLock`), so two control-plane instances evaluating the same campaign
+produce exactly one promotion; dispatch to a device is an atomic conditional `UPDATE` so the
+same device is dispatched once.
+
+**Dispatch gating** (`internal/campaign/gate.go`) blocks dispatch when the campaign is not
+`RUNNING`, during a blackout window (the 5-field cron + duration reuse of
+`IsMaintenanceWindowActive`), or outside a device's maintenance window when the campaign respects
+it. The active user is notified before install and may **defer** up to the campaign's maximum
+through an authenticated Spire Hub IPC route (`/v1/campaign/defer`, seat0/root only), which
+forwards to the device-bearer endpoint `/api/v1/desktop/campaign/defer`; the server decides
+whether a deferral remains (count + deadline) and never trusts the device. After the deadline the
+install proceeds without deferral, and a `force` reboot policy applies at the deadline.
+
+**Rollback** (`internal/campaign/rollback.go`) plans a per-package downgrade to the recorded
+previous version, but only for packages the campaign actually upgraded, only when the previous
+version is strictly older than what is installed, and only when it is still available from the
+device's repositories (probed with `apt-cache policy`); otherwise it reports "rollback
+unavailable" for that package and never downgrades a package the campaign did not touch.
+
+**Risk acceptance** excludes a CVE and/or package from new campaign work for a scope (all / group
+/ tags) with a required reason and an expiry capped at 180 days. Accepted findings are shown as
+"accepted" rather than hidden, and expired acceptances stop applying automatically because the
+work computation filters on `expires_at > now` at evaluation time. SECURITY_ADMIN+ creates them;
+a tag-scoped admin may only scope within their own tags and may not create a fleet-wide (`all`)
+acceptance.
+
+### Known gaps (patch campaigns)
+
+- The server-side **dispatch/evaluation loop is not auto-scheduled** in this change: the
+  building blocks (`MaterializeCampaignWorkForDevice`, `ClaimCampaignDispatch`,
+  `EvaluateCampaign` under `WithCampaignPromotionLock`, `MarkUnsupportedTimedOut`) are present and
+  tested, and the admin can drive a campaign through its control endpoints, but wiring them into
+  the check-in handler and a periodic leader-gated loop (alongside the existing group recompute)
+  is the remaining integration step. Until then, campaign work is materialised and evaluated when
+  those methods are called, not automatically on every check-in.
+- Campaign dispatch is modelled as per-device work the agent executes; the **check-in response
+  does not yet carry a campaign directive field**, and `cmd/spired` does not yet call the campaign
+  apt executor on a received directive. The executor, argv builder and result classifier are
+  implemented and unit-tested with a fake runner, so adding the directive to `CheckinResponse` and
+  a handler in the agent is additive and does not change the contract described here.
+- The admin UI is a **JSON API** (create/list/get/control/export campaigns, risk-acceptance CRUD);
+  an HTMX page is not added in this change. The Vulnerabilities page shows CVE state as before; the
+  "accepted" annotation is enforced in work computation and exposed through the risk-acceptance
+  list endpoint rather than rendered inline on that page yet.
+- A device can only report results for work the server dispatched to it, but as with inventory and
+  sensors a root user on the endpoint controls the reported outcome; the server classifies and
+  records what it is told and never treats a bare success claim as authoritative, but it cannot
+  independently verify that an upgrade occurred beyond the reported package versions.
+
 ## 11. Known security gaps
 
 - The enrollment-token per-IP failure rate limiter is an in-memory sliding counter, adequate for a single control-plane process. In a multi-instance deployment it is per-process, so N instances allow roughly N× the failures before throttling; move it to shared state if that matters (same caveat as the admin PAT limiter). The max-uses consume is NOT affected — it is an atomic DB update and holds across instances.
