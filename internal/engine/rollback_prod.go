@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -18,28 +17,37 @@ func DefaultShellRunner(ctx context.Context, name string, args ...string) ([]byt
 	return cmd.CombinedOutput()
 }
 
-// defaultPackageSource returns the bytes of the CURRENTLY installed spire-agent .deb so it
-// can be staged as the rollback fallback. dpkg does not retain the installed .deb, so we read
-// it from the apt archive cache (/var/cache/apt/archives/spire-agent_<version>_amd64.deb),
-// preferring the exact running version and otherwise the newest cached spire-agent_*.deb.
-// Returns an error when no cached .deb is found — the caller then refuses to arm a rollback
-// it cannot honour.
-func defaultPackageSource() ([]byte, error) {
-	cacheDir := "/var/cache/apt/archives"
-	matches, _ := filepath.Glob(filepath.Join(cacheDir, "spire-agent_*_amd64.deb"))
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("no cached spire-agent .deb in %s to stage as rollback fallback", cacheDir)
+// defaultPackageSource returns the package for the given (running) version. It first uses
+// the copy the agent kept when it installed that version, then the apt archive cache for
+// that exact version. It never substitutes a different version.
+func defaultPackageSource(version string) ([]byte, error) {
+	if !safeVersion(version) {
+		return nil, fmt.Errorf("unsafe version %q", version)
 	}
-	// Prefer the newest by mtime (the one most likely currently installed).
-	sort.Slice(matches, func(i, j int) bool {
-		fi, _ := os.Stat(matches[i])
-		fj, _ := os.Stat(matches[j])
-		if fi == nil || fj == nil {
-			return matches[i] > matches[j]
+	candidates := []string{
+		filepath.Join(DefaultRollbackDir, installedSubdir, installedName(version)),
+		filepath.Join("/var/cache/apt/archives", "spire-agent_"+version+"_amd64.deb"),
+	}
+	for _, c := range candidates {
+		if b, err := os.ReadFile(c); err == nil && len(b) > 0 {
+			return b, nil
 		}
-		return fi.ModTime().After(fj.ModTime())
-	})
-	return os.ReadFile(matches[0])
+	}
+	return nil, fmt.Errorf("not found in %s", strings.Join(candidates, " or "))
+}
+
+// stageRunningBinary copies the currently running spired (the OLD version) to
+// RollbackBinaryPath, so the rollback trigger never depends on the new binary.
+func stageRunningBinary() error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(RollbackBinaryPath, b, 0o700)
 }
 
 // systemdRunArmTrigger installs the independent, binary-independent rollback trigger. It
@@ -61,11 +69,12 @@ func (rb *Rollbacker) systemdRunArmTrigger(ctx context.Context, rec ArmRecord) e
 		// A transient timer that fires once after the deadline and runs the rollback check.
 		// --on-active schedules relative to now; the unit is collected after it runs.
 		cmd := exec.CommandContext(ctx, "systemd-run",
-			"--unit=spire-agent-rollback",
+			// A unique name: "spire-agent-rollback" is the packaged fallback unit.
+			fmt.Sprintf("--unit=spire-agent-rollback-check-%d", rb.now().Unix()),
 			"--collect",
 			"--on-active="+onActive,
 			"--timer-property=AccuracySec=5s",
-			"/usr/local/bin/spired", "--rollback-check",
+			RollbackBinaryPath, "--rollback-check",
 		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("systemd-run rollback timer: %v: %s", err, strings.TrimSpace(string(out)))

@@ -88,10 +88,10 @@ func (u *SelfUpdater) verifySignedUpdate(ctx context.Context, debPath string, d 
 	}
 
 	// 2. package + arch must match what this agent is.
-	if payload.Package != "" && payload.Package != expectedPackageName {
+	if payload.Package != expectedPackageName {
 		return nil, fmt.Errorf("manifest package %q != expected %q", payload.Package, expectedPackageName)
 	}
-	if payload.Architecture != "" && payload.Architecture != expectedArch {
+	if payload.Architecture != expectedArch {
 		return nil, fmt.Errorf("manifest arch %q != expected %q", payload.Architecture, expectedArch)
 	}
 

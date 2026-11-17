@@ -178,16 +178,22 @@ loud per-update warning. See `docs/ADMIN_RUNBOOK.md`.
 
 ### Automatic rollback
 
-Before installing, the agent stages the currently installed package under
-`/var/lib/spire/updates/previous/`, clears any stale health marker, and arms an independent
-rollback trigger (a `systemd-run` transient timer, or the packaged
+Before installing, the agent stages the package for the running version under
+`/var/lib/spire/updates/previous/`, copies the running (old) `spired` binary to
+`/var/lib/spire/updates/rollback/spired`, clears any stale health marker, and arms an
+independent rollback trigger (a `systemd-run` transient timer, or the packaged
 `spire-agent-rollback.timer`). The new agent writes a health marker only after it starts and
-completes one successful check-in. The rollback trigger runs `spired --rollback-check`, which
-reads the on-disk arm record and health marker and reinstalls the staged previous package if
-the marker is absent past the deadline (default 10 minutes). Because the trigger and the
-staged package do not depend on the new binary, a crash-looping or broken new agent is still
-reverted. After a rollback the restored agent reports `ROLLED_BACK` once on its next check-in,
-which the UI surfaces and which raises an alert through the existing hooks.
+completes one successful check-in. The trigger runs the staged OLD binary with
+`--rollback-check`; it reads the on-disk arm record and health marker and reinstalls the staged
+package if the marker is absent past the deadline (default 10 minutes). Because neither the
+trigger nor the staged package uses the new binary, a crash-looping or broken new agent is still
+reverted. The restored agent reports `ROLLED_BACK` once, which the UI shows and which raises an
+alert. A rolled-back version is not offered again for 24 hours.
+
+The previous package is the copy the agent kept when it installed the running version, or the
+exact-version file in the APT cache. An agent installed by the bootstrap's direct `.deb`
+download has neither, so its first self-update installs **without** automatic rollback and says
+so in the result message; every later update has a fallback.
 
 The separately published APT repository can still be generated and signed with `reprepro`;
 production onboarding should prefer the signed-manifest path and/or the signed APT repo.

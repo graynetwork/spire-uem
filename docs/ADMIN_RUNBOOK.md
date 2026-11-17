@@ -720,15 +720,24 @@ SpireUEM can also publish a GPG-signed APT repository with `reprepro` (`make ini
 Regardless of source, protect the control-plane channel with built-in TLS or a trusted proxy.
 
 ### 11.5 Automatic rollback
-Before installing a new agent, `spired` stages the currently installed package under
-`/var/lib/spire/updates/previous/`, clears any stale health marker, and arms an **independent**
-rollback trigger (`systemd-run` transient timer, falling back to the packaged
-`spire-agent-rollback.timer`). The trigger runs `spired --rollback-check`, which does not depend
-on the new binary being healthy. The new agent writes `/var/lib/spire/updates/health-ok.json`
+Before installing a new agent, `spired` stages the package for the running version under
+`/var/lib/spire/updates/previous/`, copies the running binary to
+`/var/lib/spire/updates/rollback/spired`, clears any stale health marker, and arms an
+**independent** rollback trigger (`systemd-run` transient timer, falling back to the packaged
+`spire-agent-rollback.timer`). The trigger runs that staged OLD binary with `--rollback-check`, so
+it does not depend on the new binary being healthy. The new agent writes `/var/lib/spire/updates/health-ok.json`
 only after it starts and completes one successful check-in. If that marker is absent when the
 deadline passes (default 10 minutes), the trigger reinstalls the staged previous `.deb`. The
 restored agent then reports `ROLLED_BACK` exactly once on its next check-in, which shows on the
-device page and raises an `agent_update_failed` alert.
+device page and raises an `agent_update_failed` alert. The agent will not retry that version
+for 24 hours; publish a fixed version instead.
+
+The agent keeps a copy of each package it installs under `/var/lib/spire/updates/installed/` to
+use as the next rollback source. An agent first installed by the bootstrap's direct `.deb`
+download has no such copy, so its **first** self-update installs without automatic rollback and
+reports `(no automatic rollback: previous package unavailable)`. Agents installed from the signed
+APT repository can use the exact-version package in `/var/cache/apt/archives/` if apt has not
+cleaned it. Test a new version on the `CANARY` ring before wider rollout.
 
 To exercise/verify rollback on an endpoint:
 

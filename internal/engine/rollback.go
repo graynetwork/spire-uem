@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,7 +27,17 @@ const (
 	// armRecordName records the in-flight update (target, deadline, previous package path)
 	// so the independent trigger and the next agent start both know what is pending.
 	armRecordName = "rollback-arm.json"
+	// installedSubdir keeps a copy of each package the agent installs, named by version, so
+	// the NEXT update has a previous package to fall back to.
+	installedSubdir = "installed"
+	// RollbackBinaryPath is a copy of the OLD spired binary, staged before install. The
+	// rollback trigger runs this copy, so a broken new binary cannot break its own rollback.
+	RollbackBinaryPath = DefaultRollbackDir + "/rollback/spired"
 )
+
+// ErrNoPreviousPackage means the package for the running version is not on disk, so no
+// rollback can be armed. Callers may still install without rollback.
+var ErrNoPreviousPackage = errors.New("no package for the running version is available to roll back to")
 
 // ShellRunner runs a command and returns combined output. It is injected so tests never run
 // dpkg/systemctl/systemd-run for real. The production value (DefaultShellRunner) shells out.
@@ -35,20 +46,24 @@ type ShellRunner func(ctx context.Context, name string, args ...string) ([]byte,
 // FileReader reads the CURRENTLY installed package .deb so it can be staged as "previous"
 // before the new one is installed. In production this copies the running package's .deb out
 // of the apt cache or a known path; in tests it returns canned bytes.
-type PackageSource func() (debBytes []byte, err error)
+type PackageSource func(version string) (debBytes []byte, err error)
 
 // Rollbacker stages the previous package, arms an independent rollback trigger before an
 // install, and runs the rollback state machine. All external effects go through injected
 // runners so tests exercise the full state machine without touching the host.
 type Rollbacker struct {
-	dir        string
-	run        ShellRunner
-	pkgSource  PackageSource
-	now        func() time.Time
-	deadline   time.Duration
+	dir       string
+	run       ShellRunner
+	pkgSource PackageSource
+	now       func() time.Time
+	deadline  time.Duration
 	// armTrigger installs the independent, binary-independent rollback trigger (a
 	// systemd-run transient timer in production). Injected for tests.
 	armTrigger func(ctx context.Context, rec ArmRecord) error
+	// stageBinary copies the running (old) spired binary for the rollback trigger.
+	stageBinary func() error
+	// keepAlso is the installed/ file name of the running version, set by StageAndArm.
+	keepAlso string
 }
 
 // ArmRecord is the on-disk description of an in-flight update, written before install.
@@ -80,6 +95,7 @@ func NewRollbacker(dir string, run ShellRunner, pkg PackageSource) *Rollbacker {
 		rb.pkgSource = defaultPackageSource
 	}
 	rb.armTrigger = rb.systemdRunArmTrigger
+	rb.stageBinary = stageRunningBinary
 	return rb
 }
 
@@ -89,10 +105,17 @@ func (rb *Rollbacker) SetDeadline(d time.Duration) { rb.deadline = d }
 // SetNow overrides the clock (tests).
 func (rb *Rollbacker) SetNow(f func() time.Time) { rb.now = f }
 
-// SetArmTrigger overrides the trigger installer (tests).
-func (rb *Rollbacker) SetArmTrigger(f func(ctx context.Context, rec ArmRecord) error) { rb.armTrigger = f }
+// SetStageBinary overrides how the old binary is staged (tests).
+func (rb *Rollbacker) SetStageBinary(f func() error) { rb.stageBinary = f }
 
-func (rb *Rollbacker) previousDebPath() string { return filepath.Join(rb.dir, previousSubdir, "spire-agent.deb") }
+// SetArmTrigger overrides the trigger installer (tests).
+func (rb *Rollbacker) SetArmTrigger(f func(ctx context.Context, rec ArmRecord) error) {
+	rb.armTrigger = f
+}
+
+func (rb *Rollbacker) previousDebPath() string {
+	return filepath.Join(rb.dir, previousSubdir, "spire-agent.deb")
+}
 func (rb *Rollbacker) healthMarkerPath() string { return filepath.Join(rb.dir, healthMarkerName) }
 func (rb *Rollbacker) armRecordPath() string    { return filepath.Join(rb.dir, armRecordName) }
 
@@ -103,12 +126,12 @@ func (rb *Rollbacker) StageAndArm(ctx context.Context, fromVersion, targetVersio
 	if err := os.MkdirAll(filepath.Join(rb.dir, previousSubdir), 0o700); err != nil {
 		return nil, err
 	}
-	debBytes, err := rb.pkgSource()
-	if err != nil {
-		return nil, fmt.Errorf("capture current package for rollback: %w", err)
+	debBytes, err := rb.pkgSource(fromVersion)
+	if err != nil || len(debBytes) == 0 {
+		return nil, fmt.Errorf("%w (version %s): %v", ErrNoPreviousPackage, fromVersion, err)
 	}
-	if len(debBytes) == 0 {
-		return nil, fmt.Errorf("current package source returned no bytes; refusing to arm a rollback with no fallback")
+	if err := rb.stageBinary(); err != nil {
+		return nil, fmt.Errorf("stage rollback binary: %w", err)
 	}
 	if err := writeFileAtomic(rb.previousDebPath(), debBytes, 0o600); err != nil {
 		return nil, fmt.Errorf("stage previous package: %w", err)
@@ -118,6 +141,9 @@ func (rb *Rollbacker) StageAndArm(ctx context.Context, fromVersion, targetVersio
 	// deadline, so clear it before arming.
 	_ = os.Remove(rb.healthMarkerPath())
 
+	if safeVersion(fromVersion) {
+		rb.keepAlso = installedName(fromVersion)
+	}
 	rec := ArmRecord{
 		FromVersion:   fromVersion,
 		TargetVersion: targetVersion,
@@ -212,6 +238,46 @@ func (rb *Rollbacker) CheckAndRollback(ctx context.Context, statePath string) Ro
 	// Clear the arm so a subsequent trigger invocation does not roll back again.
 	_ = os.Remove(rb.armRecordPath())
 	return RollbackOutcome{Action: RollbackActionRolledBack, Record: rec}
+}
+
+// KeepInstalled stores a copy of the package about to be installed under installed/, named by
+// version, and removes older copies. It becomes the rollback source for the next update.
+func (rb *Rollbacker) KeepInstalled(debPath, version string) error {
+	if !safeVersion(version) {
+		return fmt.Errorf("refusing unsafe version string %q", version)
+	}
+	b, err := os.ReadFile(debPath)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(rb.dir, installedSubdir)
+	keep := installedName(version)
+	if err := writeFileAtomic(filepath.Join(dir, keep), b, 0o600); err != nil {
+		return err
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		// Keep the new package and the one for the running version (the rollback target).
+		if e.Name() != keep && e.Name() != rb.keepAlso && !e.IsDir() {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+	return nil
+}
+
+func installedName(version string) string { return "spire-agent_" + version + ".deb" }
+
+// safeVersion rejects version strings that could escape the directory.
+func safeVersion(v string) bool {
+	if v == "" || len(v) > 64 {
+		return false
+	}
+	for _, r := range v {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '.' || r == '-' || r == '+' || r == '~') {
+			return false
+		}
+	}
+	return true
 }
 
 func (rb *Rollbacker) loadArm() (*ArmRecord, error) {

@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,7 +17,8 @@ import (
 func newTestRollbacker(t *testing.T, now func() time.Time) (*engine.Rollbacker, *fakeRun) {
 	t.Helper()
 	fr := &fakeRun{}
-	rb := engine.NewRollbacker(t.TempDir(), fr.run, func() ([]byte, error) { return []byte("previous-deb-bytes"), nil })
+	rb := engine.NewRollbacker(t.TempDir(), fr.run, func(string) ([]byte, error) { return []byte("previous-deb-bytes"), nil })
+	rb.SetStageBinary(func() error { return nil }) // never copy the test binary
 	rb.SetNow(now)
 	rb.SetDeadline(10 * time.Minute)
 	rb.SetArmTrigger(func(ctx context.Context, rec engine.ArmRecord) error { return nil }) // no real timer
@@ -150,10 +152,12 @@ func TestRollback_StageRefusesWithNoPreviousPackage(t *testing.T) {
 	// A package source that yields no bytes must refuse to arm — rolling back to nothing is
 	// worse than not arming.
 	rb := engine.NewRollbacker(t.TempDir(), func(ctx context.Context, n string, a ...string) ([]byte, error) { return nil, nil },
-		func() ([]byte, error) { return nil, nil })
+		func(string) ([]byte, error) { return nil, nil })
+	rb.SetStageBinary(func() error { return nil })
 	rb.SetArmTrigger(func(ctx context.Context, rec engine.ArmRecord) error { return nil })
-	if _, err := rb.StageAndArm(context.Background(), "0.1.0", "0.2.0"); err == nil {
-		t.Fatal("expected StageAndArm to refuse when no previous package bytes are available")
+	_, err := rb.StageAndArm(context.Background(), "0.1.0", "0.2.0")
+	if !errors.Is(err, engine.ErrNoPreviousPackage) {
+		t.Fatalf("expected ErrNoPreviousPackage when no previous package bytes are available, got %v", err)
 	}
 }
 
@@ -177,4 +181,78 @@ func TestRollback_ConfirmHealthyDifferentTargetIgnored(t *testing.T) {
 		t.Fatalf("expected one reinstall, got %d", fr.count())
 	}
 	_ = os.Remove(statePath)
+}
+
+// The package source is asked for the RUNNING version, so rollback never lands on some
+// other cached version.
+func TestRollback_PackageSourceAskedForRunningVersion(t *testing.T) {
+	var asked string
+	rb := engine.NewRollbacker(t.TempDir(), (&fakeRun{}).run, func(v string) ([]byte, error) { asked = v; return []byte("x"), nil })
+	rb.SetStageBinary(func() error { return nil })
+	rb.SetArmTrigger(func(ctx context.Context, rec engine.ArmRecord) error { return nil })
+	if _, err := rb.StageAndArm(context.Background(), "0.4.2", "0.5.0"); err != nil {
+		t.Fatal(err)
+	}
+	if asked != "0.4.2" {
+		t.Fatalf("package source asked for %q, want running version 0.4.2", asked)
+	}
+}
+
+// The old binary is staged BEFORE the trigger is armed; if staging fails nothing is armed.
+func TestRollback_StagesOldBinaryBeforeArming(t *testing.T) {
+	order := []string{}
+	rb := engine.NewRollbacker(t.TempDir(), (&fakeRun{}).run, func(string) ([]byte, error) { return []byte("x"), nil })
+	rb.SetStageBinary(func() error { order = append(order, "binary"); return nil })
+	rb.SetArmTrigger(func(ctx context.Context, rec engine.ArmRecord) error { order = append(order, "arm"); return nil })
+	if _, err := rb.StageAndArm(context.Background(), "0.1.0", "0.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0] != "binary" || order[1] != "arm" {
+		t.Fatalf("expected binary staged before arming, got %v", order)
+	}
+
+	rb2 := engine.NewRollbacker(t.TempDir(), (&fakeRun{}).run, func(string) ([]byte, error) { return []byte("x"), nil })
+	rb2.SetStageBinary(func() error { return errors.New("disk full") })
+	armed := false
+	rb2.SetArmTrigger(func(ctx context.Context, rec engine.ArmRecord) error { armed = true; return nil })
+	if _, err := rb2.StageAndArm(context.Background(), "0.1.0", "0.2.0"); err == nil || armed {
+		t.Fatalf("staging failure must refuse and not arm (err=%v armed=%v)", err, armed)
+	}
+}
+
+// KeepInstalled keeps the new package plus the running version's package, prunes others,
+// and refuses path-like version strings.
+func TestRollback_KeepInstalledPrunesAndRejectsUnsafeVersions(t *testing.T) {
+	dir := t.TempDir()
+	rb := engine.NewRollbacker(dir, (&fakeRun{}).run, func(string) ([]byte, error) { return []byte("x"), nil })
+	rb.SetStageBinary(func() error { return nil })
+	rb.SetArmTrigger(func(ctx context.Context, rec engine.ArmRecord) error { return nil })
+	deb := filepath.Join(t.TempDir(), "new.deb")
+	if err := os.WriteFile(deb, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inst := filepath.Join(dir, "installed")
+	_ = os.MkdirAll(inst, 0o700)
+	for _, n := range []string{"spire-agent_0.0.9.deb", "spire-agent_0.1.0.deb"} {
+		_ = os.WriteFile(filepath.Join(inst, n), []byte("old"), 0o600)
+	}
+	if _, err := rb.StageAndArm(context.Background(), "0.1.0", "0.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := rb.KeepInstalled(deb, "0.2.0"); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(inst)
+	got := map[string]bool{}
+	for _, e := range entries {
+		got[e.Name()] = true
+	}
+	if !got["spire-agent_0.2.0.deb"] || !got["spire-agent_0.1.0.deb"] || got["spire-agent_0.0.9.deb"] || len(got) != 2 {
+		t.Fatalf("unexpected installed/ contents: %v", got)
+	}
+	for _, bad := range []string{"../x", "a/b", "", "1.0 2"} {
+		if err := rb.KeepInstalled(deb, bad); err == nil {
+			t.Errorf("KeepInstalled accepted unsafe version %q", bad)
+		}
+	}
 }
