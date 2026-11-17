@@ -1924,6 +1924,12 @@ func (h *Handler) HostPoliciesCompliancePartial(w http.ResponseWriter, r *http.R
 // TogglePolicy handles POST /admin/policies/{id}/toggle.
 func (h *Handler) TogglePolicy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
 	pol, err := h.repo.TogglePolicyActive(r.Context(), id)
 	if err != nil {
 		log.Printf("[web] toggle policy %s error: %v", id, err)
@@ -1954,6 +1960,12 @@ func (h *Handler) TogglePolicy(w http.ResponseWriter, r *http.Request) {
 // TogglePolicySelfService handles POST /admin/policies/{id}/self-service.
 func (h *Handler) TogglePolicySelfService(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
 	pol, err := h.repo.TogglePolicySelfService(r.Context(), id)
 	if err != nil {
 		log.Printf("[web] toggle policy self-service %s error: %v", id, err)
@@ -2115,6 +2127,10 @@ func (h *Handler) CreatePolicyFromTemplate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithOptions(
 		r.Context(),
 		preset.Name,
@@ -2252,6 +2268,10 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		payloadRaw = sealed
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, targetGroupIDs); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithAssignment(
 		r.Context(),
 		name,
@@ -2825,6 +2845,10 @@ func (h *Handler) UploadCustomBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithAssignment(
 		r.Context(),
 		name,
@@ -3060,6 +3084,10 @@ func (h *Handler) CreateApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithAssignment(
 		r.Context(),
 		name,
@@ -3216,6 +3244,16 @@ func (h *Handler) UpdateApplicationAssignment(w http.ResponseWriter, r *http.Req
 	}
 
 	hasDescription := description != ""
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	updatedPol, err := h.repo.UpdateApplicationPolicy(
 		r.Context(),
 		id,
@@ -3288,6 +3326,12 @@ func (h *Handler) DeleteApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
 	revokedPol, err := h.repo.RevokeApplicationPolicy(r.Context(), id)
 	if err != nil {
 		log.Printf("[web] revoke application policy=%s error: %v", id, err)

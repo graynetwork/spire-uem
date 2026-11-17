@@ -25,7 +25,7 @@ Create named database-backed administrators, configure MFA, and reserve the stat
 | `OPERATOR` | Device sync, reboot, patch, scan, lock, queued root commands, root PTY, and remote-assistance requests. |
 | `AUDITOR` | Read-only device, policy, vulnerability, audit, and export access. |
 
-`OPERATOR` and `SECURITY_ADMIN` can be limited to devices carrying specified tags. Their device lists, dashboard totals, vulnerability counts, audit events, and device-targeted actions are filtered server-side. An empty allowed-tag list is unrestricted. `SUPER_ADMIN` and `AUDITOR` are not tag-scoped.
+`OPERATOR` and `SECURITY_ADMIN` can be limited to devices carrying specified tags. Their device lists, dashboard totals, vulnerability counts, audit events, and device-targeted actions are filtered server-side. An empty allowed-tag list is unrestricted. A tag-scoped admin can create or change a policy or application only if every target tag is one of their tags (fleet-wide targeting is refused) and every target group is one they may edit; they cannot toggle, edit or delete a policy that reaches outside their tags. `SUPER_ADMIN` and `AUDITOR` are not tag-scoped.
 
 `OPERATOR` can execute commands and open a root PTY on every device within their scope. Grant that role only to administrators trusted with root access to those endpoints.
 
