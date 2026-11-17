@@ -110,7 +110,15 @@ func validateWifi(w *types.WifiProfile) error {
 			return fmt.Errorf("wifi PSK must not contain control characters")
 		}
 	case types.WifiWPA2Enterprise, types.WifiWPA3Enterprise:
-		if err := validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, w.ClientKey, secretValue(w.Password)); err != nil {
+		clientKeyVal := secretValue(w.ClientKey)
+		if w.ClientKey.IsSealed() && clientKeyVal == "" {
+			clientKeyVal = "[sealed]"
+		}
+		passwordVal := secretValue(w.Password)
+		if w.Password.IsSealed() && passwordVal == "" {
+			passwordVal = "[sealed]"
+		}
+		if err := validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, clientKeyVal, passwordVal); err != nil {
 			return err
 		}
 	default:
@@ -123,7 +131,15 @@ func validateWired(w *types.WiredDot1xProfile) error {
 	if w == nil {
 		return fmt.Errorf("wired 802.1X profile is nil")
 	}
-	return validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, w.ClientKey, secretValue(w.Password))
+	clientKeyVal := secretValue(w.ClientKey)
+	if w.ClientKey.IsSealed() && clientKeyVal == "" {
+		clientKeyVal = "[sealed]"
+	}
+	passwordVal := secretValue(w.Password)
+	if w.Password.IsSealed() && passwordVal == "" {
+		passwordVal = "[sealed]"
+	}
+	return validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, clientKeyVal, passwordVal)
 }
 
 func validateEAP(eap types.EAPMethod, identity, caCert, clientCert, clientKey, password string) error {
@@ -247,7 +263,7 @@ func renderNetworkProfile(policyID string, p types.NetworkProfilePayload) (conte
 				k.kv("key-mgmt", "wpa-eap")
 			}
 			k.blank()
-			renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, w.ClientKey, secretValue(w.Password))
+			renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, secretValue(w.ClientKey), secretValue(w.Password))
 		}
 
 	case types.NetworkProfileWiredDot1x:
@@ -259,7 +275,7 @@ func renderNetworkProfile(policyID string, p types.NetworkProfilePayload) (conte
 		k.blank()
 		k.section("802-3-ethernet")
 		k.blank()
-		renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, w.ClientKey, secretValue(w.Password))
+		renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, secretValue(w.ClientKey), secretValue(w.Password))
 
 	case types.NetworkProfileWireGuard:
 		wg := p.WireGuard

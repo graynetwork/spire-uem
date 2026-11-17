@@ -40,9 +40,11 @@ func (h *Handler) unsealPolicyPayloadSecrets(policies []types.AssignedPolicy) {
 
 		if p.Wifi != nil {
 			p.Wifi.PSK = open(p.Wifi.PSK)
+			p.Wifi.ClientKey = open(p.Wifi.ClientKey)
 			p.Wifi.Password = open(p.Wifi.Password)
 		}
 		if p.Wired != nil {
+			p.Wired.ClientKey = open(p.Wired.ClientKey)
 			p.Wired.Password = open(p.Wired.Password)
 		}
 		if p.WireGuard != nil {

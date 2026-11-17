@@ -388,17 +388,18 @@ the derived **public key** back in its compliance `execution_output` (field
 that public key and registers the device as a peer on the WireGuard server. The device private key
 is stable across convergence cycles (it is not regenerated once a valid keyfile exists).
 
-**Secret handling (PSK / EAP password / peer PSK):**
+**Secret handling (PSK / EAP password / EAP-TLS client key / peer PSK):**
 - **At rest:** sealed with the server's RSA-OAEP-4096 + AES-256-GCM KEK envelope (the same scheme as
-  LUKS recovery-key escrow) before the policy payload is persisted. The stored payload holds only
-  ciphertext, and the admin UI never displays a secret back after save.
-- **In transit:** the server unseals secrets **just-in-time** when building a device's check-in
-  response, so only the authenticated agent receives plaintext. **The control-plane binary serves
-  plain HTTP**; transport confidentiality for the check-in channel (and therefore for these
-  secrets) depends on the deployment's TLS-terminating reverse proxy (set `SPIRE_TRUST_PROXY=true`
-  and, for redirect enforcement, `enforce_https`). Terminate TLS at the proxy in any environment
-  carrying network secrets. EAP-TLS client **private keys** are delivered in the payload the same
-  way (plaintext only to the agent over the proxied channel); treat the proxy as mandatory.
+  LUKS recovery-key escrow) before the policy payload is persisted. All sensitive credentials—including
+  Wi-Fi PSKs, 802.1X PEAP passwords, WireGuard peer PSKs, and EAP-TLS client private keys (`client_key`)—are
+  stored strictly as encrypted ciphertext with ephemeral DEKs in PostgreSQL; the stored payload never holds
+  plaintext, and the admin UI never displays a secret back after save. Transient key buffers are explicitly
+  zeroized in memory.
+- **In transit:** the server unseals secrets **just-in-time** when building an enrolled device's check-in
+  response, so only the authenticated agent receives plaintext. Transport confidentiality for the check-in
+  channel depends on TLS termination (either built-in TLS or terminating reverse proxy with
+  `SPIRE_TRUST_PROXY=true`). EAP-TLS client private keys and credentials travel unsealed only across this
+  authenticated TLS tunnel directly to the target agent daemon.
 
 ### 8.2 USB_DEVICE_CONTROL (usbguard)
 

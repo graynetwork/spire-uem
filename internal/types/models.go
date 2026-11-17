@@ -422,6 +422,36 @@ func (s SecretEnvelope) HasValue() bool {
 	return s.IsSealed() || s.Plaintext != ""
 }
 
+// UnmarshalJSON allows SecretEnvelope to unmarshal from either a JSON object {"ciphertext":...}
+// or a raw JSON string (e.g. legacy/transient plaintext "-----BEGIN PRIVATE KEY...").
+func (s *SecretEnvelope) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var str string
+		if err := json.Unmarshal(data, &str); err != nil {
+			return err
+		}
+		*s = SecretEnvelope{Plaintext: str}
+		return nil
+	}
+	type Alias SecretEnvelope
+	var a Alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*s = SecretEnvelope(a)
+	return nil
+}
+
+// Zeroize securely clears transient plaintext in memory.
+func (s *SecretEnvelope) Zeroize() {
+	if s == nil || s.Plaintext == "" {
+		return
+	}
+	b := []byte(s.Plaintext)
+	clear(b)
+	s.Plaintext = ""
+}
+
 // NetworkProfileKind enumerates the supported NetworkManager connection kinds.
 type NetworkProfileKind string
 
@@ -485,12 +515,12 @@ type WifiProfile struct {
 	// Personal (WPA2/WPA3-Personal): PSK.
 	PSK SecretEnvelope `json:"psk,omitempty"`
 	// Enterprise (WPA2/WPA3-Enterprise, 802.1X):
-	EAP      EAPMethod      `json:"eap,omitempty"`
-	Identity string         `json:"identity,omitempty"`
-	CACert   string         `json:"ca_cert,omitempty"`   // PEM text of the CA certificate
-	ClientCert string       `json:"client_cert,omitempty"` // PEM text (EAP-TLS)
-	ClientKey  string       `json:"client_key,omitempty"`  // PEM text (EAP-TLS); treated as a secret
-	Password SecretEnvelope `json:"password,omitempty"`  // PEAP-MSCHAPv2 password (and EAP-TLS key passphrase)
+	EAP        EAPMethod      `json:"eap,omitempty"`
+	Identity   string         `json:"identity,omitempty"`
+	CACert     string         `json:"ca_cert,omitempty"`     // PEM text of the CA certificate
+	ClientCert string         `json:"client_cert,omitempty"` // PEM text (EAP-TLS)
+	ClientKey  SecretEnvelope `json:"client_key,omitempty"`  // PEM text (EAP-TLS); encrypted at rest via envelope
+	Password   SecretEnvelope `json:"password,omitempty"`    // PEAP-MSCHAPv2 password (and EAP-TLS key passphrase)
 }
 
 // WiredDot1xProfile holds wired 802.1X connection settings.
@@ -499,7 +529,7 @@ type WiredDot1xProfile struct {
 	Identity   string         `json:"identity,omitempty"`
 	CACert     string         `json:"ca_cert,omitempty"`
 	ClientCert string         `json:"client_cert,omitempty"`
-	ClientKey  string         `json:"client_key,omitempty"`
+	ClientKey  SecretEnvelope `json:"client_key,omitempty"` // PEM text (EAP-TLS); encrypted at rest via envelope
 	Password   SecretEnvelope `json:"password,omitempty"`
 }
 
