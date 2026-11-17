@@ -184,6 +184,10 @@ type Policy struct {
 	Payload        json.RawMessage           `db:"payload" json:"payload"`
 	TargetTags     []string                  `db:"target_tags" json:"target_tags"`
 	TargetRing     *DeploymentRing           `db:"target_ring" json:"target_ring,omitempty"`
+	// TargetGroupIDs restricts a policy to members of the named device groups: targeting is
+	// (tag/ring rules) AND (no groups OR member of any listed group). Empty means no group
+	// restriction, i.e. exactly the pre-groups behaviour.
+	TargetGroupIDs []string                  `db:"target_group_ids" json:"target_group_ids"`
 	PatchWindowID  *string                   `db:"patch_window_id" json:"patch_window_id,omitempty"`
 	RequiresReboot bool                      `db:"requires_reboot" json:"requires_reboot"`
 	IsSelfService  bool                      `db:"is_self_service" json:"is_self_service"`

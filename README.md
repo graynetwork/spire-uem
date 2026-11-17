@@ -90,6 +90,7 @@ An internal ECDSA P-256 device CA issues a client-auth leaf to each device at to
 - Root PTY sessions, queued commands, attended remote assistance, session lock, lost mode, recovery-key rotation, and two-person signed wipe orders.
 - Multi-instance migration coordination and asynchronous device-frame routing. Interactive PTY and remote-assistance streams require the admin and device connection on the same instance.
 - Tag-scoped `OPERATOR` and `SECURITY_ADMIN` accounts, including filtered dashboard, vulnerability, and audit views.
+- Dynamic device groups and saved fleet queries: a JSON rule over device fields, attributes and CVE state, plus static include/exclude lists, materialised into a membership table and recomputed on check-in, on save, and periodically. Policies and applications can target groups (targeting is the existing tag/ring rules AND membership of a listed group; a policy with no groups behaves exactly as before). Membership changes drive assignment and revoke at the next check-in. Tag scoping applies: a scoped admin's groups carry an implicit tag filter and they cannot edit another scope's groups. A group's rule-evaluation failure keeps the last materialised membership rather than emptying the group.
 
 ## Quickstart: test stack
 

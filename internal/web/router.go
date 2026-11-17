@@ -118,6 +118,11 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Get("/sensors", h.ListSensors)
 		r.Get("/devices/{id}/script-runs", h.ListDeviceScriptRuns)
 		r.Get("/devices/{id}/sensors/{name}", h.ListDeviceSensorResults)
+		// Dynamic device groups and saved fleet queries. Viewing is AUDITOR+; the
+		// create/edit/delete/preview mutators live in the SECURITY_ADMIN+ group below.
+		r.Get("/groups", h.ListGroupsPage)
+		r.Get("/groups/{id}/members", h.GroupMembers)
+		r.Get("/groups/{id}/history", h.GroupHistory)
 
 		r.Get("/applications", h.ListApplications)
 		r.Get("/applications/{id}/edit", h.EditApplicationModal)
@@ -200,6 +205,14 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/policies/{id}/toggle", h.TogglePolicy)
 			r.Post("/policies/{id}/self-service", h.TogglePolicySelfService)
 			r.Post("/policies/upload-wallpaper", h.UploadWallpaperAsset)
+
+			// Dynamic device group mutators (SECURITY_ADMIN+). Preview is a mutator-group
+			// route because it evaluates a candidate rule before it is saved.
+			r.Post("/groups", h.CreateGroup)
+			r.Post("/groups/preview", h.PreviewGroup)
+			r.Post("/groups/{id}", h.UpdateGroup)
+			r.Delete("/groups/{id}", h.DeleteGroup)
+			r.Post("/groups/{id}/delete", h.DeleteGroup)
 
 			r.Get("/applications/new", h.NewApplicationModal)
 			r.Post("/applications", h.CreateApplication)

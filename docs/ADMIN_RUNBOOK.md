@@ -1252,3 +1252,76 @@ policy-type additions.
   `script_run_secrets` ciphertext must not contain the plaintext.
 - Confirm a scoped operator cannot run a script against a device outside their tags (the run
   endpoint returns "no in-scope approved devices matched this target").
+
+## 16. Dynamic Device Groups & Saved Fleet Queries
+
+### 16.1 Overview
+
+Groups are materialised sets of devices defined by a JSON rule plus static include/exclude
+lists. `target` groups are usable by policies; `query` groups are saved fleet queries. View
+requires `AUDITOR`+; mutators require `SECURITY_ADMIN`+.
+
+### 16.2 Creating a group (API / JSON)
+
+```bash
+curl -X POST https://$SERVER/admin/groups \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -b "$COOKIE" \
+  -d '{
+    "name": "stale-approved",
+    "kind": "target",
+    "rule": {"all":[
+      {"field":"device.status","op":"eq","value":"APPROVED"},
+      {"field":"device.last_checkin_at","op":"older_than","value":"7d"}
+    ]},
+    "include_device_ids": [],
+    "exclude_device_ids": []
+  }'
+```
+
+### 16.3 Previewing a rule (before saving)
+
+```bash
+curl -X POST https://$SERVER/admin/groups/preview \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -b "$COOKIE" \
+  -d '{"rule":{"field":"device.reboot_required","op":"eq","value":true}}'
+```
+
+Returns `{"count": N, "devices": [...first 50...]}`.
+
+### 16.4 Targeting a policy at a group
+
+Add `target_group_ids` when creating or editing a policy:
+
+```json
+{"target_group_ids": ["<group-uuid>"]}
+```
+
+A policy without `target_group_ids` behaves identically to before groups existed.
+
+### 16.5 Recompute schedule
+
+| Trigger | Scope |
+|---------|-------|
+| Device check-in | One device across all groups |
+| Group saved | All devices in that group |
+| Periodic sweep (`SPIRE_GROUP_RECOMPUTE_INTERVAL`, default 5m) | All groups |
+
+The periodic sweep uses per-group advisory locks so two instances never recompute the same
+group at once. A rule evaluation failure keeps the last membership.
+
+### 16.6 Filtering by group
+
+The Devices, Vulnerabilities and compliance-export pages accept a `?group=<group-uuid>` query
+parameter to restrict results to the group's members.
+
+### 16.7 Diagnostics
+
+- A group's `last_rule_error` is shown on the groups page when the stored rule fails to
+  evaluate. Fix the rule; the next recompute will clear the error.
+- `SPIRE_GROUP_RECOMPUTE_INTERVAL=30s` shortens the sweep for debugging (minimum 30s).
+- Membership events in `group_membership_events` show entered/left transitions with reasons.
+  Capped at 500 per group; older events are trimmed on each recompute.

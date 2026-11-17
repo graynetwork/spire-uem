@@ -195,6 +195,58 @@ Roles are ordered `AUDITOR`, `OPERATOR`, `SECURITY_ADMIN`, `SUPER_ADMIN`. `OPERA
 
 Queued root commands retain command text and output. Interactive PTY auditing records session boundaries rather than every keystroke. Recovery-key reveal records its reason. Alert-channel changes, token/MFA operations, policy changes, device actions, and authentication events emit audit records where implemented.
 
+## 6a. Dynamic device groups and saved fleet queries
+
+A **device group** is a dynamic set of devices defined by an optional JSON rule plus static
+include and exclude device lists. A group's `kind` is `target` (usable to target policies and
+applications) or `query` (a saved fleet query, view/export only).
+
+**Rule model.** A rule is a tree of combinators `{"all":[...]}`, `{"any":[...]}`,
+`{"not":{...}}` and leaves `{"field":...,"op":...,"value":...}`. Nesting is capped at depth 6
+and 64 leaves. Fields come from a FIXED allowlist: built-in device columns
+(`device.hostname`, `device.status`, `device.tags`, `device.patch_ring`,
+`device.agent_version`, `device.last_checkin_at`, `device.attestation_status`,
+`device.os_name`, `device.kernel_version`, `device.release_codename`,
+`device.pending_updates`, `device.security_updates`, `device.reboot_required`,
+`device.ws_connected`, `device.compliance`), CVE state (`cve.id`,
+`cve.open_high_or_critical`), and `attr.<key>` for any typed device attribute. Operators are
+constrained by field type (string eq/ne/contains/starts_with/in/matches; number
+eq/ne/lt/lte/gt/gte/in; boolean eq; datetime before/after/older_than/newer_than; tags
+contains_any/contains_all; exists/missing on any field).
+
+**SQL safety.** The rule is compiled to a single parameterised SQL predicate over the
+`devices`/`device_attributes`/`device_cve_matches`/`device_policies` tables. Field names map
+to fixed, trusted SQL fragments; every value and every attribute key is a bound parameter — no
+user- or agent-supplied text is ever concatenated into SQL. `matches` patterns are validated
+by Postgres before a group is saved. `device.agent_version` is compared as a normalised
+integer array (`1.2.10` sorts above `1.2.9`); pre-release ordering is not represented in SQL.
+
+**Membership.** Membership = (rule matches OR included) AND NOT excluded, materialised into
+`group_memberships`. It is recomputed for one device after its check-in, for all groups
+periodically (default every 5 minutes, `SPIRE_GROUP_RECOMPUTE_INTERVAL`), and for a group on
+save. Each per-group recompute holds a Postgres per-group advisory lock, so two server
+instances never recompute the same group at once and different groups proceed in parallel.
+Enter/leave transitions are written to a bounded `group_membership_events` history with a
+reason.
+
+**Targeting.** Policies and applications carry `target_group_ids`. A device is targeted when
+the existing tag/ring rules match AND (the policy has no groups OR the device is a member of
+at least one listed group). A policy with no groups behaves exactly as before, so existing
+policies are unaffected by the upgrade. When a device leaves every targeted group, the policy
+appears in the device's revoke set at its next check-in and the existing revoke/cleanup path
+runs. Deleting a group that a policy references is refused and names the referencing policies.
+
+**Tag scoping.** A tag-scoped admin's group membership is implicitly ANDed with "device has
+one of my tags"; they see only in-scope members and counts, and they may edit only groups
+created by a scoped admin whose scope overlaps theirs — never a group an unscoped admin
+created. Create/edit is `SECURITY_ADMIN`+; viewing is `AUDITOR`+. Group create, update and
+delete are audited.
+
+**Fail-safe.** If a group's stored rule fails to evaluate (DB error or an invalid stored
+rule), the recompute does NOT treat the group as empty: the last materialised membership is
+retained and the error is surfaced on the group page, so a broken rule can never silently
+revoke security policy by emptying a group.
+
 ## 7. Update integrity
 
 Self-update verifies the package size and SHA-256 advertised by the control plane, AND, when
@@ -411,3 +463,19 @@ parameter values are never rendered in the UI, never logged, and never stored in
 - Remote assistance returns a generated PIN that is not applied to GNOME Remote Desktop credentials.
 - A root-owned test override can approve remote assistance without the desktop user.
 - Inventory is unauthenticated, best-effort telemetry: the server validates and clamps it but does not prove a reported fact is true, so an attacker with a device's bearer token could report false inventory. Nothing security-relevant is enforced from it — it informs search, display, and change history only. Values a collector cannot read are omitted rather than defaulted, so absence is not distinguishable from a false "off"; firewall/auditd/usbguard and per-product states reflect what the agent could detect on that host.
+- Dynamic group membership is materialised and eventually consistent, not computed live at
+  decision time. Between a device's attributes changing and the next per-device recompute (its
+  own check-in) or the periodic sweep (default 5 minutes), a group-targeted policy is decided
+  against the last materialised membership. This is a deliberate trade-off for bounded,
+  advisory-locked recomputes over two instances.
+- A group whose stored rule fails to evaluate keeps its last materialised membership by design
+  (so a broken rule cannot revoke security policy by emptying a group). The consequence is that
+  a device that should have LEFT such a group under a corrected rule stays targeted until the
+  rule is fixed and the group recomputes; the stale membership is surfaced on the group page
+  via `last_rule_error`.
+- `device.agent_version` ordering in a rule compares only the numeric release components in
+  SQL; a pre-release tag (`-rc1`) is stripped, so `1.2.0-rc1` and `1.2.0` compare equal in a
+  group rule (unlike the agent-update engine, which orders pre-releases).
+- `cve.open_high_or_critical` counts Debian urgency `high`/`high**` with a fix available;
+  Debian's tracker has no separate "critical" tier, so the field name's "or critical" maps to
+  the same top urgency band rather than a distinct level.

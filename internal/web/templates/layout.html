@@ -79,6 +79,10 @@
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "policies"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
                             <span>Policies &amp; State</span>
                         </a>
+                        <a href="/admin/groups" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "groups"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "groups"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-5.13a4 4 0 11-8 0 4 4 0 018 0zm6 3a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            <span>Groups</span>
+                        </a>
                         <a href="/admin/applications" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "applications"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "applications"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                             <span>Applications</span>
@@ -203,6 +207,8 @@
                 {{template "alerts_content" .}}
             {{else if eq .ActiveNav "baselines"}}
                 {{template "baselines_content" .}}
+            {{else if eq .ActiveNav "groups"}}
+                {{template "groups_content" .}}
             {{end}}
         </main>
     </div>

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -268,7 +269,19 @@ func (r *Repository) ListFleetCVEs(ctx context.Context) ([]types.FleetCVE, error
 
 // ListFleetCVEsScoped is ListFleetCVEs limited to the devices in scope.
 func (r *Repository) ListFleetCVEsScoped(ctx context.Context, scope DeviceScope) ([]types.FleetCVE, error) {
+	return r.ListFleetCVEsScopedInGroup(ctx, scope, "")
+}
+
+// ListFleetCVEsScopedInGroup is ListFleetCVEsScoped additionally restricted to members of
+// the given group. An empty groupID applies no group restriction.
+func (r *Repository) ListFleetCVEsScopedInGroup(ctx context.Context, scope DeviceScope, groupID string) ([]types.FleetCVE, error) {
 	scoped, tags := scope.sqlArgs()
+	groupPred := ""
+	args := []any{scoped, tags}
+	if strings.TrimSpace(groupID) != "" {
+		args = append(args, groupID)
+		groupPred = " AND EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.device_id = d.id AND gm.group_id = $3::uuid)"
+	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT m.cve_id,
 		       COALESCE(MAX(NULLIF(m.urgency, '')), '') AS urgency,
@@ -276,7 +289,7 @@ func (r *Repository) ListFleetCVEsScoped(ctx context.Context, scope DeviceScope)
 		       BOOL_OR(m.no_fix_available) AS no_fix
 		FROM device_cve_matches m
 		JOIN devices d ON d.id = m.device_id
-		WHERE (NOT $1::bool OR d.tags && $2::text[])
+		WHERE (NOT $1::bool OR d.tags && $2::text[])`+groupPred+`
 		GROUP BY m.cve_id
 		ORDER BY
 			CASE COALESCE(MAX(NULLIF(m.urgency, '')), '')
@@ -286,7 +299,7 @@ func (r *Repository) ListFleetCVEsScoped(ctx context.Context, scope DeviceScope)
 				ELSE 3 END,
 			affected_hosts DESC,
 			m.cve_id ASC
-	`, scoped, tags)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list fleet cves: %w", err)
 	}
