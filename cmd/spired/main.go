@@ -117,7 +117,7 @@ func main() {
 		if token == "" {
 			return fmt.Errorf("device is not yet enrolled/approved")
 		}
-		checkinResp, installedPkgs, statusCode, err := performCheckin(syncCtx, client, cfg.Agent.ServerURL, token, hwUUID, hostname)
+		checkinResp, installedPkgs, statusCode, err := performCheckinWithInventory(syncCtx, client, cfg.Agent.ServerURL, token, hwUUID, hostname, cfg.Agent.InventoryInterval)
 		if err != nil {
 			if ipcSrv != nil {
 				ipcSrv.UpdateStatus(false, time.Time{}, nil)
@@ -292,7 +292,7 @@ func main() {
 			checkinMu.Lock()
 			defer checkinMu.Unlock()
 
-			checkinResp, installedPkgs, code, err := performCheckin(ctx, client, cfg.Agent.ServerURL, token, hwUUID, hostname)
+			checkinResp, installedPkgs, code, err := performCheckinWithInventory(ctx, client, cfg.Agent.ServerURL, token, hwUUID, hostname, cfg.Agent.InventoryInterval)
 			if err != nil {
 				log.Printf("[WARN] Server unreachable; falling back to local policy cache (%v)", err)
 				cached, cacheErr := engine.LoadPolicyCache(engine.DefaultPolicyCachePath)
@@ -353,6 +353,18 @@ func main() {
 				if len(checkinResp.QueuedCommands) > 0 {
 					log.Printf("[spired] received %d queued diagnostic commands", len(checkinResp.QueuedCommands))
 					for _, cmdDTO := range checkinResp.QueuedCommands {
+						if cmdDTO.Command == types.InventoryRefreshCommand {
+							log.Printf("[spired] inventory refresh requested id=%s; arming forced report and triggering check-in", cmdDTO.ID)
+							armInventoryRefresh()
+							select {
+							case triggerCheckinCh <- struct{}{}:
+							default:
+							}
+							_ = reportCommandResult(ctx, client, cfg.Agent.ServerURL, token, types.CommandReportRequest{
+								CommandID: cmdDTO.ID, Status: "COMPLETED", ExitCode: 0, Stdout: "inventory refresh armed",
+							})
+							continue
+						}
 						if IsActionDirective(cmdDTO.Command) {
 							d, perr := parseActionDirective(cmdDTO.Command)
 							if perr != nil {
@@ -519,6 +531,14 @@ func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPat
 }
 
 func performCheckin(ctx context.Context, client *http.Client, serverURL, token, hwUUID, hostname string) (*types.CheckinResponse, map[string]bool, int, error) {
+	return performCheckinWithInventory(ctx, client, serverURL, token, hwUUID, hostname, 0)
+}
+
+// performCheckinWithInventory is performCheckin plus the rich-inventory cadence. When this
+// check-in is due an inventory report (or one was forced by an admin refresh), it collects a
+// full InventoryReport and attaches it; otherwise req.Inventory stays nil and the server
+// keeps the device's last inventory. invInterval<=0 uses the default cadence.
+func performCheckinWithInventory(ctx context.Context, client *http.Client, serverURL, token, hwUUID, hostname string, invInterval time.Duration) (*types.CheckinResponse, map[string]bool, int, error) {
 	pkgs, err := inventory.GetInstalledPackages()
 	if err != nil {
 		log.Printf("[spired] warning: package inventory collection failed: %v", err)
@@ -548,6 +568,18 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		log.Printf("[spired] warning: source package inventory collection failed: %v", srcErr)
 	}
 	releaseCodename := inventory.GetReleaseCodename()
+
+	// Rich inventory rides on this check-in only when the cadence is due or an admin forced
+	// a refresh. Collection is best-effort and never blocks or fails the check-in.
+	var invReport *types.InventoryReport
+	forced := consumeInventoryRefresh()
+	if inventory.ShouldCollect(inventory.DefaultInventoryStatePath, invInterval, time.Now(), forced) {
+		col := &inventory.Collector{}
+		invReport = col.CollectForCheckin(ctx)
+		inventory.MarkCollected(inventory.DefaultInventoryStatePath, time.Now())
+		log.Printf("[spired] attached rich inventory report (forced=%v truncated=%v)", forced, invReport.Truncated)
+	}
+
 	payload, _ := json.Marshal(types.CheckinRequest{
 		HardwareUUID:    hwUUID,
 		Hostname:        hostname,
@@ -562,6 +594,7 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		ReleaseCodename: releaseCodename,
 		AgentVersion:    version.Version,
 		UpdateResult:    engine.ConsumePendingUpdateResult(engine.DefaultUpdateStatePath),
+		Inventory:       invReport,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/checkin", bytes.NewReader(payload))

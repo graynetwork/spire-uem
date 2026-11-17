@@ -257,7 +257,36 @@ so in the result message; every later update has a fallback.
 The separately published APT repository can still be generated and signed with `reprepro`;
 production onboarding should prefer the signed-manifest path and/or the signed APT repo.
 
-## 8. Enrollment and enrollment tokens
+## 8. Inventory
+
+Agents collect a rich hardware/software/network/security snapshot (`internal/inventory`) and
+send it in `CheckinRequest.Inventory` at most once per `inventory_interval` (default 6h),
+forced on first check-in after start and on admin request. Every collector reads through an
+injectable filesystem root and command runner, so tests use fixtures and no collector ever
+touches the real host under test. The agent caps the encoded report (512 KiB) and, if it is
+still too large, drops to a counts-only report with a `truncated` flag rather than send
+something the server will reject.
+
+The server treats the report as untrusted, best-effort telemetry. On check-in it: drops a
+report over 1 MiB whole; sanitises every string (length-capped, control bytes stripped) and
+every list (count-capped, malformed/duplicate entries dropped with a parse-warning count);
+flattens the scalar facts into typed `device_attributes` (source `inventory`, a fixed closed
+key catalogue, `internal/db/inventory_keys.go`) via the existing `ReplaceDeviceAttributes`
+contract; and replaces the per-device list tables (packages, kernel modules, listening
+sockets, local accounts, CA certificates, USB devices) inside one transaction. None of this
+can fail a check-in — policy delivery never depends on inventory. A device that never reports
+has no inventory attributes and the UI shows "no inventory reported", so old agents keep
+working unchanged.
+
+Change history (`device_inventory_changes`) is diffed before each overwrite and bounded to the
+most recent 500 rows per device. Fleet search (`SearchInventory`) builds only parameterised
+SQL: attribute keys are validated and passed as parameters, the comparison operator is chosen
+from a fixed allowlist (never built from input), and every query is tag-scoped through the same
+`DeviceScope` used elsewhere, so a scoped operator cannot see or export a device outside their
+tags. Export (CSV/JSON) and the admin-requested refresh are audited (`INVENTORY_EXPORT`,
+`INVENTORY_REFRESH`); the refresh rides the existing device command queue.
+
+## 9. Enrollment and enrollment tokens
 
 A device enrolls in one of two ways.
 
@@ -274,33 +303,7 @@ Tokens are stored as SHA-256 hashes; the secret is shown once at creation and on
 
 **Golden images.** A sealed image must not carry `/etc/spire/{token,enrollment.key,device.key,device.crt}`, `/etc/spire/enrollment-token`, or a fixed machine-id. `spired --reset-identity` deletes those artefacts before sealing; otherwise provide a first-boot token file. A clone presenting a copied enrollment key is treated as the same installation; a clone with a *different* key for an existing hardware UUID is refused.
 
-## 9. Known security gaps
-
-- The enrollment-token per-IP failure rate limiter is an in-memory sliding counter, adequate for a single control-plane process. In a multi-instance deployment it is per-process, so N instances allow roughly N× the failures before throttling; move it to shared state if that matters (same caveat as the admin PAT limiter). The max-uses consume is NOT affected — it is an atomic DB update and holds across instances.
-
-- Scheduled and agent-start script runs are modelled (trigger column, directive type) but no server loop enqueues them yet; on-demand runs, sensors and `SCRIPT_POLICY` are fully wired. Remediation workflows (Phase 2, next) will add the schedule and event triggers.
-- A device can report only sensors that are enabled, currently target it and were dispatched to it, but it can still report any value for those: a root user on the endpoint controls its own sensor results, as with inventory.
-- Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
-  Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent
-  verification of firmware/bootloader contents; enforcement gates only sealed
-  network-profile secrets, not all assigned policy; the trust decision uses the latest
-  recorded result, so a device that never re-attests after its result goes stale stays
-  untrusted until it does; EAP-TLS client private keys are unsealed and not withheld.
-- Device mutual TLS and certificate pinning exist but default to `optional`; `required` must be turned on, and only `required` mode refuses an uncertified device.
-- A device whose certificate has lapsed can obtain a new one with its bearer token alone, so a stolen token remains sufficient for such a device.
-- First-contact wipe-signing-key trust depends on transport TLS unless the agent pins the server with `server_ca_file` / `server_ca_sha256`.
-- Self-update verifies an independent Ed25519 release signature when a manifest is present
-  and `require_signed_updates` is true (the default). Remaining limits: the release public
-  keys are pinned at package-build time, so trusting a new signing key requires shipping a new
-  package (there is no in-band key-distribution channel, by design); and with
-  `require_signed_updates` set false for the transition, an unsigned update still installs
-  (with a loud warning).
-- `spired` runs as unrestricted root.
-- Remote assistance returns a generated PIN that is not applied to GNOME Remote Desktop credentials.
-- A root-owned test override can approve remote assistance without the desktop user.
-
-
-## Reusable scripts, custom sensors, and SCRIPT_POLICY
+## 10. Reusable scripts, custom sensors, and SCRIPT_POLICY
 
 ### Data model
 
@@ -382,3 +385,29 @@ parameter values are never rendered in the UI, never logged, and never stored in
   policy types.
 - There is no admin HTML page for scripts/sensors in this change; the admin surface is the JSON
   API under `/admin/scripts` and `/admin/sensors`. A UI can be layered on later.
+
+## 11. Known security gaps
+
+- The enrollment-token per-IP failure rate limiter is an in-memory sliding counter, adequate for a single control-plane process. In a multi-instance deployment it is per-process, so N instances allow roughly N× the failures before throttling; move it to shared state if that matters (same caveat as the admin PAT limiter). The max-uses consume is NOT affected — it is an atomic DB update and holds across instances.
+
+- Scheduled and agent-start script runs are modelled (trigger column, directive type) but no server loop enqueues them yet; on-demand runs, sensors and `SCRIPT_POLICY` are fully wired. Remediation workflows (Phase 2, next) will add the schedule and event triggers.
+- A device can report only sensors that are enabled, currently target it and were dispatched to it, but it can still report any value for those: a root user on the endpoint controls its own sensor results, as with inventory.
+- Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
+  Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent
+  verification of firmware/bootloader contents; enforcement gates only sealed
+  network-profile secrets, not all assigned policy; the trust decision uses the latest
+  recorded result, so a device that never re-attests after its result goes stale stays
+  untrusted until it does; EAP-TLS client private keys are unsealed and not withheld.
+- Device mutual TLS and certificate pinning exist but default to `optional`; `required` must be turned on, and only `required` mode refuses an uncertified device.
+- A device whose certificate has lapsed can obtain a new one with its bearer token alone, so a stolen token remains sufficient for such a device.
+- First-contact wipe-signing-key trust depends on transport TLS unless the agent pins the server with `server_ca_file` / `server_ca_sha256`.
+- Self-update verifies an independent Ed25519 release signature when a manifest is present
+  and `require_signed_updates` is true (the default). Remaining limits: the release public
+  keys are pinned at package-build time, so trusting a new signing key requires shipping a new
+  package (there is no in-band key-distribution channel, by design); and with
+  `require_signed_updates` set false for the transition, an unsigned update still installs
+  (with a loud warning).
+- `spired` runs as unrestricted root.
+- Remote assistance returns a generated PIN that is not applied to GNOME Remote Desktop credentials.
+- A root-owned test override can approve remote assistance without the desktop user.
+- Inventory is unauthenticated, best-effort telemetry: the server validates and clamps it but does not prove a reported fact is true, so an attacker with a device's bearer token could report false inventory. Nothing security-relevant is enforced from it — it informs search, display, and change history only. Values a collector cannot read are omitted rather than defaulted, so absence is not distinguishable from a false "off"; firewall/auditd/usbguard and per-product states reflect what the agent could detect on that host.

@@ -1,0 +1,107 @@
+{{define "device_inventory_section"}}
+{{if .Inventory}}
+<div class="bg-[#0a0e17] border border-[#1a2234] rounded-md p-4 space-y-4">
+    <div class="flex items-center justify-between">
+        <h3 class="text-xs font-semibold text-white">Rich Inventory</h3>
+        <div class="flex items-center gap-2">
+            {{if .Inventory.CollectedAt}}
+            <span class="text-[10px] font-mono text-slate-500">collected {{timeAgo .Inventory.CollectedAt}}</span>
+            {{end}}
+            {{if or (eq .AdminRole "OPERATOR") (eq .AdminRole "SECURITY_ADMIN") (eq .AdminRole "SUPER_ADMIN")}}
+            <button
+                hx-post="/admin/devices/{{.Device.ID}}/inventory/refresh"
+                hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'
+                hx-target="#device-detail-container"
+                hx-swap="innerHTML"
+                class="px-2.5 py-1 rounded text-[11px] font-medium bg-[#141b2a] hover:bg-[#1a2234] text-blue-400 border border-[#1a2234] transition">
+                Request Inventory Refresh
+            </button>
+            {{end}}
+        </div>
+    </div>
+
+    {{if not .Inventory.HasInventory}}
+    <div class="px-3 py-4 text-center text-[11px] text-amber-400 bg-[#0f1420] border border-[#1a2234] rounded">
+        No inventory reported. This device's agent has not sent a rich inventory report yet
+        (an older agent, or it has not reached its first inventory interval).
+    </div>
+    {{else}}
+    <!-- Scalar facts -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 font-mono text-[11px]">
+        {{range .Inventory.Attributes}}
+        <div class="flex justify-between bg-[#0f1420] px-2 py-1 rounded border border-[#1a2234] gap-2">
+            <span class="text-slate-500 truncate" title="{{.Key}}">{{.Key}}</span>
+            <span class="text-slate-200 truncate text-right" title="{{printf "%s" .Value}}">{{printf "%s" .Value}}</span>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Listening sockets -->
+    {{if .Inventory.Listening}}
+    <details class="bg-[#0f1420] border border-[#1a2234] rounded p-2.5">
+        <summary class="text-[11px] font-medium text-slate-300 cursor-pointer select-none">Listening sockets ({{len .Inventory.Listening}})</summary>
+        <div class="mt-2 max-h-40 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-0.5">
+            {{range .Inventory.Listening}}
+            <div class="flex gap-2"><span class="text-slate-500 w-14">{{.Protocol}}</span><span class="text-slate-300 w-14 text-right">{{.Port}}</span><span class="text-slate-500">{{.Address}}</span><span class="text-slate-400">{{.ProcessName}}</span></div>
+            {{end}}
+        </div>
+    </details>
+    {{end}}
+
+    <!-- Local accounts -->
+    {{if .Inventory.Accounts}}
+    <details class="bg-[#0f1420] border border-[#1a2234] rounded p-2.5">
+        <summary class="text-[11px] font-medium text-slate-300 cursor-pointer select-none">Local accounts ({{len .Inventory.Accounts}})</summary>
+        <div class="mt-2 max-h-40 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-0.5">
+            {{range .Inventory.Accounts}}
+            <div class="flex gap-2"><span class="text-slate-300 w-40 truncate">{{.Username}}</span><span class="text-slate-500 w-16 text-right">{{.UID}}</span>{{if .IsSudo}}<span class="text-amber-400">sudo</span>{{end}}<span class="text-slate-600 truncate">{{.Shell}}</span></div>
+            {{end}}
+        </div>
+    </details>
+    {{end}}
+
+    <!-- USB devices -->
+    {{if .Inventory.USBDevices}}
+    <details class="bg-[#0f1420] border border-[#1a2234] rounded p-2.5">
+        <summary class="text-[11px] font-medium text-slate-300 cursor-pointer select-none">USB devices ({{len .Inventory.USBDevices}})</summary>
+        <div class="mt-2 max-h-40 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-0.5">
+            {{range .Inventory.USBDevices}}
+            <div class="flex gap-2"><span class="text-slate-500 w-24">{{.VendorID}}:{{.ProductID}}</span><span class="text-slate-300 truncate">{{.Name}}</span></div>
+            {{end}}
+        </div>
+    </details>
+    {{end}}
+
+    <!-- Kernel modules / CA certs counts (collapsible lists) -->
+    {{if .Inventory.CACerts}}
+    <details class="bg-[#0f1420] border border-[#1a2234] rounded p-2.5">
+        <summary class="text-[11px] font-medium text-slate-300 cursor-pointer select-none">CA certificates ({{len .Inventory.CACerts}})</summary>
+        <div class="mt-2 max-h-40 overflow-y-auto font-mono text-[11px] text-slate-400 space-y-0.5">
+            {{range .Inventory.CACerts}}
+            <div class="truncate" title="{{.Subject}} — {{.SHA256}}">{{.Subject}} <span class="text-slate-600">({{.Expiry}})</span></div>
+            {{end}}
+        </div>
+    </details>
+    {{end}}
+
+    <!-- Change history -->
+    {{if .Inventory.Changes}}
+    <details class="bg-[#0f1420] border border-[#1a2234] rounded p-2.5">
+        <summary class="text-[11px] font-medium text-slate-300 cursor-pointer select-none">Change history ({{len .Inventory.Changes}})</summary>
+        <div class="mt-2 max-h-56 overflow-y-auto font-mono text-[11px] space-y-0.5">
+            {{range .Inventory.Changes}}
+            <div class="flex gap-2">
+                <span class="w-16 {{if eq .ChangeType "added"}}text-emerald-400{{else if eq .ChangeType "removed"}}text-rose-400{{else}}text-amber-400{{end}}">{{.ChangeType}}</span>
+                <span class="text-slate-500 w-20">{{.Category}}</span>
+                <span class="text-slate-300 truncate" title="{{.Key}}">{{.Key}}</span>
+                {{if eq .ChangeType "modified"}}<span class="text-slate-500 truncate">{{.OldValue}} → {{.NewValue}}</span>{{end}}
+                <span class="ml-auto text-slate-600">{{timeAgoVal .ChangedAt}}</span>
+            </div>
+            {{end}}
+        </div>
+    </details>
+    {{end}}
+    {{end}}
+</div>
+{{end}}
+{{end}}

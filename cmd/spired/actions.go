@@ -22,6 +22,40 @@ func IsActionDirective(command string) bool {
 	return strings.HasPrefix(command, types.ActionDirectivePrefix)
 }
 
+// inventoryRefreshFlagPath is a one-shot marker: its presence forces a full inventory report
+// on the next check-in. It sits next to the inventory cadence state so both share a dir.
+func inventoryRefreshFlagPath() string {
+	return filepath.Join(filepath.Dir(inventoryLastPath()), "inventory-refresh.flag")
+}
+
+func inventoryLastPath() string {
+	// Mirror inventory.DefaultInventoryStatePath so the flag lives beside the cadence file.
+	return "/var/lib/spire/inventory-last.json"
+}
+
+// armInventoryRefresh writes the one-shot force marker so the next check-in sends inventory.
+func armInventoryRefresh() {
+	path := inventoryRefreshFlagPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		log.Printf("[spired] failed to prepare inventory refresh dir: %v", err)
+		return
+	}
+	if err := os.WriteFile(path, []byte("1"), 0600); err != nil {
+		log.Printf("[spired] failed to arm inventory refresh: %v", err)
+	}
+}
+
+// consumeInventoryRefresh reports whether a refresh was armed and clears the marker, so a
+// forced report happens exactly once per request.
+func consumeInventoryRefresh() bool {
+	path := inventoryRefreshFlagPath()
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	_ = os.Remove(path)
+	return true
+}
+
 // parseActionDirective extracts the JSON directive from a prefixed command string.
 func parseActionDirective(command string) (types.ActionDirective, error) {
 	var d types.ActionDirective

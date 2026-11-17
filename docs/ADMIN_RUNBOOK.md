@@ -649,6 +649,37 @@ fleet does not trigger an N×M scan.
 - Only CVE-prefixed tracker keys are imported; `TEMP-`/`DLA-only` grouping keys are skipped.
 - The importer replaces the whole dataset per run (atomic swap), so an import reflects the
   feed at fetch time; between imports, new upstream CVEs are not yet known.
+
+## 10a. Rich Inventory
+
+Each agent collects a hardware/software/network/security snapshot and sends it on a check-in
+**at most once per `inventory_interval`** (agent config under `agent:`, env
+`SPIRE_INVENTORY_INTERVAL`; default `6h`). It is forced on the agent's first check-in after
+start and when an admin clicks **Request Inventory Refresh** (or `POST
+/admin/devices/{id}/inventory/refresh`, OPERATOR+, tag-scoped, audited). The agent records the
+last-sent time at `/var/lib/spire/inventory-last.json`; deleting that file forces a fresh
+report on the next check-in.
+
+Storage: scalar facts land in `device_attributes` (source `inventory`); the lists land in
+`device_inventory_packages`, `device_inventory_modules`, `device_inventory_listening`,
+`device_inventory_accounts`, `device_inventory_cacerts`, `device_inventory_usb`, and change
+history in `device_inventory_changes` (bounded to 500 rows/device). All cascade on device
+delete. These tables are created by migrations `000043` and `000044`; a standard `-Fc` dump
+(section 3) captures them. No new service or port is involved — inventory rides the existing
+check-in request and the existing device command queue.
+
+Sizing: the agent caps its report at 512 KiB and the server rejects any report over 1 MiB,
+so a single device cannot bloat a check-in. The per-device list cap is 4000 entries (packages,
+modules, sockets, accounts, USB) and 1000 CA certificates; a clipped list sets a `truncated`
+flag shown on the device page. Tune cadence with `inventory_interval`; there is no server-side
+schedule to configure.
+
+Verification: open a device's detail page and confirm the **Rich Inventory** panel shows facts
+and (after a second report) change history; a device with an old agent shows "No inventory
+reported" and keeps checking in normally. Fleet-wide, the **Inventory** page searches by
+attribute, package, listening port, or local admin, and exports CSV/JSON — both honour the
+signed-in admin's tag scope.
+
 ## 11. Agent Version Tracking & Self-Update
 
 Each `spired` agent reports its build version on every check-in. The server stores it per

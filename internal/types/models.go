@@ -740,6 +740,11 @@ type CheckinRequest struct {
 	AgentVersion string `json:"agent_version,omitempty"`
 	// UpdateResult, when set, reports the outcome of the agent's most recent self-update attempt.
 	UpdateResult *AgentUpdateResult `json:"update_result,omitempty"`
+
+	// Inventory carries the rich hardware/software/network/security snapshot, sent at most
+	// once per inventory_interval. Nil on most check-ins and always nil from an old agent;
+	// the server keeps working and shows "no inventory reported".
+	Inventory *InventoryReport `json:"inventory,omitempty"`
 }
 
 // CheckinResponse is returned by POST /api/v1/desktop/checkin.

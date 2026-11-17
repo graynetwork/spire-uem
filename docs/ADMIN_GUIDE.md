@@ -121,6 +121,20 @@ Under **Settings → Agent Rollout**, a `SUPER_ADMIN` can set a target version p
 
 Each device's row shows its agent version and self-update status. A failed or refused update shows **FAILED**; an update whose new agent never confirmed healthy and was automatically reverted shows **ROLLED_BACK → previous version**. Both raise an alert through the configured channels (`agent_update_failed`), a signature/verification failure and a rollback at critical severity.
 
+## 6A. Inventory
+
+Each agent collects a rich hardware, software, network, and security snapshot and sends it on a check-in **at most once per `inventory_interval`** (agent config, default 6 hours). A fresh report is forced on the agent's first check-in after start and when an administrator requests a refresh. Most check-ins carry no inventory, so this does not grow the ordinary check-in payload.
+
+**What is collected.** Hardware: CPU model/cores/threads, memory, system and board vendor/product/serial, BIOS vendor/version/date, TPM presence and version, disks (size, model, rotational, transport, whether LUKS-encrypted), battery capacity and health, GPUs, connected monitor count, and virtualisation. Network: interfaces with MAC/state/addresses, default gateway, DNS servers, and the primary IPv4/MAC. Software: package count and per-package name/version/arch/origin/install-time, kernel modules, listening TCP/UDP sockets with the owning process, local accounts with UID ≥ 1000 and sudo/admin membership (**never password hashes**), CA certificates in the system trust store (subject/expiry/SHA-256), and USB devices. Security: detected products from a fixed list (clamav, wazuh-agent, falcon-sensor, mdatp, elastic-agent, sentinelone, osquery) with installed/running state, firewall-active (nftables ruleset present), auditd, and usbguard. The agent reads only this metadata; it never reads file contents, keys, or user files.
+
+**Where it is stored.** Scalar facts become typed device attributes under a fixed key catalogue (for example `hw.memory_mb`, `hw.bios.version`, `hw.disk.encrypted_all`, `net.primary_ipv4`, `sec.firewall_active`, `sw.package_count`). The large lists (packages, kernel modules, listening sockets, local accounts, CA certificates, USB devices) go to dedicated tables that are replaced wholesale on each report. A device that has never reported (an older agent, or one that has not yet reached its first interval) shows **"No inventory reported"**.
+
+**Change history.** The device page shows a bounded, field-level history (the most recent 500 changes per device) of attribute changes and list membership changes — a new listening port, a new local admin, a package install or removal — each marked added, removed, or modified.
+
+**Device page.** Each device detail drawer shows the scalar facts, the collapsible lists, and the change history. `OPERATOR` and above see a **Request Inventory Refresh** button that queues a refresh over the existing device command path; the agent collects and sends a fresh report on its next check-in. The action is tag-scoped and audited (`INVENTORY_REFRESH`).
+
+**Fleet search and export.** The **Inventory** sidebar page (any authenticated role) filters devices by an attribute key/operator/value, by installed package name, by listening port, or by local admin username. Results and counts respect the admin's tag scope. `AUDITOR` and above can export the current filter as CSV or JSON from `GET /admin/inventory/export?format=csv|json`; the export is tag-scoped and audited (`INVENTORY_EXPORT`), so a scoped operator can never export a device outside their tags.
+
 ## 7. Commands, terminal, and remote assistance
 
 ### 7.1 Queued commands and root PTY

@@ -276,6 +276,11 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[api] warning: CVE rematch failed for device %s: %v", dev.ID, err)
 		}
 	}
+
+	// Rich inventory report (optional; old agents omit it). Best-effort telemetry: a bad
+	// field is dropped with a parse warning and never fails the check-in. The whole report
+	// is dropped if it exceeds the per-report size ceiling.
+	h.processInventoryReport(r, dev, req.Inventory)
 	// Agent version tracking + self-update result (best-effort; never blocks check-in).
 	h.handleAgentVersionReporting(r, dev, &req)
 
@@ -1381,4 +1386,30 @@ func capSourcePackages[T any](pkgs []T) []T {
 		return pkgs[:maxReportedSourcePackages]
 	}
 	return pkgs
+}
+
+// maxInventoryReportBytes is the server's ceiling on one encoded inventory report. The agent
+// caps itself lower (512 KiB); a report over this ceiling is dropped whole with a warning
+// rather than partially stored, so a malicious or broken agent cannot force unbounded work.
+const maxInventoryReportBytes = 1 << 20 // 1 MiB
+
+// processInventoryReport sanitizes and stores a rich inventory report. It is best-effort:
+// an oversized report is dropped, malformed entries are dropped with a parse warning, and a
+// storage error is logged. None of this ever fails the check-in (the inventory is telemetry;
+// policy delivery must not depend on it). A nil report (old agent) is a no-op.
+func (h *Handler) processInventoryReport(r *http.Request, dev *types.Device, rep *types.InventoryReport) {
+	if rep == nil {
+		return
+	}
+	if raw, err := json.Marshal(rep); err == nil && len(raw) > maxInventoryReportBytes {
+		log.Printf("[api] warning: inventory report for device %s is %d bytes (> %d); dropping", dev.ID, len(raw), maxInventoryReportBytes)
+		return
+	}
+	clean, warnings := db.SanitizeInventoryReport(rep)
+	if warnings > 0 {
+		log.Printf("[api] inventory report for device %s had %d malformed/over-limit entries (dropped)", dev.ID, warnings)
+	}
+	if err := h.repo.StoreInventoryReport(r.Context(), dev.ID, clean); err != nil {
+		log.Printf("[api] warning: failed to store inventory for device %s: %v", dev.ID, err)
+	}
 }
