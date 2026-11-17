@@ -550,7 +550,7 @@ A device is vulnerable to CVE X for source package P, in the device's release, w
   available"**; or
 - the status is **resolved** with a `fixed_version` and the installed source version is
   strictly older than it (Debian `dpkg` version comparison: epochs, `~` pre-releases,
-  `+deb12u1`/`ubuntu` suffixes, revisions).
+  `+deb12u1` suffixes, vendor tags, revisions).
 
 `resolved` with no recorded fixed version is treated as no-fix-available (still flagged);
 `undetermined` is not reported. Matches are recomputed **incrementally per device on
@@ -569,7 +569,7 @@ fleet does not trigger an N×M scan.
 
 ### 10.6 Limits
 - Matching is Debian-codename based; a device whose `VERSION_CODENAME` is absent is not
-  matched. Ubuntu-style version suffixes compare correctly, but releases are keyed by the
+  matched. Downstream distribution version suffixes compare correctly, but releases are keyed by the
   Debian tracker's codenames.
 - Only CVE-prefixed tracker keys are imported; `TEMP-`/`DLA-only` grouping keys are skipped.
 - The importer replaces the whole dataset per run (atomic swap), so an import reflects the
