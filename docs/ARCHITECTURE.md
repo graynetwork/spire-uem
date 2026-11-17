@@ -267,7 +267,7 @@ A device enrolls in one of two ways.
 
 - consumes one token use with an atomic conditional update (`uses_count < max_uses`), so a one-time token cannot be spent twice under concurrent registrations;
 - refuses a hardware UUID already bound to a different enrollment key (a token can never let a second machine take over an existing device record);
-- applies the token's policy: `require_approval` (default false → auto-approve and issue a bearer token plus, if a device CA is configured, a client certificate for the CSR; true → stage `PENDING_APPROVAL` with no token), target ring, merged tags, expiry, and an optional allowed-hostname glob;
+- applies the token's policy: `require_approval` (default false → auto-approve and issue a bearer token plus, if a device CA is configured, a client certificate for the CSR; true → stage `PENDING_APPROVAL` with no token), target ring and tags (from the token only; client-supplied tags are ignored), expiry, and an optional allowed-hostname glob. An existing REVOKED or REJECTED device is always staged `PENDING_APPROVAL`, and an existing device keeps its administrator-assigned tags and ring;
 - records the attempt (approved / pending / refused + reason) in the token's enrollment history.
 
 Tokens are stored as SHA-256 hashes; the secret is shown once at creation and once after rotation. Rotation issues a new secret while keeping settings and history (the old secret stops working immediately). Token create, rotate, and revoke are SUPER_ADMIN-only and audited. Refused registrations return a uniform `401` (so token existence is not revealed) and are per-IP rate limited; the real reason lives only in the history row.

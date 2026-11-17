@@ -3595,14 +3595,12 @@ func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.E
 		ring = types.RingProduction
 	}
 
-	// Merge token tags with request tags (deduped, sorted).
+	// Tags come only from the token. Tags decide which policies (and which network secrets) a
+	// device receives, so the registering client must never choose them; request tags are
+	// ignored. A sorted, de-duplicated copy of the token's tags is used for new devices.
+	_ = tags
 	mergedTagMap := make(map[string]bool)
 	for _, tg := range token.TargetTags {
-		if t := strings.TrimSpace(tg); t != "" {
-			mergedTagMap[t] = true
-		}
-	}
-	for _, tg := range tags {
 		if t := strings.TrimSpace(tg); t != "" {
 			mergedTagMap[t] = true
 		}
@@ -3644,30 +3642,51 @@ func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.E
 
 	// 2. Refuse a hardware UUID already bound to a different key, BEFORE upserting the device.
 	var boundKey *string
-	err = tx.QueryRow(ctx, `SELECT enrollment_key_hash FROM devices WHERE hardware_uuid = $1 FOR UPDATE`, hwUUID).Scan(&boundKey)
+	var existingStatus string
+	var existingTags []string
+	err = tx.QueryRow(ctx, `SELECT enrollment_key_hash, status, tags FROM devices WHERE hardware_uuid = $1 FOR UPDATE`, hwUUID).Scan(&boundKey, &existingStatus, &existingTags)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", false, fmt.Errorf("lookup device for key check: %w", err)
 	}
-	if err == nil && boundKey != nil && keyHash != "" && *boundKey != keyHash {
+	exists := err == nil
+	if exists && boundKey != nil && keyHash != "" && *boundKey != keyHash {
 		return nil, "", false, ErrEnrollmentKeyConflict
 	}
 	// A device that already has a key but the request supplied none also cannot be taken over.
-	if err == nil && boundKey != nil && *boundKey != "" && keyHash == "" {
+	if exists && boundKey != nil && *boundKey != "" && keyHash == "" {
 		return nil, "", false, ErrEnrollmentKeyConflict
 	}
 
-	// 3. Decide the device's resulting status and bearer token.
-	status := "APPROVED"
+	// 3. Decide the resulting status.
+	//   - New device: the token decides (APPROVED, or PENDING_APPROVAL if it requires approval).
+	//   - Existing APPROVED device with its own key: stays APPROVED (an agent reinstall).
+	//   - Existing REVOKED or REJECTED device: PENDING_APPROVAL. A token must never undo an
+	//     administrator's revocation; a revoked (e.g. stolen) device needs explicit re-approval.
+	//   - Existing PENDING_APPROVAL device: the token decides.
+	status := string(types.StatusApproved)
+	switch {
+	case exists && (existingStatus == string(types.StatusRevoked) || existingStatus == string(types.StatusRejected)):
+		status = string(types.StatusPendingApproval)
+	case exists && existingStatus == string(types.StatusApproved):
+		status = string(types.StatusApproved)
+	case token.RequireApproval:
+		status = string(types.StatusPendingApproval)
+	}
 	var bearerHash *string
-	if token.RequireApproval {
-		status = "PENDING_APPROVAL"
-	} else {
+	if status == string(types.StatusApproved) {
 		raw, h, gerr := GenerateToken()
 		if gerr != nil {
 			return nil, "", false, fmt.Errorf("generate device bearer token: %w", gerr)
 		}
 		rawBearerToken = raw
 		bearerHash = &h
+	}
+
+	// Existing devices keep their administrator-managed tags and ring; the token only seeds
+	// them for a device that has none yet (a new record, or one staged with no tags).
+	tagsArg := mergedTags
+	if exists && len(existingTags) > 0 {
+		tagsArg = existingTags
 	}
 
 	// 4. Upsert the device. The enrollment key is bound with COALESCE so an existing binding
@@ -3684,13 +3703,13 @@ func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.E
 		ON CONFLICT (hardware_uuid) DO UPDATE
 		SET hostname = EXCLUDED.hostname,
 		    status = EXCLUDED.status,
-		    patch_ring = EXCLUDED.patch_ring,
+		    patch_ring = devices.patch_ring,
 		    tags = EXCLUDED.tags,
 		    auth_token_hash = COALESCE(EXCLUDED.auth_token_hash, devices.auth_token_hash),
 		    enrollment_key_hash = COALESCE(devices.enrollment_key_hash, EXCLUDED.enrollment_key_hash),
 		    updated_at = NOW()
 		RETURNING ` + deviceSelectColumns
-	d, err := scanDevice(tx.QueryRow(ctx, upsert, hwUUID, hostname, status, string(ring), mergedTags, bearerHash, keyArg))
+	d, err := scanDevice(tx.QueryRow(ctx, upsert, hwUUID, hostname, status, string(ring), tagsArg, bearerHash, keyArg))
 	if err != nil {
 		return nil, "", false, fmt.Errorf("register device with token: %w", err)
 	}
@@ -3698,7 +3717,7 @@ func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.E
 	if err = tx.Commit(ctx); err != nil {
 		return nil, "", false, fmt.Errorf("commit register tx: %w", err)
 	}
-	return d, rawBearerToken, !token.RequireApproval, nil
+	return d, rawBearerToken, status == string(types.StatusApproved), nil
 }
 
 // -----------------------------------------------------------------------------

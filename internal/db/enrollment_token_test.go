@@ -320,3 +320,108 @@ func TestEnrollmentToken_UpgradeExistingTokenDefaults(t *testing.T) {
 		t.Fatalf("legacy token must auto-approve to match pre-feature behaviour")
 	}
 }
+
+// A revoked device (for example a stolen laptop) must not come back as APPROVED just
+// because someone holds an auto-approve token: it is staged for explicit re-approval.
+func TestEnrollmentToken_RevokedDeviceNeedsReapproval(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer pool.Close()
+	ctx := context.Background()
+	repo := db.NewRepository(pool)
+
+	_, raw := createToken(t, repo, types.CreateTokenRequest{Description: "auto", TargetRing: types.RingProduction, CreatedBy: "admin"})
+	tok, err := repo.ValidateEnrollmentToken(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hw := "enr-revoked-" + time.Now().Format("150405.000000")
+	dev, _, approved, err := repo.RegisterDeviceWithToken(ctx, tok, hw, "stolen-host", nil, key32("revk1"))
+	if err != nil || !approved {
+		t.Fatalf("setup: initial registration approved=%v err=%v", approved, err)
+	}
+	if _, err := repo.RevokeDevice(ctx, dev.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	tok2, err := repo.ValidateEnrollmentToken(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev2, bearer, approved2, err := repo.RegisterDeviceWithToken(ctx, tok2, hw, "stolen-host", nil, key32("thief-new-key"))
+	if err != nil {
+		t.Fatalf("re-registration of a revoked device: %v", err)
+	}
+	if approved2 || bearer != "" || dev2.Status != types.StatusPendingApproval {
+		t.Fatalf("revoked device must need re-approval; got approved=%v bearer=%v status=%s", approved2, bearer != "", dev2.Status)
+	}
+}
+
+// The registering client must not choose its own tags: tags decide which policies and
+// network secrets a device receives.
+func TestEnrollmentToken_ClientTagsIgnored(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer pool.Close()
+	ctx := context.Background()
+	repo := db.NewRepository(pool)
+
+	_, raw := createToken(t, repo, types.CreateTokenRequest{Description: "eng", TargetRing: types.RingProduction, TargetTags: []string{"eng"}, CreatedBy: "admin"})
+	tok, err := repo.ValidateEnrollmentToken(ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hw := "enr-tags-" + time.Now().Format("150405.000000")
+	dev, _, _, err := repo.RegisterDeviceWithToken(ctx, tok, hw, "tags-host", []string{"finance", "admins"}, key32("tagk1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dev.Tags) != 1 || dev.Tags[0] != "eng" {
+		t.Fatalf("device tags must come only from the token, got %v", dev.Tags)
+	}
+}
+
+// Re-registering an existing device (an agent reinstall with the same key) keeps the tags
+// and ring an administrator assigned, and keeps an approved device approved even when the
+// token requires approval.
+func TestEnrollmentToken_ExistingDeviceKeepsAdminFields(t *testing.T) {
+	pool := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer pool.Close()
+	ctx := context.Background()
+	repo := db.NewRepository(pool)
+
+	_, raw := createToken(t, repo, types.CreateTokenRequest{Description: "first", TargetRing: types.RingCanary, TargetTags: []string{"lab"}, CreatedBy: "admin"})
+	tok, _ := repo.ValidateEnrollmentToken(ctx, raw)
+	hw := "enr-keep-" + time.Now().Format("150405.000000")
+	key := key32("keepk1")
+	dev, _, _, err := repo.RegisterDeviceWithToken(ctx, tok, hw, "keep-host", nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpdateDeviceTags(ctx, dev.ID, []string{"finance"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.UpdateDevicePatchRing(ctx, dev.ID, types.RingProduction); err != nil {
+		t.Fatal(err)
+	}
+
+	_, raw2 := createToken(t, repo, types.CreateTokenRequest{Description: "second", TargetRing: types.RingCanary, TargetTags: []string{"lab"}, RequireApproval: true, CreatedBy: "admin"})
+	tok2, _ := repo.ValidateEnrollmentToken(ctx, raw2)
+	dev2, _, approved, err := repo.RegisterDeviceWithToken(ctx, tok2, hw, "keep-host", nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || dev2.Status != types.StatusApproved {
+		t.Fatalf("an approved device re-registering with its own key must stay approved, got %s", dev2.Status)
+	}
+	if len(dev2.Tags) != 1 || dev2.Tags[0] != "finance" || dev2.PatchRing != types.RingProduction {
+		t.Fatalf("admin-managed fields overwritten: tags=%v ring=%s", dev2.Tags, dev2.PatchRing)
+	}
+}
