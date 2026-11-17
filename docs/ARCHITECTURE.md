@@ -130,6 +130,18 @@ against them.
     marker and their sealed envelopes stripped. The agent treats a withheld policy as a
     skipped / non-compliant item: it never writes a keyfile with a blank or placeholder
     secret, and never removes an already-working profile on account of the withhold.
+  - If the enforcement setting cannot be read from the database, the server treats the mode
+    as `enforce` for that check-in.
+  - Only **sealed** fields are withheld (Wi-Fi PSK and EAP passwords, 802.1X passwords,
+    WireGuard peer pre-shared keys). An EAP-TLS client private key is stored in the policy
+    payload unencrypted and is still delivered to untrusted devices.
+  - With no baseline in scope, `ATTESTED` counts as trusted: `enforce` then only requires a
+    fresh, valid quote with Secure Boot evidence, not known-good measurements.
+- A challenge-stage failure (invalid EK certificate or attestation key) is recorded in the
+  attestation history, so it revokes trust immediately rather than when the previous result
+  goes stale.
+- A tag-scoped `SECURITY_ADMIN` can create baselines only within their tags and can deactivate
+  only baselines scoped entirely to their tags.
 
 ### Current limits
 
@@ -184,7 +196,7 @@ The separately published APT repository can be generated and signed with `reprep
   verification of firmware/bootloader contents; enforcement gates only sealed
   network-profile secrets, not all assigned policy; the trust decision uses the latest
   recorded result, so a device that never re-attests after its result goes stale stays
-  untrusted until it does.
+  untrusted until it does; EAP-TLS client private keys are unsealed and not withheld.
 - No mutual TLS or device certificate pinning.
 - First-contact wipe-signing-key trust depends on transport TLS.
 - Self-update has no independent artifact signature.

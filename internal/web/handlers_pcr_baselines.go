@@ -165,9 +165,47 @@ func (h *Handler) CreateBaseline(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/baselines", http.StatusSeeOther)
 }
 
+// baselineWithinTags reports whether a baseline's tag scope is non-empty and every tag in
+// it is one of allowed. An empty scope means the whole fleet (or a ring), which is never
+// inside a tag-scoped admin's authority.
+func baselineWithinTags(scope, allowed []string) bool {
+	if len(scope) == 0 {
+		return false
+	}
+	ok := make(map[string]bool, len(allowed))
+	for _, t := range allowed {
+		ok[strings.ToLower(strings.TrimSpace(t))] = true
+	}
+	for _, t := range scope {
+		if !ok[strings.ToLower(strings.TrimSpace(t))] {
+			return false
+		}
+	}
+	return true
+}
+
 // DeactivateBaseline handles POST /admin/baselines/{id}/deactivate. SECURITY_ADMIN+.
 func (h *Handler) DeactivateBaseline(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	// Deactivating a baseline loosens trust for every device it covers (they fall back to
+	// "attested, no in-scope baseline"). A tag-scoped admin may therefore only deactivate a
+	// baseline whose scope lies entirely within their own tags; fleet-wide or ring-only
+	// baselines, and baselines naming other tags, need an unscoped admin.
+	if u := AdminUserObjFromContext(r.Context()); userIsTagScoped(u) {
+		b, err := h.repo.GetBaseline(r.Context(), id)
+		if err != nil {
+			http.Error(w, "Failed to load baseline", http.StatusInternalServerError)
+			return
+		}
+		if b == nil {
+			http.Error(w, "Baseline not found", http.StatusNotFound)
+			return
+		}
+		if !baselineWithinTags(b.ScopeTags, u.AllowedTags) {
+			http.Error(w, "A tag-scoped admin may only deactivate baselines scoped entirely to their assigned tags", http.StatusForbidden)
+			return
+		}
+	}
 	ok, err := h.repo.DeactivateBaseline(r.Context(), id)
 	if err != nil {
 		http.Error(w, "Failed to deactivate baseline", http.StatusInternalServerError)

@@ -1015,6 +1015,10 @@ WireGuard PSK). Roll it out gradually (PCR Baselines page, SUPER_ADMIN):
    (re)written. Before flipping to enforce, drive the untrusted count to zero (or cover the
    remainder with scoped exceptions).
 
+   Enforcement withholds only sealed secrets. An EAP-TLS client private key is not sealed and
+   is still delivered to an untrusted device. Until it is, prefer password-based EAP or
+   WireGuard for networks that must depend on attestation.
+
 **Rollback.** Set enforcement back to `warn` or `off` at any time; the next check-in of each
 device delivers secrets again. No data is lost — withholding only omits plaintext from the
 check-in response; the sealed envelopes remain in the policy payload at rest.

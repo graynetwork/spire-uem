@@ -53,8 +53,11 @@ func policyCarriesSealedSecret(p *types.NetworkProfilePayload) bool {
 func (h *Handler) gatePolicySecrets(ctx context.Context, dev *types.Device, policies []types.AssignedPolicy) types.TrustEvaluation {
 	mode, err := h.repo.AttestationEnforcementMode(ctx)
 	if err != nil {
-		log.Printf("[api] warning: read attestation enforcement mode failed: %v; treating as off", err)
-		mode = types.EnforcementOff
+		// Fail closed: if the setting cannot be read we cannot tell whether enforcement is on,
+		// so treat it as enforce. A withheld profile is reported non-compliant and the agent
+		// keeps any working keyfile, so this never disconnects a device that already has one.
+		log.Printf("[api] warning: read attestation enforcement mode failed: %v; treating as enforce", err)
+		mode = types.EnforcementEnforce
 	}
 	if mode == types.EnforcementOff {
 		h.unsealPolicyPayloadSecrets(policies)

@@ -627,6 +627,15 @@ func (h *Handler) recordAttestationFailure(r *http.Request, deviceID, ekPEM stri
 	}); err != nil {
 		log.Printf("[api] failed to record attestation failure for device=%s: %v", deviceID, err)
 	}
+	// The trust decision reads the attestation history, so a failure must be appended there
+	// too; otherwise an earlier BASELINE_MATCH would keep the device trusted until it went stale.
+	if err := h.repo.RecordAttestationResult(r.Context(), &types.AttestationResult{
+		DeviceID:  deviceID,
+		Status:    types.AttestationFailed,
+		PCRValues: map[string]string{},
+	}); err != nil {
+		log.Printf("[api] warning: record attestation failure history for device=%s failed: %v", deviceID, err)
+	}
 }
 
 // AttestVerify handles POST /api/v1/desktop/attest/verify.
