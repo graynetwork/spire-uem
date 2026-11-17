@@ -190,3 +190,67 @@ sets how long a result stays fresh. In `enforce`, an untrusted device receives n
 network-profile secrets — affected policies arrive marked withheld and the agent skips them
 without writing a blank credential or disturbing a working profile. The dashboard shows an
 **Attestation Untrusted** count honouring your tag scope.
+
+
+## Reusable scripts, custom sensors, and script-based policies
+
+These features are managed through the admin JSON API (routes under `/admin`); there is no
+dedicated HTML page yet. Role requirements and tag scoping are enforced by the server.
+
+### Scripts
+
+A script has a fixed interpreter (`bash` or `python3` only), a run-as identity (`root` or
+`active_user`), a timeout (default 300 s, max 3600 s), an output cap (default 64 KiB, max
+1 MiB), and a parameter schema. Parameter names must match `^[A-Z][A-Z0-9_]{0,31}$`; a
+parameter may be `string`, `integer` or `boolean`, required, defaulted, and marked `secret`.
+
+- `GET /admin/scripts`, `GET /admin/scripts/{id}` — list / inspect (any role that can read).
+- `POST /admin/scripts` — create (SECURITY_ADMIN+). Body: `name`, `interpreter`, `run_as`,
+  `timeout_seconds`, `max_output_bytes`, `content`, `params`.
+- `POST /admin/scripts/{id}` — change metadata only (SECURITY_ADMIN+).
+- `POST /admin/scripts/{id}/versions` — add a new immutable version with new content/params
+  (SECURITY_ADMIN+). Editing content is always a new version; old versions keep running where
+  they were pinned.
+- `POST /admin/scripts/{id}/versions/{versionID}/current` — mark a version current.
+- `DELETE /admin/scripts/{id}` — delete the script and its history.
+
+Editing a script never mutates an existing version. Each version carries its own sha256, which
+the agent verifies before running.
+
+### Running a script
+
+`POST /admin/scripts/{id}/run` (OPERATOR+). Body selects a target — `device_ids`, `tags`, or
+`ring` — with `params` and an optional `version_id` (defaults to the current version). A
+tag-scoped operator's target is intersected with their allowed tags, and only APPROVED devices
+run. The run is reported per device with status, exit code, capped stdout/stderr and duration;
+`GET /admin/devices/{id}/script-runs` shows recent runs for a device. Secret parameter values
+are stored sealed, delivered only to the target device, and never shown or logged again.
+
+Parameters reach the script only as environment variables named `SPIRE_PARAM_<NAME>`. Inside a
+bash script read `"$SPIRE_PARAM_PORT"`, inside python `os.environ["SPIRE_PARAM_PORT"]`. Values
+are passed literally, so a value such as `$(reboot)` is just that string, never executed.
+
+### Sensors
+
+A sensor runs a script version on a schedule and stores its typed result as the device
+attribute `sensor.<name>`. Sensor names match `^[a-z][a-z0-9_]{0,47}$`, the interval is at
+least 15 minutes, and the return type is `string`, `integer`, `boolean`, `datetime` (RFC 3339)
+or `json`. A non-zero exit or output that does not parse to the declared type records an error
+and leaves the device's last good value in place.
+
+- `GET /admin/sensors`, `POST /admin/sensors` (create), `POST /admin/sensors/{id}` (update,
+  name is immutable), `DELETE /admin/sensors/{id}` — SECURITY_ADMIN+.
+- `GET /admin/devices/{id}/sensors/{name}` — a device's recent readings.
+
+Disabling or deleting a sensor, or a device leaving the sensor's target tags/ring, removes that
+device's `sensor.<name>` attribute at its next check-in. A sensor can never overwrite an
+inventory key: each source owns only the keys it writes.
+
+### SCRIPT_POLICY
+
+Create a policy of type `SCRIPT_POLICY` whose payload references script version ids for
+`detect` (exit 0 means compliant), optional `remediate`, and optional `remove`. The agent runs
+detect; if non-compliant and a remediate step is set it runs remediate and detects again,
+reporting compliance from that second detect. On unassignment the agent runs `remove` once if
+set. If a referenced version has been deleted the policy reports FAILED and does nothing, so a
+deleted script never leaves a device in an unknown state.

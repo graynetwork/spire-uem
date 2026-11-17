@@ -78,6 +78,7 @@ An internal ECDSA P-256 device CA issues a client-auth leaf to each device at to
 ## Features
 
 - Declarative package, Flatpak, systemd, sysctl, APT, dconf, nftables, local-account, CA-certificate, NetworkManager, usbguard, and auditd policy engines.
+- Reusable, immutably-versioned scripts (bash or python3 only) run on endpoints as root or the active user with sha256 verification, environment-only parameters, a per-script timeout and output cap, and sealed secret parameters; custom sensors that run a script version on a schedule and store a typed result as a device attribute; and a `SCRIPT_POLICY` desired-state type (detect / remediate / optional remove).
 - Required and optional application assignment through Spire Hub.
 - OpenSCAP execution and selected one-click remediation mappings.
 - Debian Security Tracker CVE matching. Automatic feed import is off by default.

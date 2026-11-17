@@ -308,6 +308,11 @@ func main() {
 					}
 				}
 
+				// Reusable scripts and custom sensors dispatched by the server for this device.
+				// Older servers never set these fields, so these are no-ops then.
+				runScriptDirectives(ctx, client, cfg.Agent.ServerURL, token, hwUUID, checkinResp.ScriptDirectives)
+				runSensorDirectives(ctx, client, cfg.Agent.ServerURL, token, hwUUID, checkinResp.SensorDirectives)
+
 				if attResp, attErr := engine.PerformTPMAttestation(ctx, client, cfg.Agent.ServerURL, token, hwUUID); attErr != nil {
 					log.Printf("[spired] warning: TPM 2.0 attestation failed: %v", attErr)
 				} else if attResp != nil {
@@ -531,6 +536,16 @@ func executePoliciesAndCleanup(
 	results := make([]types.PolicyExecutionItem, 0, len(policies)+len(cleanupItems))
 	results = append(results, cleanupItems...)
 
+	// SCRIPT_POLICY unassignment runs the optional `remove` step. CleanupOrphanedPolicies
+	// cannot do this (it has no script runner), so handle those revoked policies here. It is
+	// reported REVOKED exactly once; CleanupOrphanedPolicies already reports every other
+	// revoked type, so skipping SCRIPT_POLICY there (default branch) avoids a double report.
+	for _, rev := range revokedPolicies {
+		if rev.PolicyType == types.PolicyTypeScriptPolicy {
+			results = append(results, engine.RunScriptPolicyRemove(ctx, engine.NewScriptRunner(""), rev))
+		}
+	}
+
 	_, installedFlatpaks := engine.GetInstalledFlatpaks(ctx)
 
 	var dconfIndices []int
@@ -573,6 +588,8 @@ func executePoliciesAndCleanup(
 			item = engine.ReconcileUSBDeviceControl(ctx, pol)
 		case types.PolicyTypeAuditdRules:
 			item = engine.EnforceAuditdRulesPolicy(ctx, pol)
+		case types.PolicyTypeScriptPolicy:
+			item = engine.EnforceScriptPolicy(ctx, engine.NewScriptRunner(""), pol)
 		default:
 			out, _ := json.Marshal(map[string]string{"note": "unsupported policy type"})
 			item = types.PolicyExecutionItem{

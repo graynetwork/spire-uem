@@ -760,6 +760,12 @@ type CheckinResponse struct {
 	// The agent pins it once and persists it next to its token, then refuses any wipe order
 	// not signed by it.
 	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
+	// ScriptDirectives are on-demand/scheduled/agent-start script runs for this device. Each
+	// carries its content, sha256 and resolved parameters. Older agents ignore this field.
+	ScriptDirectives []ScriptDirective `json:"script_directives,omitempty"`
+	// SensorDirectives are the sensors due on this device at this check-in. Older agents
+	// ignore this field.
+	SensorDirectives []SensorDirective `json:"sensor_directives,omitempty"`
 }
 
 // PolicyExecutionItem represents a single policy enforcement outcome reported by spired.
