@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS campaign_device_work (
     PRIMARY KEY (campaign_id, device_id)
 );
 
+-- deferred_until holds a user-deferred install back: a granted deferral returns the work to
+-- PENDING and the dispatch claim ignores it until this time (capped at the campaign deadline).
+ALTER TABLE campaign_device_work ADD COLUMN IF NOT EXISTS deferred_until TIMESTAMPTZ NULL;
+
 CREATE INDEX IF NOT EXISTS idx_campaign_work_campaign ON campaign_device_work (campaign_id, stage, state);
 CREATE INDEX IF NOT EXISTS idx_campaign_work_device ON campaign_device_work (device_id);
 

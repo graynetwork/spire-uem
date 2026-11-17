@@ -1355,13 +1355,30 @@ notifier. Resume (`/resume`) clears the halt and sets the campaign `RUNNING` aga
 within `UnsupportedAgentTimeout` (24h) is marked `UNSUPPORTED` — a failure for stage math, never
 a silent success. Run this from the evaluation path (`MarkUnsupportedTimedOut`).
 
-**Operational note — integration status.** The campaign primitives are complete and tested
-(targeting, work materialization, dispatch claim, deferral, result classification, orchestrator,
-rollback, reporting). The automatic check-in-time dispatch and a periodic leader-gated evaluation
-loop are the remaining wiring step (see ARCHITECTURE §10a "Known gaps"). To drive a campaign today
-an admin uses the control endpoints; evaluation happens when the orchestrator/materialization
-methods are invoked. When adding the loop, gate it on leader election like the group-recompute
-sweep and call `EvaluateCampaign` under `WithCampaignPromotionLock`.
+**Operational behaviour.**
+- *Dispatch happens at check-in.* A device receives a campaign directive only while its
+  campaign is `RUNNING`, outside any blackout window, in the campaign's active stage ring (stage
+  names `CANARY`/`BETA`/`PILOT`/`PRODUCTION` gate on the device's `patch_ring`), and in its
+  maintenance window when the campaign requires one. A halted, paused or cancelled campaign
+  dispatches nothing.
+- *The evaluation loop runs on every server instance* (default every minute; set
+  `SPIRE_CAMPAIGN_EVAL_INTERVAL`, e.g. `30s`, minimum 5s). Check the server log for
+  `[campaignsync] campaign evaluation every ...`. Two instances are safe: promotion/halt is taken
+  under the per-campaign advisory lock after re-reading the campaign.
+- *A stage does not promote or complete while any of its devices is still pending.* Offline,
+  deferred or undispatched devices keep the stage open. To find them:
+  `SELECT d.hostname, w.state, w.deferred_until FROM campaign_device_work w JOIN devices d ON d.id=w.device_id WHERE w.campaign_id=... AND w.stage=<n> AND w.state NOT IN ('SUCCEEDED','FAILED','INTERRUPTED','UNSUPPORTED','REMOVED','EXCLUDED');`
+  Cancel the campaign, take the device out of the target, or wait for the 24h unsupported timeout.
+- *Halts raise a `patch_failed` alert* whose details include `campaign_id` and `reason`. Resume
+  clears the halt; the same stage is then evaluated again from its current results, so fix or
+  exclude the failing devices first or it will halt again.
+- *Old agents.* An agent that does not understand directives never reports; after 24h its work is
+  marked `UNSUPPORTED` (a failure for the halt math). Upgrade those agents first
+  (`SELECT hostname, agent_version FROM devices ...`).
+- *Agent restart mid-install.* The agent keeps `/var/lib/spire/campaign-inflight.json` (root,
+  0600). After a restart the next check-in reports the run as `INTERRUPTED` once. If you see a
+  device stuck `DISPATCHED`, check that file and the agent log for `campaign ... report failed`.
+- *Not available:* admin-triggered rollback (planner and agent executor exist, no endpoint yet).
 
 **Inspecting state.**
 - `SELECT state, current_stage, halted_reason FROM patch_campaigns WHERE id=...;`

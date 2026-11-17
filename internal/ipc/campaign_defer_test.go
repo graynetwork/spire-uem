@@ -86,3 +86,55 @@ func TestCampaignDefer_MethodGuard(t *testing.T) {
 		t.Fatalf("GET should be 405, got %d", rec.Code)
 	}
 }
+
+// Only a deferral the SERVER granted is remembered for the agent; a refusal must leave the
+// install to proceed. Pending state is published for Spire Hub and cleared by id.
+func TestCampaignDefer_AgentLearnsOnlyServerGrantedDeferrals(t *testing.T) {
+	t.Setenv("SPIRE_SEAT0_UID", "1000")
+	granted := true
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"deferred": granted, "deferrals_used": 1, "deferrals_left": 1})
+	}))
+	defer cp.Close()
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte("tok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv := ipc.NewServer(filepath.Join(dir, "a.sock"), cp.URL, tokenPath, "hw", "host", nil, nil, nil)
+	handler := srv.PeerCredMiddlewareForTest(http.HandlerFunc(srv.HandleCampaignDeferForTest))
+	press := func() {
+		req := httptest.NewRequest(http.MethodPost, "http://unix/v1/campaign/defer", strings.NewReader(`{"campaign_id":"camp-1"}`))
+		req = req.WithContext(ipc.WithPeerCred(req.Context(), &syscall.Ucred{Uid: 0}))
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	srv.SetPendingCampaign(ipc.PendingCampaign{CampaignID: "camp-1", Name: "Fix", MayDefer: true, DeferralsLeft: 2})
+	if p := srv.PendingCampaignSnapshot(); p == nil || p.CampaignID != "camp-1" || !p.MayDefer {
+		t.Fatalf("pending campaign not published: %+v", p)
+	}
+
+	granted = false // server refuses (max reached / deadline)
+	press()
+	if srv.TakeCampaignDeferral("camp-1") {
+		t.Fatal("a refused deferral must NOT make the agent skip the install")
+	}
+	granted = true
+	press()
+	if !srv.TakeCampaignDeferral("camp-1") {
+		t.Fatal("a server-granted deferral must be visible to the agent")
+	}
+	if srv.TakeCampaignDeferral("camp-1") {
+		t.Fatal("a deferral is consumed once")
+	}
+
+	srv.ClearPendingCampaign("other") // wrong id: no effect
+	if srv.PendingCampaignSnapshot() == nil {
+		t.Fatal("clearing a different campaign must not clear this one")
+	}
+	srv.ClearPendingCampaign("camp-1")
+	if srv.PendingCampaignSnapshot() != nil {
+		t.Fatal("pending campaign should be cleared")
+	}
+}

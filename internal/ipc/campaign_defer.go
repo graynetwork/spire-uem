@@ -45,6 +45,9 @@ func (s *Server) handleCampaignDefer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
 	}
+	if resp.Deferred {
+		s.recordCampaignDeferral(strings.TrimSpace(req.CampaignID))
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

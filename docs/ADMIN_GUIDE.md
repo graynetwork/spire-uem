@@ -371,17 +371,36 @@ well as a pause. `GET /admin/campaigns/{id}` returns the campaign, its per-devic
 (device counts by stage and state, failure classes) and its event log.
 `GET /admin/campaigns/{id}/export?format=csv|json` exports the per-device work, tag-scoped.
 
-**End-user deferral.** Before installing, the active user is notified and may defer up to
-`max_deferrals` times from Spire Hub. After the deadline (if set) the install proceeds without
-further deferral; a `force` reboot policy reboots at the deadline with a warning.
+**How devices receive work.** There is nothing to trigger by hand. After you start a campaign,
+each device picks up its work at its next check-in when the campaign is running, no blackout
+window is active, the campaign's current stage matches the device's patch ring (a `CANARY` stage
+reaches only CANARY devices), and, if the campaign respects maintenance windows, the device is
+inside one. A server loop (every minute by default) then advances the campaign: it promotes a
+stage after its soak time, halts on failures, and completes the campaign. **A stage only advances
+once every device in it has a result**, so devices that are offline or have deferred keep it open.
+A device that does not run the new agent never reports and is counted as failed (`UNSUPPORTED`)
+after 24 hours.
 
-**Rollback.** An admin rollback reinstalls each package's recorded previous version when it is
-still available from the device's repositories; a package whose previous version is gone is
-reported "rollback unavailable", and a package the campaign did not upgrade is never downgraded.
+**End-user deferral.** Before installing, the active user is notified. If the server still allows
+deferral, Spire Hub shows an "Updates scheduled" row with a **Defer** button for about a minute; a
+deferral postpones that device's install by 4 hours (never past the deadline), up to
+`max_deferrals` times. After the deadline (if set) or once deferrals are used up, the install
+proceeds without a Defer button. Reboot policy: `never` does not reboot; `notify` tells the user a
+restart is needed; `force` only notifies before the deadline, and at or after it warns the user and
+restarts the computer five minutes later. If the agent is restarted mid-install the device is
+reported `INTERRUPTED` (not success).
+
+**Rollback.** The agent records each package's previous version when it upgrades it, and the
+rollback planner only ever targets packages the campaign upgraded, and only to a version that is
+still available from the device's repositories. **There is no admin rollback action yet**; it is
+not available from the UI or API in this release.
 
 **Risk acceptance and exclusions** (`/admin/risk-acceptances`). Accept a CVE and/or package for
 all devices, a group, or a tag set, with a required reason and an expiry (maximum 180 days).
 Accepted findings are excluded from new campaign work and shown as "accepted" rather than hidden;
-an acceptance stops applying the moment it expires. A tag-scoped admin may only accept risk within
+on the **Vulnerabilities** page an accepted CVE keeps its row with an "accepted" badge, the reason,
+the expiry date and who accepted it ("accepted on N of M" when only some hosts are covered), and the
+header counts open and accepted CVEs. The page only counts your own devices if you are tag-scoped.
+An acceptance stops applying the moment it expires and the finding is open again. A tag-scoped admin may only accept risk within
 their own tags and may not create a fleet-wide acceptance. Every create, control action and
 deletion is audited with the acting admin.

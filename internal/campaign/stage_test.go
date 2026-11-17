@@ -108,3 +108,63 @@ func TestHaltPrecedenceOverPromotion(t *testing.T) {
 		t.Errorf("sanity: gates are met (promotion ready) but halt must take precedence; got %v", d)
 	}
 }
+
+func TestStageGatesMet_RequiresEveryInStageDeviceTerminal(t *testing.T) {
+	s := Stage{MinDevices: 1, SuccessThresholdPct: 95}
+	// 3 of 100 reported success: 100% of REPORTERS but 97 devices are still unpatched.
+	if StageGatesMet(s, StageTally{InStage: 100, Terminal: 3, Succeeded: 3}) {
+		t.Fatal("a stage with pending devices must not count as met")
+	}
+	if !StageGatesMet(s, StageTally{InStage: 3, Terminal: 3, Succeeded: 3}) {
+		t.Fatal("all devices reported success: gates met")
+	}
+	// A stage with no devices at all is vacuously met.
+	if !StageGatesMet(Stage{}, StageTally{}) {
+		t.Fatal("an empty stage with no minimum is vacuously met")
+	}
+}
+
+func TestStageIncludesRing(t *testing.T) {
+	cases := []struct {
+		stage, ring string
+		want        bool
+	}{
+		{"CANARY", "CANARY", true},
+		{"CANARY", "PRODUCTION", false},
+		{"production", " Production ", true},
+		{"PILOT", "BETA", false},
+		{"Wave 1", "PRODUCTION", true}, // custom stage names do not gate on ring
+	}
+	for _, c := range cases {
+		if got := stageNameIncludesRing(c.stage, c.ring); got != c.want {
+			t.Errorf("stage %q ring %q = %v, want %v", c.stage, c.ring, got, c.want)
+		}
+	}
+	camp := &Campaign{Stages: []Stage{{Name: "CANARY"}, {Name: "PRODUCTION"}}, CurrentStage: 0}
+	if camp.StageIncludesRing("PRODUCTION") || !camp.StageIncludesRing("CANARY") {
+		t.Error("campaign in CANARY stage must include only CANARY devices")
+	}
+	camp.CurrentStage = 5 // out of range: nothing is included
+	if camp.StageIncludesRing("CANARY") {
+		t.Error("out-of-range stage must include nothing")
+	}
+}
+
+func TestMatchingRiskAcceptance_ExpiryAndScope(t *testing.T) {
+	now := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	facts := DeviceFacts{DeviceID: "d1", Tags: []string{"finance"}, GroupIDs: []string{"g1"}}
+	active := RiskAcceptance{CVEID: "CVE-1", ScopeKind: RiskScopeTags, Tags: []string{"finance"}, ExpiresAt: now.Add(time.Hour)}
+	expired := RiskAcceptance{CVEID: "CVE-1", ScopeKind: RiskScopeAll, ExpiresAt: now.Add(-time.Second)}
+	if MatchingRiskAcceptance([]RiskAcceptance{expired}, now, facts, "CVE-1", "pkg") != nil {
+		t.Fatal("an expired acceptance must not match")
+	}
+	if MatchingRiskAcceptance([]RiskAcceptance{expired, active}, now, facts, "cve-1", "pkg") == nil {
+		t.Fatal("active tag-scoped acceptance should match (case-insensitive CVE)")
+	}
+	if MatchingRiskAcceptance([]RiskAcceptance{active}, now, DeviceFacts{Tags: []string{"hr"}}, "CVE-1", "pkg") != nil {
+		t.Fatal("acceptance scoped to finance must not cover an hr device")
+	}
+	if MatchingRiskAcceptance([]RiskAcceptance{{ScopeKind: RiskScopeAll, ExpiresAt: now.Add(time.Hour)}}, now, facts, "CVE-1", "pkg") != nil {
+		t.Fatal("an entry with neither CVE nor package must never match")
+	}
+}

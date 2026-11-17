@@ -54,6 +54,15 @@ type FleetCVE struct {
 	Urgency        string `json:"urgency"`
 	AffectedHosts  int    `json:"affected_hosts"`
 	NoFixAvailable bool   `json:"no_fix_available"`
+	// AcceptedHosts is how many of the (in-scope) affected hosts are covered by an active
+	// risk acceptance; Accepted is true when ALL of them are. The finding is still listed.
+	AcceptedHosts int  `json:"accepted_hosts"`
+	Accepted      bool `json:"accepted"`
+	// AcceptedReason / AcceptedUntil / AcceptedBy describe the covering acceptance (the one
+	// expiring last when several apply).
+	AcceptedReason string     `json:"accepted_reason,omitempty"`
+	AcceptedUntil  *time.Time `json:"accepted_until,omitempty"`
+	AcceptedBy     string     `json:"accepted_by,omitempty"`
 }
 
 // CVEFeedState records the freshness of the imported Debian security feed so the UI can

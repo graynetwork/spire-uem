@@ -46,7 +46,7 @@ func (r *Repository) UpsertCampaignWork(ctx context.Context, campaignID, deviceI
 			state = CASE
 				WHEN campaign_device_work.state IN ('SUCCEEDED','FAILED','INTERRUPTED','UNSUPPORTED') THEN campaign_device_work.state
 				WHEN EXCLUDED.state = 'EXCLUDED' THEN 'EXCLUDED'
-				WHEN campaign_device_work.state = 'EXCLUDED' AND EXCLUDED.state = 'PENDING' THEN 'PENDING'
+				WHEN campaign_device_work.state IN ('EXCLUDED','REMOVED') AND EXCLUDED.state = 'PENDING' THEN 'PENDING'
 				ELSE campaign_device_work.state END,
 			updated_at = NOW()`,
 		campaignID, deviceID, stage, string(state), string(workJSON))
@@ -79,6 +79,7 @@ func (r *Repository) ClaimCampaignDispatch(ctx context.Context, campaignID, devi
 		SET state='DISPATCHED', dispatched_at=NOW(), updated_at=NOW()
 		WHERE campaign_id=$1 AND device_id=$2 AND stage=$3 AND state='PENDING'
 		  AND work <> '[]'::jsonb
+		  AND (deferred_until IS NULL OR deferred_until <= NOW())
 		RETURNING work`, campaignID, deviceID, activeStage).Scan(&raw)
 	if err == pgx.ErrNoRows {
 		return nil, false, nil
@@ -178,7 +179,17 @@ func (r *Repository) RecordDeferral(ctx context.Context, campaignID, deviceID st
 		return used, false, tx.Commit(ctx)
 	}
 	used++
-	if _, err := tx.Exec(ctx, `UPDATE campaign_device_work SET deferrals_used=$3, updated_at=NOW() WHERE campaign_id=$1 AND device_id=$2`, campaignID, deviceID, used); err != nil {
+	// A granted deferral holds the install back: DISPATCHED work returns to PENDING and the
+	// claim ignores it until deferred_until (now + DeferralDelay, never past the deadline).
+	until := now.Add(campaign.DeferralDelay)
+	if deadline != nil && until.After(*deadline) {
+		until = *deadline
+	}
+	if _, err := tx.Exec(ctx, `UPDATE campaign_device_work
+		SET deferrals_used=$3, deferred_until=$4,
+		    state = CASE WHEN state='DISPATCHED' THEN 'PENDING' ELSE state END,
+		    updated_at=NOW()
+		WHERE campaign_id=$1 AND device_id=$2`, campaignID, deviceID, used, until); err != nil {
 		return 0, false, err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO campaign_deferrals (campaign_id, device_id) VALUES ($1,$2)`, campaignID, deviceID); err != nil {

@@ -23,13 +23,21 @@ type DeviceFacts struct {
 
 // riskExcludes reports whether an active risk acceptance covers (cve, pkg) for this device.
 func riskExcludes(acceptances []RiskAcceptance, now time.Time, facts DeviceFacts, cve, pkg string) bool {
-	for _, ra := range acceptances {
+	return MatchingRiskAcceptance(acceptances, now, facts, cve, pkg) != nil
+}
+
+// MatchingRiskAcceptance returns the first ACTIVE risk acceptance covering (cve, pkg) for the
+// device, or nil. It is the single matching rule used both to exclude campaign work and to
+// mark findings "accepted" on the Vulnerabilities page, so the two can never disagree. An
+// entry with only a CVE matches any package of that CVE; only a package matches any CVE
+// touching it; both must match both; an entry with neither never matches. Expired entries
+// never match.
+func MatchingRiskAcceptance(acceptances []RiskAcceptance, now time.Time, facts DeviceFacts, cve, pkg string) *RiskAcceptance {
+	for i := range acceptances {
+		ra := acceptances[i]
 		if !ra.Active(now) {
 			continue
 		}
-		// Match on CVE and/or package: an entry with only a CVE matches any package of that
-		// CVE; an entry with only a package matches any CVE touching that package; an entry
-		// with both must match both.
 		if ra.CVEID != "" && !strings.EqualFold(ra.CVEID, cve) {
 			continue
 		}
@@ -37,13 +45,13 @@ func riskExcludes(acceptances []RiskAcceptance, now time.Time, facts DeviceFacts
 			continue
 		}
 		if ra.CVEID == "" && ra.Package == "" {
-			continue // a malformed entry with neither never excludes anything
+			continue
 		}
 		if riskScopeCovers(ra, facts) {
-			return true
+			return &acceptances[i]
 		}
 	}
-	return false
+	return nil
 }
 
 // riskScopeCovers reports whether a risk acceptance's scope covers the device.

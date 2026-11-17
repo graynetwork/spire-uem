@@ -88,6 +88,13 @@ func StageGatesMet(stage Stage, t StageTally) bool {
 		// "met" when it genuinely has no in-stage devices to wait on.
 		return t.InStage == 0
 	}
+	// Every in-stage device must have a terminal result. A device that is offline, deferred
+	// or not yet dispatched is still PENDING/DISPATCHED, and promoting (or completing) past
+	// it would declare the stage done while part of it was never patched. An admin resolves
+	// a stuck device by cancelling, excluding it, or waiting for the unsupported timeout.
+	if t.Terminal < t.InStage {
+		return false
+	}
 	return t.SuccessPct() >= stage.SuccessThresholdPct
 }
 

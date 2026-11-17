@@ -501,24 +501,70 @@ work computation filters on `expires_at > now` at evaluation time. SECURITY_ADMI
 a tag-scoped admin may only scope within their own tags and may not create a fleet-wide (`all`)
 acceptance.
 
+### End-to-end flow (what is wired)
+
+1. **Check-in dispatch.** On every check-in, `DispatchCampaignDirectivesForDevice`
+   (`internal/db/campaign_dispatch.go`) runs for each `RUNNING` campaign: the campaign gate
+   (state, blackout window), the **ring gate** (the active stage's name must match the device's
+   `patch_ring`; a custom stage name does not gate on ring), a refresh of that device's work (a
+   device that left the target is marked `REMOVED`), the maintenance-window gate when the campaign
+   opts in, and then the atomic claim (`PENDING -> DISPATCHED`, honouring `deferred_until`). The
+   claimed work is returned in `CheckinResponse.campaign_directives` (omitted when empty, so an old
+   agent sees a byte-identical response). The directive carries the validated package list, the
+   reboot policy, whether the user may still defer (server decision) and whether the deadline
+   passed. A failure in one campaign skips that campaign and never fails the check-in
+   (**fail-safe: no dispatch on error**).
+2. **Evaluation loop.** `internal/campaignsync` is started from `cmd/spire-server` (default every
+   minute, `SPIRE_CAMPAIGN_EVAL_INTERVAL`, minimum 5s). For each `RUNNING` campaign it takes the
+   per-campaign advisory lock, **re-reads the campaign inside the lock** (so a second instance sees
+   the first one's promotion), materialises work for every targeted device whose ring is in the
+   active stage, then runs `EvaluateCampaign` (unsupported timeout, halt precedence, soak, promote,
+   complete). If materialisation fails the cycle is skipped rather than evaluating stale rows. A
+   halt raises the existing `patch_failed` alert with the campaign in its details. It is safe on two
+   instances: exactly one promotion or halt happens.
+3. **Stage completion rule.** A stage's gates are met only when **every** in-stage device has a
+   terminal result (success, failed, interrupted or unsupported) and the success percentage meets
+   the threshold. A device that is offline, deferred or not yet dispatched therefore holds the
+   stage open instead of being ignored; an admin cancels the campaign or waits for the
+   unsupported timeout (24h after dispatch) to turn a silent device into a failure. Halting is
+   evaluated first and is not affected by this rule.
+4. **Agent.** `cmd/spired/campaign.go` executes each directive: notify the active user; if the
+   server allowed deferral, publish the pending install to Spire Hub and wait 60s for a
+   server-granted deferral (a granted deferral returns the work to `PENDING` and holds it for 4h,
+   never past the deadline); persist an in-flight record (0600 file in a 0700 dir) **before**
+   touching apt, and refuse to install if it cannot be written; read each package's installed
+   version for rollback; run the exact `apt-get install --only-upgrade` argv through the runner;
+   store the result, post it to `/api/v1/desktop/campaign/report`, then clear the record only after
+   the server accepted it; finally apply the reboot policy (`never`; `notify` = notification and
+   the reboot-required marker; `force` = notify before the deadline, and at/after it a warning plus
+   `shutdown -r +5`). A process killed mid-install leaves its record, and the next check-in reports
+   it `INTERRUPTED` once; a finished run whose report failed is re-sent with its real result.
+5. **Spire Hub.** While an install is pending and deferral is allowed, `GET /v1/status` includes
+   `pending_campaign` and Hub shows an "Updates scheduled" row with a Defer button that calls
+   `POST /v1/campaign/defer`. Only a deferral the server granted makes the agent skip the install.
+6. **Vulnerabilities page.** Accepted findings stay listed with an "accepted" badge, the reason,
+   expiry and author, an "accepted on N of M" form when only some hosts are covered, and open /
+   accepted counts. Counts and coverage consider only the viewing admin's in-scope devices, and use
+   the same matcher (`campaign.MatchingRiskAcceptance`) that excludes campaign work. An expired
+   acceptance reverts to open automatically. On an error the page shows findings as open (it can
+   over-report risk, never hide it).
+
 ### Known gaps (patch campaigns)
 
-- The server-side **dispatch/evaluation loop is not auto-scheduled** in this change: the
-  building blocks (`MaterializeCampaignWorkForDevice`, `ClaimCampaignDispatch`,
-  `EvaluateCampaign` under `WithCampaignPromotionLock`, `MarkUnsupportedTimedOut`) are present and
-  tested, and the admin can drive a campaign through its control endpoints, but wiring them into
-  the check-in handler and a periodic leader-gated loop (alongside the existing group recompute)
-  is the remaining integration step. Until then, campaign work is materialised and evaluated when
-  those methods are called, not automatically on every check-in.
-- Campaign dispatch is modelled as per-device work the agent executes; the **check-in response
-  does not yet carry a campaign directive field**, and `cmd/spired` does not yet call the campaign
-  apt executor on a received directive. The executor, argv builder and result classifier are
-  implemented and unit-tested with a fake runner, so adding the directive to `CheckinResponse` and
-  a handler in the agent is additive and does not change the contract described here.
+- **Rollback is not wired to an admin action.** The planner (`internal/campaign/rollback.go`), the
+  agent executor and the `apt-cache policy` availability probe are implemented and unit-tested, and
+  the agent records each package's previous version in its report, but there is no admin endpoint
+  or check-in directive that triggers a rollback yet.
 - The admin UI is a **JSON API** (create/list/get/control/export campaigns, risk-acceptance CRUD);
-  an HTMX page is not added in this change. The Vulnerabilities page shows CVE state as before; the
-  "accepted" annotation is enforced in work computation and exposed through the risk-acceptance
-  list endpoint rather than rendered inline on that page yet.
+  there is no HTMX campaign page. The Vulnerabilities page is rendered HTML and shows accepted
+  findings as described above; the dashboard CVE ribbon still counts accepted CVEs as open.
+- Targeted packages for a device are derived from source package names. The agent reads the
+  previous version with `dpkg-query` on that name, so a source package whose name differs from every
+  installed binary package records no previous version (rollback would then report "no previous
+  version").
+- Materialisation reads each targeted device individually on every cycle, which is fine for
+  thousands of devices per campaign but is not batched.
+- A deferral cannot be undone, and one deferral delays the install by a fixed 4 hours.
 - A device can only report results for work the server dispatched to it, but as with inventory and
   sensors a root user on the endpoint controls the reported outcome; the server classifies and
   records what it is told and never treats a bare success claim as authoritative, but it cannot

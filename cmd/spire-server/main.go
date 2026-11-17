@@ -17,6 +17,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/api"
 	"github.com/spire-uem/spire-uem/internal/audit"
+	"github.com/spire-uem/spire-uem/internal/campaignsync"
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/cvefeed"
@@ -200,6 +201,11 @@ func main() {
 	// Per-device recompute also runs on each check-in; this loop catches time-based rules
 	// and offline devices. Advisory-locked per group, so both instances may run it safely.
 	go groupsync.New(repo).Run(ctx)
+
+	// Patch-campaign evaluation: halt/soak/promote/complete each RUNNING campaign (default
+	// every minute, SPIRE_CAMPAIGN_EVAL_INTERVAL). Per-campaign advisory lock + re-read under
+	// the lock make it safe to run on both instances. Halts raise a patch_failed alert.
+	go campaignsync.New(repo, alertMgr).Run(ctx)
 
 	<-ctx.Done()
 	log.Printf("[spire-server] shutting down...")

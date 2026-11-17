@@ -189,6 +189,11 @@ func TestCampaign_TallyDeferralsUnsupportedAndResult(t *testing.T) {
 		t.Errorf("deferral past deadline must be refused")
 	}
 
+	// Granted deferrals hold the work back (deferred_until); let that delay elapse.
+	if _, err := pool.Exec(ctx, `UPDATE campaign_device_work SET deferred_until = NOW() - interval '1 second' WHERE campaign_id=$1`, c.ID); err != nil {
+		t.Fatalf("release deferral hold: %v", err)
+	}
+
 	// Dispatch then unsupported timeout.
 	if _, ok, err := repo.ClaimCampaignDispatch(ctx, c.ID, dev.ID, 0); err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
