@@ -71,12 +71,24 @@ Built-in TLS permits TLS 1.2 or later. WSS is the same HTTP server upgraded to W
 
 | Channel | Authentication | Confidentiality |
 |---|---|---|
-| Agent REST and WebSocket | Device bearer token whose SHA-256 hash is stored | Deployment TLS |
+| Agent REST and WebSocket | Device bearer token whose SHA-256 hash is stored, plus an optional or required device client certificate (mTLS) | Deployment TLS |
 | Admin browser | Signed session cookie plus CSRF for state changes; PAT or Basic Auth for scripts | Deployment TLS |
 | OIDC | Authorization code, PKCE S256, state, nonce, issuer/audience/signature checks | IdP HTTPS |
 | Local IPC | Kernel `SO_PEERCRED`; root or active `seat0` UID | Local UNIX socket boundary |
 
-Mutual TLS and device certificate pinning are not implemented.
+### Device mutual TLS
+
+An internal ECDSA P-256 device CA (`SPIRE_DEVICE_CA_CERT_FILE` / `SPIRE_DEVICE_CA_KEY_FILE`, generated on first start, key mode 0600) issues a client-auth-only leaf to each device when it claims its token. The agent generates its key locally (`/etc/spire/device.key`, 0600, never sent) and submits a CSR; the server verifies the CSR signature, ignores every name and extension it requests, and issues a leaf (`ExtKeyUsageClientAuth`, not a CA, default 30-day validity) whose only SAN is `spire://device/<device-id>`. The serial, SHA-256 fingerprint and validity window are stored in `device_certificates`.
+
+`SPIRE_DEVICE_MTLS` selects the mode:
+
+- `off` — client certificates are never looked at.
+- `optional` (default) — a presented certificate is validated and must match the device's bearer token, but a device without one still authenticates on the token alone.
+- `required` — device REST and WebSocket endpoints refuse any request that does not carry a valid certificate matching the bearer token. Enroll and claim stay reachable so a device can obtain its first certificate; admin browser routes never need one.
+
+Built-in TLS uses `tls.VerifyClientCertIfGiven` with the device CA pool. Every presented certificate is re-checked against the database on each request: known serial, not revoked, within its validity window, and belonging to the same device as the bearer token. Revoking a device revokes all of its certificates. The agent renews at about two-thirds of the certificate's lifetime over the authenticated channel, writing the new key and certificate atomically and keeping the old pair until the new one is stored.
+
+`required` mode is refused in combination with a trusted TLS proxy (`SPIRE_TRUST_PROXY`): SpireUEM reads the client certificate from the TLS handshake it terminates itself and never trusts a forwarded client-certificate header. Agents may additionally pin the control-plane's TLS trust with `server_ca_file` and/or `server_ca_sha256`, replacing the system root store for the server connection; doing so removes the first-contact trust window in the wipe-signing key.
 
 ## 3. Local IPC
 
@@ -146,8 +158,8 @@ The separately published APT repository can be generated and signed with `reprep
 
 - No approved PCR baseline comparison.
 - Attestation status does not gate policy-secret delivery.
-- No mutual TLS or device certificate pinning.
-- First-contact wipe-signing-key trust depends on transport TLS.
+- Device mutual TLS and certificate pinning exist but default to `optional`; `required` must be turned on, and only `required` mode refuses an uncertified device.
+- First-contact wipe-signing-key trust depends on transport TLS unless the agent pins the server with `server_ca_file` / `server_ca_sha256`.
 - Self-update has no independent artifact signature.
 - `spired` runs as unrestricted root.
 - The notification-only remote-assistance fallback does not provide genuine interactive consent and should be hardened.

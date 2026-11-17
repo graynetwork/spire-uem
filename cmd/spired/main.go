@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	cryptorand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -55,7 +56,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client := &http.Client{Timeout: 4 * time.Second}
+	certPaths := deviceCertFiles(cfg.Agent.TokenPath)
+	deviceKey, err := loadOrCreateDeviceKey(certPaths.keyPath)
+	if err != nil {
+		log.Fatalf("[spired] failed to load or create device key: %v", err)
+	}
+
+	client, err := buildHTTPClient(4*time.Second, certPaths, cfg.Agent.ServerCAFile, cfg.Agent.ServerCASHA256)
+	if err != nil {
+		log.Fatalf("[spired] failed to build HTTP client: %v", err)
+	}
+	if strings.TrimSpace(cfg.Agent.ServerCAFile) != "" || strings.TrimSpace(cfg.Agent.ServerCASHA256) != "" {
+		log.Printf("[spired] pinning control-plane TLS trust (server_ca_file=%q server_ca_sha256 set=%v); system roots are NOT used for the server connection", cfg.Agent.ServerCAFile, strings.TrimSpace(cfg.Agent.ServerCASHA256) != "")
+	}
 	backoffAttempt := 0
 	triggerCheckinCh := make(chan struct{}, 1)
 	var checkinMu sync.Mutex
@@ -116,6 +129,7 @@ func main() {
 
 	if !*once {
 		go runWebSocketStream(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, triggerCheckinCh, ipcSrv)
+		go runCertRenewalLoop(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, deviceKey, certPaths)
 		go func() {
 			if err := ipcSrv.Run(ctx); err != nil {
 				log.Printf("[spired] local IPC server stopped: %v", err)
@@ -141,7 +155,7 @@ func main() {
 				}
 				continue
 			}
-			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey)
+			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey, deviceKey, certPaths)
 			if netErr != nil {
 				backoffAttempt++
 				sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
@@ -337,11 +351,18 @@ func main() {
 	}
 }
 
-func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPath, hwUUID, hostname, enrollKey string) (string, error) {
+func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPath, hwUUID, hostname, enrollKey string, deviceKey *ecdsa.PrivateKey, certPaths deviceCertPaths) (string, error) {
+	// Include a CSR for the device's local key so the server can issue a client-auth leaf at
+	// the moment the token is claimed. The private key never leaves this host.
+	csrPEM, csrErr := buildDeviceCSR(deviceKey, hwUUID)
+	if csrErr != nil {
+		log.Printf("[spired] warning: could not build device CSR (continuing without mTLS cert): %v", csrErr)
+	}
 	reqBody, _ := json.Marshal(types.EnrollRequest{
 		HardwareUUID:  hwUUID,
 		Hostname:      hostname,
 		EnrollmentKey: enrollKey,
+		CSRPEM:        csrPEM,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/enroll", bytes.NewReader(reqBody))
 	if err != nil {
@@ -362,6 +383,14 @@ func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPat
 	if resp.StatusCode == http.StatusOK && enrollResp.Status == types.StatusApproved && enrollResp.Token != "" {
 		// Pin the server's Ed25519 wipe-signing key at enrollment (once, persisted).
 		pinWipeKey(tokenPath, enrollResp.WipeSigningPublicKey)
+		// Persist the issued client certificate, if the server returned one.
+		if strings.TrimSpace(enrollResp.DeviceCertificatePEM) != "" {
+			if err := storeDeviceCert(certPaths.certPath, enrollResp.DeviceCertificatePEM); err != nil {
+				log.Printf("[spired] warning: failed to persist device certificate: %v", err)
+			} else {
+				log.Printf("[spired] stored device client certificate (not_after=%s)", enrollResp.DeviceCertNotAfter)
+			}
+		}
 		return enrollResp.Token, nil
 	}
 
