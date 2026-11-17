@@ -53,10 +53,10 @@ func TestCompareDebianVersions(t *testing.T) {
 		{"1.0-1+deb11u1", "1.0-1+deb12u1", -1}, // 11 < 12 numerically within the run
 		{"7.88.1-10+deb12u5", "7.88.1-10+deb12u12", -1},
 
-		// Ubuntu-style suffixes
-		{"1.0-1ubuntu1", "1.0-1ubuntu2", -1},
-		{"1.0-1", "1.0-1ubuntu1", -1}, // "1" < "1ubuntu1": after the shared "1", end-of-string (0) < 'u'
-		{"2.34-0ubuntu3.4", "2.34-0ubuntu3.10", -1},
+		// Downstream distribution suffixes
+		{"1.0-1deb1", "1.0-1deb2", -1},
+		{"1.0-1", "1.0-1deb1", -1}, // "1" < "1deb1": after the shared "1", end-of-string (0) < 'd'
+		{"2.34-0deb3.4", "2.34-0deb3.10", -1},
 
 		// Letters sort before non-letter punctuation (other than '~')
 		{"1.0a", "1.0+", -1},  // 'a' (letter) < '+' (non-letter)
