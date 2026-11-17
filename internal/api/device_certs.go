@@ -71,13 +71,25 @@ func (h *Handler) RenewDeviceCert(w http.ResponseWriter, r *http.Request) {
 	}
 	// Renewal demands a currently valid client certificate belonging to this same device,
 	// regardless of the mode-level middleware, so a bare bearer token can never rotate a
-	// device's certificate on its own.
+	// device's certificate on its own. The one exception is a device with NO active
+	// certificate (enrolled before mTLS, issuance failed at claim, or its certificate expired
+	// while offline): it may obtain a first certificate with its bearer token alone, which
+	// grants nothing the token did not already grant. Once it holds an active certificate,
+	// every further issuance requires that certificate.
 	presented := clientCertFromRequest(r)
+	auditAction := "DEVICE_CERT_RENEW"
 	if presented == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "renewal requires the device's current client certificate"})
-		return
-	}
-	if code, err := h.verifyClientCertForDevice(r.Context(), presented, dev.ID); err != nil {
+		active, err := h.repo.GetActiveDeviceCertificate(r.Context(), dev.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "certificate lookup failed"})
+			return
+		}
+		if active != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "renewal requires the device's current client certificate"})
+			return
+		}
+		auditAction = "DEVICE_CERT_ISSUE"
+	} else if code, err := h.verifyClientCertForDevice(r.Context(), presented, dev.ID); err != nil {
 		writeJSON(w, code, map[string]string{"error": err.Error()})
 		return
 	}
@@ -92,7 +104,7 @@ func (h *Handler) RenewDeviceCert(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "csr_pem is required"})
 		return
 	}
-	certPEM, notAfter, err := h.issueAndStoreCert(r.Context(), dev.ID, req.CSRPEM, "DEVICE_CERT_RENEW", r.RemoteAddr)
+	certPEM, notAfter, err := h.issueAndStoreCert(r.Context(), dev.ID, req.CSRPEM, auditAction, r.RemoteAddr)
 	if err != nil {
 		log.Printf("[api] cert renewal failed for device %s: %v", dev.ID, err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "certificate renewal failed: " + err.Error()})

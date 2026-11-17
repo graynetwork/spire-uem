@@ -68,6 +68,10 @@ func registerRoutes(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, 
 		// agent version: a security action's outcome must never be refused for being outdated.
 		r.Post("/actions/report", h.ReportAction)
 		r.Get("/kek", h.GetServerKEK)
+		// Certificate issue/renewal does its own checks (bearer token, plus the current client
+		// certificate whenever the device holds an active one). It must sit outside the mTLS
+		// gate so a device with no certificate yet can obtain its first one in required mode.
+		r.Post("/cert/renew", h.RenewDeviceCert)
 
 		// Gated endpoints: an agent below the minimum supported version is refused here with
 		// HTTP 426 (it must update first). Downloads use the public /dist path, so a 426 here
@@ -81,8 +85,6 @@ func registerRoutes(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, 
 		r.Group(func(r chi.Router) {
 			r.Use(h.DeviceMTLSMiddleware)
 			r.Use(h.enforceMinimumVersion)
-			// Certificate renewal: valid current client cert AND the device's bearer token.
-			r.Post("/cert/renew", h.RenewDeviceCert)
 			r.Post("/sync", h.DesktopSync)
 			r.Get("/sync", h.GetDeviceStatus)
 			r.Get("/status", h.GetDeviceStatus)

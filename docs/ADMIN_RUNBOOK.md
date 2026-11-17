@@ -187,6 +187,8 @@ Set **Settings → General → server base URL** to the `https://` address agent
 
 Beyond the bearer token, each device can hold a client certificate issued by SpireUEM's internal ECDSA P-256 device CA. The CA key and certificate are generated on first start at `SPIRE_DEVICE_CA_CERT_FILE` / `SPIRE_DEVICE_CA_KEY_FILE` (defaults under `internal/crypto/`; the key is written mode 0600). The agent generates its private key locally (`/etc/spire/device.key`, never transmitted), submits a CSR at token claim, and the server issues a client-auth-only leaf (default 30-day validity, `SPIRE_DEVICE_CERT_VALIDITY`) bound to `spire://device/<device-id>`. The agent renews automatically at about two-thirds of the lifetime.
 
+A device with **no active certificate** (enrolled before mTLS was enabled, issuance failed at claim, or its certificate expired while offline) requests one from `POST /api/v1/desktop/cert/renew` with its bearer token alone. That grants nothing the token did not already grant. As soon as the device holds an active certificate, further issuance requires that certificate as well as the token. The agent never presents an expired certificate, because the TLS handshake would reject the whole connection.
+
 `SPIRE_DEVICE_MTLS` (or `device_mtls:` under `server:`) selects the mode:
 
 | Mode | Behaviour |
@@ -201,8 +203,10 @@ The device detail page shows each device's certificate status (short serial, exp
 
 **Upgrading from optional to required.** Roll it out in two steps so no device is locked out:
 
-1. Run in `optional` mode until every active device has checked in and obtained a certificate. Confirm on the device list / detail pages that each device shows an Active certificate.
-2. Switch `SPIRE_DEVICE_MTLS=required` and restart `spire-server`. Any device still without a valid certificate will be refused on its gated endpoints until it re-enrolls; a freshly installed agent obtains its certificate through the enroll/claim path, which is never gated.
+1. Upgrade agents and run in `optional` mode until every active device shows an Active certificate on its device page. Agents request a certificate within about an hour of starting.
+2. Switch `SPIRE_DEVICE_MTLS=required` and restart `spire-server`. A device that is still without a valid certificate, or whose certificate expires later, is refused on gated endpoints until it obtains a new one with its bearer token; enroll, check-in and certificate issuance are never gated.
+
+In `required` mode the certificate proves possession of the device key only while the device holds an active certificate. A stolen bearer token for a device whose certificate has lapsed can still obtain a new certificate, so `required` mode raises the bar for devices that stay online but is not a substitute for revoking a device whose token is exposed.
 
 **Server pinning (optional).** An agent can pin the control-plane's TLS trust with `server_ca_file` and/or `server_ca_sha256` (config, `SPIRE_AGENT_SERVER_CA_FILE` / `SPIRE_AGENT_SERVER_CA_SHA256`, or `/install.sh --server-ca-file` / `--server-ca-sha256`). This replaces the system root store for the server connection and removes the first-contact trust window in the wipe-signing key, at the cost of having to rotate the pin when the server certificate changes.
 

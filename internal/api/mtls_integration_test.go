@@ -361,3 +361,95 @@ func waitForTLS(t *testing.T, addr string, roots *x509.CertPool) {
 func bigOne() *big.Int { return big.NewInt(time.Now().UnixNano()) }
 
 func parseIP(s string) net.IP { return net.ParseIP(s) }
+
+// TestMTLS_FirstIssueWithoutCert_Integration covers devices that have no active certificate
+// (enrolled before mTLS, or certificate expired while offline). In required mode they may
+// obtain a first certificate with their bearer token alone; once they hold one, a no-cert
+// request is refused again. The resulting certificate is then accepted by gated endpoints.
+func TestMTLS_FirstIssueWithoutCert_Integration(t *testing.T) {
+	pool := mtlsTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+
+	caDir := t.TempDir()
+	ca, err := crypto.NewFileDeviceCA(caDir+"/ca.crt", caDir+"/ca.key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.NewRepository(pool)
+	repo.SetDeviceCA(ca)
+
+	// Approve and claim WITHOUT issuing a certificate (a pre-mTLS device).
+	hw := "mtls-first-" + time.Now().Format("150405.000000000")
+	dev, _, err := repo.GetOrCreateDevice(ctx, hw, hw+"-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.ApproveDevice(ctx, dev.ID); err != nil {
+		t.Fatal(err)
+	}
+	dev, _ = repo.GetDeviceByID(ctx, dev.ID)
+	token, err := repo.ClaimApprovedToken(ctx, dev)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := chi.NewRouter()
+	api.RegisterRoutesWithAlertsAndMTLS(r, repo, nil, t.TempDir(), nil, "required", 30*24*time.Hour)
+	serverCert, serverRoots := makeServerTLS(t)
+	srv := &http.Server{
+		Addr:    "127.0.0.1:19313",
+		Handler: r,
+		TLSConfig: &tls.Config{
+			MinVersion:   tls.VersionTLS12,
+			Certificates: []tls.Certificate{serverCert},
+			ClientCAs:    ca.CertPool(),
+			ClientAuth:   tls.VerifyClientCertIfGiven,
+		},
+	}
+	ln := mustListen(t, "127.0.0.1:19313")
+	go func() { _ = srv.ServeTLS(ln, "", "") }()
+	defer srv.Close()
+	waitForTLS(t, "127.0.0.1:19313", serverRoots)
+
+	renewURL := "https://127.0.0.1:19313/api/v1/desktop/cert/renew"
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: hw}}, key)
+	csrPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
+	body, _ := json.Marshal(types.DeviceCertRenewRequest{CSRPEM: csrPEM})
+	post := func(c *http.Client, tok string) (int, types.DeviceCertRenewResponse) {
+		req, _ := http.NewRequest(http.MethodPost, renewURL, bytes.NewReader(body))
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatalf("renew request: %v", err)
+		}
+		defer resp.Body.Close()
+		var out types.DeviceCertRenewResponse
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+	noCert := clientForLeaf(t, serverRoots, "", nil)
+
+	// No bearer token: refused.
+	if code, _ := post(noCert, ""); code != http.StatusForbidden {
+		t.Fatalf("first issue without token: got %d, want 403", code)
+	}
+	// Bearer token, no active cert: a first certificate is issued.
+	code, out := post(noCert, token)
+	if code != http.StatusOK || out.DeviceCertificatePEM == "" {
+		t.Fatalf("first issue with token: got %d (cert empty=%v), want 200 with a cert", code, out.DeviceCertificatePEM == "")
+	}
+	// The new certificate works on a gated endpoint.
+	withCert := clientForLeaf(t, serverRoots, out.DeviceCertificatePEM, key)
+	if c := doGET(t, withCert, "https://127.0.0.1:19313/api/v1/desktop/status", token); c != http.StatusOK {
+		t.Fatalf("gated endpoint with first-issued cert: got %d, want 200", c)
+	}
+	// Now that an active certificate exists, a token-only request is refused.
+	if code, _ := post(noCert, token); code != http.StatusUnauthorized {
+		t.Fatalf("token-only issuance with an active cert: got %d, want 401", code)
+	}
+}

@@ -168,12 +168,20 @@ func buildHTTPClient(timeout time.Duration, certPaths deviceCertPaths, serverCAF
 	// Present the device certificate for mutual TLS when the agent holds one.
 	// GetClientCertificate re-reads the pair on every handshake, so a freshly renewed cert is
 	// used without a restart.
-	tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-		if pair, ok := loadDeviceKeyPair(certPaths); ok {
-			return &pair, nil
+	tlsCfg.GetClientCertificate = func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		pair, ok := loadDeviceKeyPair(certPaths)
+		if !ok {
+			// No cert yet (pre-claim) — present nothing; optional mode on the server allows it.
+			return &tls.Certificate{}, nil
 		}
-		// No cert yet (pre-claim) — present nothing; optional mode on the server allows it.
-		return &tls.Certificate{}, nil
+		// Never present a leaf the server would reject in the handshake (expired, not yet
+		// valid, or not issued by a CA the server asks for). The server's verifier fails the
+		// whole TLS connection for such a cert, which would cut the agent off from check-in
+		// and from obtaining a replacement; presenting nothing keeps those paths open.
+		if !clientCertUsable(&pair, info, time.Now()) {
+			return &tls.Certificate{}, nil
+		}
+		return &pair, nil
 	}
 
 	serverCAFile = strings.TrimSpace(serverCAFile)
@@ -209,6 +217,38 @@ func buildHTTPClient(timeout time.Duration, certPaths deviceCertPaths, serverCAF
 	}, nil
 }
 
+// clientCertUsable reports whether pair should be presented in a handshake: its leaf must be
+// inside its validity window and, when the server names acceptable CAs, issued by one of them.
+func clientCertUsable(pair *tls.Certificate, info *tls.CertificateRequestInfo, now time.Time) bool {
+	if pair == nil || len(pair.Certificate) == 0 {
+		return false
+	}
+	leaf := pair.Leaf
+	if leaf == nil {
+		parsed, err := x509.ParseCertificate(pair.Certificate[0])
+		if err != nil {
+			return false
+		}
+		leaf = parsed
+	}
+	if now.Before(leaf.NotBefore) || !now.Before(leaf.NotAfter) {
+		return false
+	}
+	if info != nil && len(info.AcceptableCAs) > 0 && info.SupportsCertificate(pair) != nil {
+		return false
+	}
+	return true
+}
+
+// needsCertificate reports whether the agent should request a certificate now: it holds none,
+// its leaf is expired or unparsable, or it has passed ~2/3 of its lifetime.
+func needsCertificate(notBefore, notAfter, now time.Time) bool {
+	if notAfter.IsZero() || !now.Before(notAfter) {
+		return true
+	}
+	return renewalDue(notBefore, notAfter, now)
+}
+
 // certRenewCheckInterval is how often the renewal loop re-evaluates the certificate window.
 const certRenewCheckInterval = 1 * time.Hour
 
@@ -230,7 +270,7 @@ func runCertRenewalLoop(ctx context.Context, client *http.Client, serverURL, tok
 
 		next := certRenewCheckInterval
 		notBefore, notAfter := deviceCertWindow(certPaths)
-		if renewalDue(notBefore, notAfter, time.Now()) {
+		if readToken(tokenPath) != "" && needsCertificate(notBefore, notAfter, time.Now()) {
 			if err := renewDeviceCert(ctx, client, serverURL, tokenPath, hwUUID, certPaths); err != nil {
 				backoff++
 				if backoff > 6 {
