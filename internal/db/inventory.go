@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -543,14 +544,23 @@ func (r *Repository) SearchInventoryDeviceIDs(ctx context.Context, params Invent
 		if !ok {
 			return nil, fmt.Errorf("invalid operator %q", f.Op)
 		}
-		// Numeric vs text comparison: if the value parses as a number, compare numerically on
-		// integer attributes; otherwise compare the JSON text. Both sides are parameters.
-		add(fmt.Sprintf(`EXISTS (SELECT 1 FROM device_attributes a
-			WHERE a.device_id = d.id AND a.key = $%d AND (
-				(a.value_type = 'integer' AND (a.value::text)::numeric %s $%d::numeric)
-				OR (a.value_type <> 'integer' AND trim(both '"' from a.value::text) %s $%d)
-			))`, argn, op, argn+1, op, argn+2),
-			f.Key, f.Value, f.Value)
+		// A numeric value compares numerically against integer attributes and as text against
+		// the others; a non-numeric value compares as text only. CASE guarantees the numeric
+		// cast is evaluated only for integer rows (Postgres does not promise AND ordering), and
+		// a non-numeric parameter is never cast at all.
+		if _, numErr := strconv.ParseFloat(strings.TrimSpace(f.Value), 64); numErr == nil {
+			add(fmt.Sprintf(`EXISTS (SELECT 1 FROM device_attributes a
+				WHERE a.device_id = d.id AND a.key = $%d
+				  AND CASE WHEN a.value_type = 'integer'
+				           THEN (a.value::text)::numeric %s $%d::numeric
+				           ELSE trim(both '"' from a.value::text) %s $%d END)`, argn, op, argn+1, op, argn+2),
+				f.Key, strings.TrimSpace(f.Value), f.Value)
+		} else {
+			add(fmt.Sprintf(`EXISTS (SELECT 1 FROM device_attributes a
+				WHERE a.device_id = d.id AND a.key = $%d
+				  AND a.value_type <> 'integer' AND trim(both '"' from a.value::text) %s $%d)`, argn, op, argn+1),
+				f.Key, f.Value)
+		}
 	}
 
 	if strings.TrimSpace(params.PackageName) != "" {
@@ -595,16 +605,16 @@ func (r *Repository) SearchInventoryDeviceIDs(ctx context.Context, params Invent
 
 // InventorySearchResult is one row of a fleet inventory search, for display and export.
 type InventorySearchResult struct {
-	DeviceID    string     `json:"device_id"`
-	Hostname    string     `json:"hostname"`
-	Tags        []string   `json:"tags"`
-	Status      string     `json:"status"`
-	CPUModel    string     `json:"cpu_model,omitempty"`
-	MemoryMB    int64      `json:"memory_mb,omitempty"`
-	OSName      string     `json:"os_name,omitempty"`
-	PrimaryIPv4 string     `json:"primary_ipv4,omitempty"`
-	PackageCount int       `json:"package_count,omitempty"`
-	CollectedAt *time.Time `json:"collected_at,omitempty"`
+	DeviceID     string     `json:"device_id"`
+	Hostname     string     `json:"hostname"`
+	Tags         []string   `json:"tags"`
+	Status       string     `json:"status"`
+	CPUModel     string     `json:"cpu_model,omitempty"`
+	MemoryMB     int64      `json:"memory_mb,omitempty"`
+	OSName       string     `json:"os_name,omitempty"`
+	PrimaryIPv4  string     `json:"primary_ipv4,omitempty"`
+	PackageCount int        `json:"package_count,omitempty"`
+	CollectedAt  *time.Time `json:"collected_at,omitempty"`
 }
 
 // SearchInventory returns display rows for the matching, tag-scoped devices.
