@@ -13,6 +13,16 @@ ALLOW_INSECURE_HTTP="${SPIRE_AGENT_ALLOW_INSECURE_HTTP:-0}"
 SERVER_CA_FILE="${SPIRE_AGENT_SERVER_CA_FILE:-}"
 SERVER_CA_SHA256="${SPIRE_AGENT_SERVER_CA_SHA256:-}"
 
+# Automated enrollment: an enrollment token lets the agent self-register without manual
+# approval. --enrollment-token-file PATH (preferred) points at a file the bootstrap copies to
+# a root-only 0600 location for the agent to consume once. --enrollment-token VALUE works but
+# is visible in the process list and shell history (a warning is printed). The token is NEVER
+# written into config.yaml; it goes into a separate 0600 token file.
+ENROLLMENT_TOKEN_FILE="${SPIRE_ENROLLMENT_TOKEN_FILE:-}"
+ENROLLMENT_TOKEN="${SPIRE_ENROLLMENT_TOKEN:-}"
+# Where the agent reads its one-time enrollment token from (deleted on successful enroll).
+AGENT_TOKEN_FILE="/etc/spire/enrollment-token"
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --use-apt-repo)
@@ -38,6 +48,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --server-ca-sha256)
             SERVER_CA_SHA256="$2"
+            shift 2
+            ;;
+        --enrollment-token-file)
+            ENROLLMENT_TOKEN_FILE="$2"
+            shift 2
+            ;;
+        --enrollment-token)
+            ENROLLMENT_TOKEN="$2"
             shift 2
             ;;
         *)
@@ -180,6 +198,28 @@ if [[ -n "${SERVER_CA_FILE}" ]]; then
 fi
 if [[ -n "${SERVER_CA_SHA256}" ]]; then
     echo "  server_ca_sha256: \"${SERVER_CA_SHA256}\"" >> /etc/spire/config.yaml
+fi
+
+# Automated enrollment token handling. The secret is written to a SEPARATE 0600 file and the
+# agent is pointed at it via enrollment_token_file; config.yaml never contains the secret, so
+# a readable config does not leak it. The agent deletes the token file on a successful enroll.
+if [[ -n "${ENROLLMENT_TOKEN_FILE}" ]]; then
+    if [[ ! -f "${ENROLLMENT_TOKEN_FILE}" ]]; then
+        echo "ERROR: --enrollment-token-file ${ENROLLMENT_TOKEN_FILE} does not exist." >&2
+        exit 1
+    fi
+    install -m 0600 -o root -g root "${ENROLLMENT_TOKEN_FILE}" "${AGENT_TOKEN_FILE}"
+    echo "  enrollment_token_file: \"${AGENT_TOKEN_FILE}\"" >> /etc/spire/config.yaml
+    echo "  -> staged enrollment token from file into ${AGENT_TOKEN_FILE} (mode 0600)"
+elif [[ -n "${ENROLLMENT_TOKEN}" ]]; then
+    echo "WARNING: --enrollment-token passes the secret on the command line; it is visible in" >&2
+    echo "         the process list and shell history. Prefer --enrollment-token-file." >&2
+    umask 077
+    printf '%s\n' "${ENROLLMENT_TOKEN}" > "${AGENT_TOKEN_FILE}"
+    chmod 0600 "${AGENT_TOKEN_FILE}"
+    chown root:root "${AGENT_TOKEN_FILE}"
+    echo "  enrollment_token_file: \"${AGENT_TOKEN_FILE}\"" >> /etc/spire/config.yaml
+    echo "  -> staged enrollment token into ${AGENT_TOKEN_FILE} (mode 0600)"
 fi
 chmod 0600 /etc/spire/config.yaml
 

@@ -39,6 +39,9 @@ type Handler struct {
 	// REST/WebSocket endpoints require a verified client certificate.
 	mtlsMode     string
 	certValidity time.Duration
+	// enrollRL throttles FAILED token-registration attempts per client IP, to blunt online
+	// guessing of a token secret. Successful registrations do not count against it.
+	enrollRL *enrollRateLimiter
 }
 
 // SetDeviceMTLS configures the device mutual-TLS mode and the validity of issued leaves.
@@ -76,6 +79,7 @@ func NewHandler(repo *db.Repository) *Handler {
 		repo:             repo,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
 		artifacts:        newArtifactResolver("dist"),
+		enrollRL:         newEnrollRateLimiter(10, time.Minute),
 	}
 }
 
@@ -86,6 +90,7 @@ func NewHandlerWithHub(repo *db.Repository, hub *gateway.GatewayHub) *Handler {
 		hub:              hub,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
 		artifacts:        newArtifactResolver("dist"),
+		enrollRL:         newEnrollRateLimiter(10, time.Minute),
 	}
 }
 
@@ -1162,17 +1167,35 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-// RegisterWithToken handles POST /api/v1/enrollment/register.
+// uniformEnrollRefusal is the single error message every refused registration returns, so a
+// caller cannot tell a non-existent token from a revoked/expired/exhausted/mismatched one
+// (which would reveal token existence). The real reason is recorded in the history row.
+const uniformEnrollRefusal = "enrollment refused"
+
+// RegisterWithToken handles POST /api/v1/enrollment/register. It registers a device using an
+// enrollment token, binding the device's enrollment key and honouring the token's policy
+// (require_approval, hostname pattern, max uses, expiry, revocation). Every attempt is
+// recorded in the token's enrollment history; failed attempts are per-IP rate limited and
+// answered with a uniform error so token existence is not revealed.
 func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
+	ip := enrollClientIP(r.RemoteAddr)
+	if !h.enrollRL.Allowed(ip) {
+		log.Printf("[api] HTTP 429 enrollment rate limited remote=%s", r.RemoteAddr)
+		writeTooManyRequests(w)
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 	var req types.EnrollmentRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.enrollRL.RecordFailure(ip)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 	req.HardwareUUID = strings.TrimSpace(req.HardwareUUID)
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.Token = strings.TrimSpace(req.Token)
+	req.EnrollmentKey = strings.TrimSpace(req.EnrollmentKey)
 
 	if req.Token == "" {
 		authHdr := r.Header.Get("Authorization")
@@ -1182,29 +1205,38 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Token == "" {
+		h.enrollRL.RecordFailure(ip)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token is required"})
 		return
 	}
 	if req.HardwareUUID == "" || req.Hostname == "" {
+		h.enrollRL.RecordFailure(ip)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hardware_uuid and hostname are required"})
 		return
 	}
+	// The enrollment key binds the device to this agent installation. It is required for
+	// token-based auto-enrollment except when the operator deliberately runs a static-env
+	// token (SPIRE_ENROLLMENT_TOKEN), which predates the key and has no device record to
+	// protect. Enforce the length bound only when a key is supplied.
+	if req.EnrollmentKey != "" && (len(req.EnrollmentKey) < 32 || len(req.EnrollmentKey) > 256) {
+		h.enrollRL.RecordFailure(ip)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enrollment_key of 32-256 characters is required; upgrade the agent"})
+		return
+	}
 
-	tok, err := h.repo.ValidateAndConsumeEnrollmentToken(r.Context(), req.Token)
+	// refuse records the attempt and returns the uniform error, counting a rate-limit failure.
+	refuse := func(reason string, tokenID *string) {
+		h.enrollRL.RecordFailure(ip)
+		if rerr := h.repo.RecordEnrollmentRegistration(r.Context(), tokenID, nil, req.HardwareUUID, req.Hostname, ip, types.EnrollResultRefused, reason); rerr != nil {
+			log.Printf("[api] warning: could not record refused enrollment: %v", rerr)
+		}
+		log.Printf("[api] HTTP 401 enrollment refused remote=%s hw=%s reason=%q", r.RemoteAddr, req.HardwareUUID, reason)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": uniformEnrollRefusal})
+	}
+
+	tok, err := h.repo.ValidateEnrollmentToken(r.Context(), req.Token)
 	if err != nil {
-		if errors.Is(err, db.ErrEnrollmentTokenRevoked) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token has been revoked"})
-			return
-		}
-		if errors.Is(err, db.ErrEnrollmentTokenExpired) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token has expired"})
-			return
-		}
-		if errors.Is(err, db.ErrEnrollmentTokenExhausted) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token usage limit exceeded"})
-			return
-		}
-
+		// Static-env fallback token: only when no dynamic token matched.
 		staticTok := os.Getenv("SPIRE_ENROLLMENT_TOKEN")
 		if staticTok != "" && subtle.ConstantTimeCompare([]byte(staticTok), []byte(req.Token)) == 1 {
 			tok = &types.EnrollmentToken{
@@ -1213,17 +1245,51 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 				TargetTags:  []string{},
 			}
 		} else {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid enrollment token"})
+			// Any validation failure (not-found, revoked, expired, exhausted) returns the
+			// uniform error; the specific reason is only in the history row. A nil token id
+			// for not-found; the matched id otherwise is unknown here, so record without it.
+			reason := "invalid token"
+			switch {
+			case errors.Is(err, db.ErrEnrollmentTokenRevoked):
+				reason = "token revoked"
+			case errors.Is(err, db.ErrEnrollmentTokenExpired):
+				reason = "token expired"
+			case errors.Is(err, db.ErrEnrollmentTokenExhausted):
+				reason = "token usage limit exceeded"
+			}
+			refuse(reason, nil)
 			return
 		}
 	}
 
-	dev, rawBearerToken, err := h.repo.RegisterDeviceWithToken(r.Context(), tok, req.HardwareUUID, req.Hostname, req.Tags)
+	var tokIDPtr *string
+	if tok.ID != "" {
+		tokIDPtr = &tok.ID
+	}
+
+	// Hostname pattern: refuse before consuming a use.
+	if !hostnameMatchesPattern(tok.HostnamePattern, req.Hostname) {
+		refuse("hostname does not match token pattern", tokIDPtr)
+		return
+	}
+
+	dev, rawBearerToken, approved, err := h.repo.RegisterDeviceWithToken(r.Context(), tok, req.HardwareUUID, req.Hostname, req.Tags, req.EnrollmentKey)
 	if err != nil {
+		if errors.Is(err, db.ErrEnrollmentKeyConflict) {
+			refuse("enrollment key conflict (hardware UUID bound to a different key)", tokIDPtr)
+			return
+		}
+		if errors.Is(err, db.ErrEnrollmentTokenExhausted) {
+			refuse("token usage limit exceeded", tokIDPtr)
+			return
+		}
 		log.Printf("[api] register device with token error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register device"})
 		return
 	}
+
+	// Success: clear the IP's failure counter.
+	h.enrollRL.Reset(ip)
 
 	serverBaseURL := "http://localhost:8080"
 	if s, err := h.repo.GetSetting(r.Context(), "general.server_base_url"); err == nil && s != nil {
@@ -1233,14 +1299,35 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[api] HTTP 200 registered device id=%s hw=%s hostname=%s ring=%s via token", dev.ID, dev.HardwareUUID, dev.Hostname, dev.PatchRing)
-	writeJSON(w, http.StatusOK, types.EnrollmentRegisterResponse{
+	resp := types.EnrollmentRegisterResponse{
 		DeviceID:      dev.ID,
 		Status:        dev.Status,
 		PatchRing:     dev.PatchRing,
 		AuthToken:     rawBearerToken,
 		ServerBaseURL: serverBaseURL,
-	})
+	}
+
+	result := types.EnrollResultPending
+	if approved {
+		result = types.EnrollResultApproved
+		resp.WipeSigningPublicKey = h.repo.WipeSigningPublicKeyBase64()
+		// Issue a client-auth leaf for the CSR, if one was sent and a CA is configured.
+		// Issuance failure must not block enrollment: the agent can operate on the bearer
+		// token alone and obtain a certificate later via /cert/renew.
+		if certPEM, notAfter, cerr := h.issueAndStoreCert(r.Context(), dev.ID, req.CSRPEM, "DEVICE_CERT_ISSUE", r.RemoteAddr); cerr != nil {
+			log.Printf("[api] warning: device certificate issuance failed at token enroll for id=%s: %v", dev.ID, cerr)
+		} else if certPEM != "" {
+			resp.DeviceCertificatePEM = certPEM
+			resp.DeviceCertNotAfter = notAfter.UTC().Format(time.RFC3339)
+		}
+	}
+
+	if rerr := h.repo.RecordEnrollmentRegistration(r.Context(), tokIDPtr, &dev.ID, dev.HardwareUUID, dev.Hostname, ip, result, ""); rerr != nil {
+		log.Printf("[api] warning: could not record enrollment history: %v", rerr)
+	}
+
+	log.Printf("[api] HTTP 200 registered device id=%s hw=%s hostname=%s ring=%s result=%s via token", dev.ID, dev.HardwareUUID, dev.Hostname, dev.PatchRing, result)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // truncate shortens s to at most n bytes, for agent-reported free text stored server-side.

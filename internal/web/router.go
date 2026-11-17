@@ -229,6 +229,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/settings/tokens", h.CreateToken)
 			r.Delete("/settings/tokens/{id}", h.RevokeToken)
 			r.Post("/settings/tokens/{id}/delete", h.RevokeToken)
+			r.Post("/settings/tokens/{id}/rotate", h.RotateToken)
+			r.Get("/settings/tokens/{id}/history", h.TokenHistory)
 			r.Post("/settings/siem/test", h.TestSIEMSyslog)
 
 			// OIDC Group Mappings

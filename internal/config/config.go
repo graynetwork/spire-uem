@@ -75,6 +75,13 @@ type AgentConfig struct {
 	// fingerprint. Either removes first-contact trust in the wipe-signing key.
 	ServerCAFile   string
 	ServerCASHA256 string
+	// EnrollmentTokenFile is a path to a file containing a single enrollment token. The agent
+	// reads it ONCE for automated enrollment and DELETES it on success, so the secret does not
+	// linger on disk (enrollment_token_file / SPIRE_ENROLLMENT_TOKEN_FILE). Highest precedence.
+	EnrollmentTokenFile string
+	// EnrollmentToken is an enrollment token supplied directly in config or env
+	// (enrollment_token / SPIRE_ENROLLMENT_TOKEN). Lowest precedence, after the file and env.
+	EnrollmentToken string
 }
 
 // DefaultReleaseKeysDir is where the agent package installs the pinned release public keys.
@@ -206,6 +213,12 @@ func Load(configPath string) *Config {
 	if v := strings.TrimSpace(os.Getenv("SPIRE_AGENT_RELEASE_KEYS_DIR")); v != "" {
 		cfg.Agent.ReleaseKeysDir = v
 	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_ENROLLMENT_TOKEN_FILE")); v != "" {
+		cfg.Agent.EnrollmentTokenFile = v
+	}
+	if v := strings.TrimSpace(os.Getenv("SPIRE_ENROLLMENT_TOKEN")); v != "" {
+		cfg.Agent.EnrollmentToken = v
+	}
 	if v := os.Getenv("SPIRE_SERVER_URL"); v != "" {
 		cfg.Agent.ServerURL = strings.TrimRight(v, "/")
 	}
@@ -329,6 +342,14 @@ func parseSimpleYAML(path string, cfg *Config) {
 			case "release_keys_dir":
 				if val != "" {
 					cfg.Agent.ReleaseKeysDir = val
+				}
+			case "enrollment_token_file":
+				if val != "" {
+					cfg.Agent.EnrollmentTokenFile = val
+				}
+			case "enrollment_token":
+				if val != "" {
+					cfg.Agent.EnrollmentToken = val
 				}
 			case "server_ca_file":
 				if val != "" {

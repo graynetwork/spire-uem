@@ -257,7 +257,26 @@ so in the result message; every later update has a fallback.
 The separately published APT repository can still be generated and signed with `reprepro`;
 production onboarding should prefer the signed-manifest path and/or the signed APT repo.
 
-## 8. Known security gaps
+## 8. Enrollment and enrollment tokens
+
+A device enrolls in one of two ways.
+
+**Manual approval (default).** `spired` generates a random enrollment key (`/etc/spire/enrollment.key`, mode `0600`), stages the device `PENDING_APPROVAL`, and polls. An administrator approves it; the agent then claims a single-use bearer token, released only to the holder of the enrollment key that first staged the device. The device record is bound to that key, so knowing a hardware UUID is not enough to collect a token.
+
+**Automated with a token.** An enrollment token (`spire_tok_...`) lets the agent register without an administrator. `spired` resolves the token from `enrollment_token_file` (read once, deleted on success), the `SPIRE_ENROLLMENT_TOKEN` environment variable, or the `enrollment_token` config value, in that order, and calls `POST /api/v1/enrollment/register` once with the hardware UUID, the enrollment key, and a CSR. The server, in one transaction:
+
+- consumes one token use with an atomic conditional update (`uses_count < max_uses`), so a one-time token cannot be spent twice under concurrent registrations;
+- refuses a hardware UUID already bound to a different enrollment key (a token can never let a second machine take over an existing device record);
+- applies the token's policy: `require_approval` (default false → auto-approve and issue a bearer token plus, if a device CA is configured, a client certificate for the CSR; true → stage `PENDING_APPROVAL` with no token), target ring and tags (from the token only; client-supplied tags are ignored), expiry, and an optional allowed-hostname glob. An existing REVOKED or REJECTED device is always staged `PENDING_APPROVAL`, and an existing device keeps its administrator-assigned tags and ring;
+- records the attempt (approved / pending / refused + reason) in the token's enrollment history.
+
+Tokens are stored as SHA-256 hashes; the secret is shown once at creation and once after rotation. Rotation issues a new secret while keeping settings and history (the old secret stops working immediately). Token create, rotate, and revoke are SUPER_ADMIN-only and audited. Refused registrations return a uniform `401` (so token existence is not revealed) and are per-IP rate limited; the real reason lives only in the history row.
+
+**Golden images.** A sealed image must not carry `/etc/spire/{token,enrollment.key,device.key,device.crt}`, `/etc/spire/enrollment-token`, or a fixed machine-id. `spired --reset-identity` deletes those artefacts before sealing; otherwise provide a first-boot token file. A clone presenting a copied enrollment key is treated as the same installation; a clone with a *different* key for an existing hardware UUID is refused.
+
+## 9. Known security gaps
+
+- The enrollment-token per-IP failure rate limiter is an in-memory sliding counter, adequate for a single control-plane process. In a multi-instance deployment it is per-process, so N instances allow roughly N× the failures before throttling; move it to shared state if that matters (same caveat as the admin PAT limiter). The max-uses consume is NOT affected — it is an atomic DB update and holds across instances.
 
 - Approved PCR baseline comparison and attestation-based secret gating are implemented (§4).
   Remaining limits: a baseline is a trusted snapshot of PCR values, not an independent

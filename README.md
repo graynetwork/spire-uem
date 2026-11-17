@@ -78,7 +78,7 @@ An internal ECDSA P-256 device CA issues a client-auth leaf to each device at to
 ## Features
 
 - Declarative package, Flatpak, systemd, sysctl, APT, dconf, nftables, local-account, CA-certificate, NetworkManager, usbguard, and auditd policy engines.
-- Required and optional application assignment through Spire Hub.
+- Automated endpoint enrollment with hashed, rotatable enrollment tokens: per-token deployment ring, tags, max uses, expiry, optional require-approval and allowed-hostname pattern; one-request registration binding hardware UUID, enrollment key and device CSR; per-token enrollment history and per-IP rate limiting on failed attempts.- Required and optional application assignment through Spire Hub.
 - OpenSCAP execution and selected one-click remediation mappings.
 - Debian Security Tracker CVE matching. Automatic feed import is off by default.
 - Device version reporting, minimum-version enforcement, and maintenance-window self-update with size and SHA-256 verification, an independent Ed25519 release-signature check (signing key held off the control plane, public keys pinned in the agent package; required by default), and automatic rollback to the previous package when a new agent fails to confirm healthy.
@@ -116,7 +116,23 @@ sudo bash /tmp/spire-install.sh --server-url https://spire.example.com
 
 The standard agent generates an enrollment key, stages itself as `PENDING_APPROVAL`, and waits for an administrator to approve it. It stores the resulting bearer token at `/etc/spire/token`.
 
-Dynamic `spire_tok_...` enrollment tokens are used through `POST /api/v1/enrollment/register` by provisioning clients. The current bootstrap does not accept `--token`, and `spired` does not call that endpoint itself. Valid deployment-ring values are `CANARY`, `BETA`, `PILOT`, and `PRODUCTION`; normal device-ring administration uses `CANARY`, `PILOT`, and `PRODUCTION`.
+### Automated enrollment with a token
+
+To onboard without manual approval, pass an enrollment token. The bootstrap writes it to a root-only `0600` file (never into `config.yaml`) and `spired` registers in one request that binds the hardware UUID, the agent's enrollment key, and a CSR for its device certificate:
+
+```bash
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com \
+  --enrollment-token-file /root/spire-token   # preferred: file is 0600 and consumed once
+# or, visible in the process list / shell history (a warning is printed):
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com \
+  --enrollment-token spire_tok_xxx
+```
+
+`spired` reads the token from, in order: `enrollment_token_file` (read once, then **deleted on success**), the `SPIRE_ENROLLMENT_TOKEN` environment variable, or the `enrollment_token` config value. A token with `require_approval=false` (the default) auto-approves the device and the bearer token is issued immediately; a `require_approval=true` token stages the device `PENDING_APPROVAL` and the agent polls until an administrator approves it. Without a token the manual approval flow is unchanged.
+
+A token can never let a second machine take over an existing device record: the device is bound to the agent's enrollment key on first registration, and a different machine presenting the same hardware UUID with a different key is refused.
+
+Create and manage tokens under **Settings → Enrollment Tokens** (SUPER_ADMIN). Valid deployment-ring values are `CANARY`, `BETA`, `PILOT`, and `PRODUCTION`; normal device-ring administration uses `CANARY`, `PILOT`, and `PRODUCTION`.
 
 ## Verification
 
