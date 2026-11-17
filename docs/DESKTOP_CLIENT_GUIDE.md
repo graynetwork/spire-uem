@@ -34,9 +34,9 @@ An `ATTESTED` TPM status means the server accepted a fresh, correctly signed quo
 
 ### 2.3 Remote assistance
 
-Remote-assistance consent is not implemented inside Spire Hub. When an administrator requests assistance, the request reaches `spired` over the device WebSocket. The daemon discovers the active `seat0` user and attempts to show a 60-second `zenity` confirmation dialog containing the administrator name. On approval it enables GNOME Remote Desktop and returns an RDP address and generated PIN to the administrator.
+Remote-assistance consent is not implemented inside Spire Hub. When an administrator requests assistance, the request reaches `spired` over the device WebSocket. The daemon discovers the active `seat0` user and shows a 60-second `zenity` Yes/No dialog containing the administrator name. Only an explicit Yes approves. On approval it enables GNOME Remote Desktop and returns an RDP address and generated PIN to the administrator.
 
-The current prompt does not show the administrator IP or granular access scope, and Spire Hub has no Disconnect button. Endpoint images intended to use remote assistance should include `zenity`; the current notification-only fallback does not provide a genuine clickable consent choice and needs hardening.
+The current prompt does not show the administrator IP or granular access scope, and Spire Hub has no Disconnect button. Endpoint images intended to use remote assistance must include `zenity`. Without it, requests are refused with `CONSENT_UNAVAILABLE` and the user sees a notification saying so; a notification never counts as consent.
 
 ## 3. UNIX-socket API
 

@@ -123,9 +123,13 @@ Under **Settings → Agent Rollout**, a `SUPER_ADMIN` can set a target version p
 
 ### 7.2 Attended remote assistance
 
-The control plane sends a request over the device WebSocket. `spired`, not Spire Hub, discovers the active `seat0` user and attempts a 60-second `zenity` confirmation dialog. If approved, the current implementation enables GNOME Remote Desktop and returns an RDP address and generated PIN.
+The control plane sends a request over the device WebSocket. `spired`, not Spire Hub, discovers the active `seat0` user and shows a 60-second `zenity` Yes/No dialog. Only an explicit **Yes** approves. **No**, closing the dialog or the timeout returns `REJECTED_BY_USER`. If approved, the current implementation enables GNOME Remote Desktop and returns an RDP address and a generated PIN.
 
-The prompt contains the requesting administrator name. It does not display the administrator IP or a granular requested-access scope, and Spire Hub has no Disconnect control. If `zenity` is absent, the current notification fallback does not provide a real interactive consent control; endpoint images intended for remote assistance should install `zenity` until that fallback is hardened.
+The prompt contains the requesting administrator name. It does not display the administrator IP or a granular requested-access scope, and Spire Hub has no Disconnect control. If `zenity` is not installed or cannot start, the request fails closed with `CONSENT_UNAVAILABLE` and the user receives an informational notification that it was refused. A notification is never treated as consent. Endpoint images intended for remote assistance must install `zenity`.
+
+The generated PIN is currently not written into GNOME Remote Desktop's credentials, so it cannot be used to sign in. Treat the RDP details as incomplete until that is fixed.
+
+A root-owned override (`SPIRE_REMOTE_ASSIST_DECISION` in the service environment or `/etc/spire/remote-assist-decision`) set to `APPROVE` bypasses the prompt. It exists for headless testing, is logged when used, and must not be present on production endpoints.
 
 In a multi-instance deployment, interactive PTY and remote assistance must reach the instance that owns the device WebSocket.
 
