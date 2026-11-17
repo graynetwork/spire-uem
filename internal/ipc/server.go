@@ -241,6 +241,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/v1/catalog", s.handleCatalog)
 	mux.HandleFunc("/v1/install", s.handleInstall)
 	mux.HandleFunc("/v1/uninstall", s.handleUninstall)
+	mux.HandleFunc("/v1/campaign/defer", s.handleCampaignDefer)
 
 	srv := &http.Server{
 		Handler:           s.peerCredMiddleware(mux),
