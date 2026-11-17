@@ -3852,10 +3852,28 @@ func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 		if expHours := r.FormValue("expires_in_hours"); expHours != "" {
 			req.ExpiresInHours, _ = strconv.Atoi(strings.TrimSpace(expHours))
 		}
+		ra := strings.TrimSpace(r.FormValue("require_approval"))
+		req.RequireApproval = ra == "1" || strings.EqualFold(ra, "true") || strings.EqualFold(ra, "on")
+		req.HostnamePattern = strings.TrimSpace(r.FormValue("hostname_pattern"))
 	}
 
 	if req.TargetRing == "" {
 		req.TargetRing = types.RingProduction
+	}
+
+	// Record who created the token (never from the client body).
+	req.CreatedBy = adminUser
+
+	// Defence in depth: a tag-scoped admin (if ever permitted to reach this SUPER_ADMIN-only
+	// route) may not mint a token that assigns tags outside their own scope. SUPER_ADMIN is
+	// never scoped, so this is a no-op for them.
+	if u := AdminUserObjFromContext(r.Context()); userIsTagScoped(u) {
+		for _, tg := range req.TargetTags {
+			if !tagsIntersect([]string{tg}, u.AllowedTags) {
+				http.Error(w, "you may not assign tags outside your allowed scope", http.StatusForbidden)
+				return
+			}
+		}
 	}
 
 	token, rawToken, err := h.repo.CreateEnrollmentToken(r.Context(), req)
@@ -3867,11 +3885,13 @@ func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditor != nil {
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "TOKEN_CREATE", token.ID, r.RemoteAddr, map[string]any{
-			"token_id":    token.ID,
-			"prefix":      token.TokenPrefix,
-			"target_ring": token.TargetRing,
-			"target_tags": token.TargetTags,
-			"max_uses":    token.MaxUses,
+			"token_id":         token.ID,
+			"prefix":           token.TokenPrefix,
+			"target_ring":      token.TargetRing,
+			"target_tags":      token.TargetTags,
+			"max_uses":         token.MaxUses,
+			"require_approval": token.RequireApproval,
+			"hostname_pattern": token.HostnamePattern,
 		})
 	}
 
@@ -3946,6 +3966,89 @@ func (h *Handler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/admin/settings?tab=tokens", http.StatusSeeOther)
+}
+
+// RotateToken handles POST /admin/settings/tokens/{id}/rotate. It generates a fresh secret
+// for an existing token, keeping its settings and history; the old secret stops working
+// immediately. SUPER_ADMIN only (mounted under that group). Audited.
+func (h *Handler) RotateToken(w http.ResponseWriter, r *http.Request) {
+	tokenID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if tokenID == "" {
+		http.Error(w, "Missing token ID", http.StatusBadRequest)
+		return
+	}
+	adminUser := AdminUserFromContext(r.Context())
+	if adminUser == "" {
+		adminUser = "admin"
+	}
+
+	token, rawToken, err := h.repo.RotateEnrollmentToken(r.Context(), tokenID, adminUser)
+	if err != nil {
+		if errors.Is(err, db.ErrEnrollmentTokenNotFound) {
+			http.Error(w, "Token not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("[web] failed to rotate token %s: %v", tokenID, err)
+		http.Error(w, "Failed to rotate token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if h.auditor != nil {
+		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "TOKEN_ROTATE", token.ID, r.RemoteAddr, map[string]any{
+			"token_id": token.ID,
+			"prefix":   token.TokenPrefix,
+		})
+	}
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") || strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":            rawToken,
+			"enrollment_token": token,
+		})
+		return
+	}
+
+	tokens, _ := h.repo.ListEnrollmentTokens(r.Context())
+	data := map[string]any{
+		"Tokens":    tokens,
+		"CSRFToken": CSRFTokenFromContext(r.Context()),
+		"NewToken":  rawToken,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.tmpl.ExecuteTemplate(w, "tokens_table", data); err != nil {
+		http.Redirect(w, r, "/admin/settings?tab=tokens", http.StatusSeeOther)
+	}
+}
+
+// TokenHistory handles GET /admin/settings/tokens/{id}/history, returning the recent
+// enrollment attempts recorded against a token (approved, pending, refused).
+func (h *Handler) TokenHistory(w http.ResponseWriter, r *http.Request) {
+	tokenID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if tokenID == "" {
+		http.Error(w, "Missing token ID", http.StatusBadRequest)
+		return
+	}
+	history, err := h.repo.ListEnrollmentRegistrations(r.Context(), tokenID, 100)
+	if err != nil {
+		log.Printf("[web] failed to list enrollment history for %s: %v", tokenID, err)
+		http.Error(w, "Failed to list enrollment history", http.StatusInternalServerError)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(history)
+		return
+	}
+	data := map[string]any{
+		"TokenID": tokenID,
+		"History": history,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.tmpl.ExecuteTemplate(w, "token_history", data); err != nil {
+		log.Printf("[web] failed to render token_history: %v", err)
+		http.Error(w, "Failed to render enrollment history", http.StatusInternalServerError)
+	}
 }
 
 // TestSIEMSyslog handles POST /admin/settings/siem/test.

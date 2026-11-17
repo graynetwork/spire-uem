@@ -260,9 +260,29 @@ The bootstrap:
 2. installs the agent from the direct `.deb` or signed APT repository;
 3. installs `/usr/local/bin/spired`, `/usr/bin/spire-ctl`, Spire Hub, and `spired.service`;
 4. writes `/etc/spire/config.yaml` with the selected server URL and `/etc/spire/token` path;
-5. enables and starts `spired.service`.
+5. when an enrollment token is supplied, writes it to `/etc/spire/enrollment-token` (mode `0600`) and points `config.yaml` at it with `enrollment_token_file` — the secret is never written into `config.yaml`;
+6. enables and starts `spired.service`.
 
-The standard bootstrap does not accept a dynamic enrollment token. It uses the administrator-approval flow below. Dynamic `spire_tok_...` tokens are for provisioning clients that call `POST /api/v1/enrollment/register` directly.
+#### Automated enrollment with a token (skips manual approval)
+
+Create a token under **Settings → Enrollment Tokens** (SUPER_ADMIN), copy the one-time secret, and pass it to the bootstrap:
+
+```bash
+# Preferred: a root-only 0600 file the agent reads once and deletes on success.
+printf '%s\n' 'spire_tok_xxx' > /root/spire-token && chmod 0600 /root/spire-token
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com \
+  --enrollment-token-file /root/spire-token
+
+# Works, but the secret is visible in the process list and shell history (a warning prints):
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com \
+  --enrollment-token spire_tok_xxx
+```
+
+`spired` registers in one request binding the hardware UUID, its enrollment key, and a device CSR. A token with approval **not** required auto-approves the device and issues its bearer token (and a device certificate when the device CA is configured); a **require-approval** token stages the device `PENDING_APPROVAL` and the agent polls until an administrator approves it (Step 2). The one-time token file is deleted after a successful registration. Without a token, the administrator-approval flow below is unchanged.
+
+**Upgrade note.** `require_approval` defaults to **false** for every token, including tokens that existed before this feature — matching the pre-feature behaviour where a token always auto-approved. Tick *Require admin approval* when creating a token to stage devices for review instead.
+
+**Golden images.** A sealed image must NOT contain `/etc/spire/{token,enrollment.key,device.key,device.crt}`, `/etc/spire/enrollment-token`, or a fixed `/etc/machine-id`. Either leave a first-boot token file for the agent to consume on first boot, or run `spired --reset-identity` before sealing to clear the identity safely. A cloned image that still carries an old enrollment key is refused rather than allowed to share a device record (unless it presents the SAME key, which is the same installation).
 
 ### Step 2: Tag and approve the endpoint
 1. Open `https://spire.example.com/admin/devices` and authenticate.
@@ -1026,6 +1046,7 @@ What was made instance-safe:
   rows are swept opportunistically.
 - **TPM attestation challenges** were already stored in Postgres (no change needed).
 - **The admin session secret** must be shared via `SPIRE_SESSION_SECRET` (see above).
+- **Enrollment tokens.** The max-uses check is an atomic conditional `UPDATE` in Postgres, so a one-time token cannot be spent twice even across instances. The per-IP rate limiter on *failed* enrollment attempts, however, is an in-memory sliding counter per process (like the admin personal-access-token limiter): across N instances a guesser gets roughly N× the failures before being throttled. This bounds online guessing but is not a hard multi-instance limit; move it to shared state if that matters. Token validity (revoked/expired/exhausted) is always checked in the database, so revoking or exhausting a token takes effect on every instance immediately.
 
 **Gateway (device WebSocket) routing.** A device holds a WebSocket to exactly **one**
 instance. Each instance records which device sockets it owns (`devices.ws_instance_id` +

@@ -3196,6 +3196,12 @@ var (
 	ErrEnrollmentTokenRevoked   = errors.New("enrollment token has been revoked")
 	ErrEnrollmentTokenExpired   = errors.New("enrollment token has expired")
 	ErrEnrollmentTokenExhausted = errors.New("enrollment token max uses exceeded")
+	// ErrEnrollmentHostnameMismatch means the registering hostname did not match the token's
+	// allowed-hostname pattern.
+	ErrEnrollmentHostnameMismatch = errors.New("hostname does not match the token's allowed pattern")
+	// ErrEnrollmentKeyConflict means a device with this hardware UUID already exists and is
+	// bound to a different enrollment key; a token must never let a second machine take it.
+	ErrEnrollmentKeyConflict = errors.New("device is bound to a different enrollment key")
 )
 
 // GetSettingsByCategory returns all system settings under the given category.
@@ -3309,13 +3315,43 @@ func (r *Repository) UpdateSettingsCategory(ctx context.Context, category string
 }
 
 // ListEnrollmentTokens returns all enrollment tokens ordered by creation date.
+// enrollmentTokenColumns is the canonical column list for reading an enrollment token,
+// shared by every query so a new column is added in one place.
+const enrollmentTokenColumns = `id, token_hash, token_prefix, COALESCE(description, ''), target_ring, target_tags,
+		       max_uses, uses_count, expires_at, is_revoked, created_at,
+		       require_approval, COALESCE(hostname_pattern, ''), COALESCE(created_by, ''), rotated_at`
+
+// scanEnrollmentToken scans one row selected with enrollmentTokenColumns.
+func scanEnrollmentToken(row pgx.Row) (types.EnrollmentToken, error) {
+	var t types.EnrollmentToken
+	err := row.Scan(
+		&t.ID,
+		&t.TokenHash,
+		&t.TokenPrefix,
+		&t.Description,
+		&t.TargetRing,
+		&t.TargetTags,
+		&t.MaxUses,
+		&t.UsesCount,
+		&t.ExpiresAt,
+		&t.IsRevoked,
+		&t.CreatedAt,
+		&t.RequireApproval,
+		&t.HostnamePattern,
+		&t.CreatedBy,
+		&t.RotatedAt,
+	)
+	if err != nil {
+		return t, err
+	}
+	if t.TargetTags == nil {
+		t.TargetTags = []string{}
+	}
+	return t, nil
+}
+
 func (r *Repository) ListEnrollmentTokens(ctx context.Context) ([]types.EnrollmentToken, error) {
-	const query = `
-		SELECT id, token_hash, token_prefix, COALESCE(description, ''), target_ring, target_tags,
-		       max_uses, uses_count, expires_at, is_revoked, created_at
-		FROM enrollment_tokens
-		ORDER BY created_at DESC
-	`
+	query := `SELECT ` + enrollmentTokenColumns + ` FROM enrollment_tokens ORDER BY created_at DESC`
 	rows, err := r.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("list enrollment tokens: %w", err)
@@ -3324,28 +3360,26 @@ func (r *Repository) ListEnrollmentTokens(ctx context.Context) ([]types.Enrollme
 
 	var tokens []types.EnrollmentToken
 	for rows.Next() {
-		var t types.EnrollmentToken
-		if err := rows.Scan(
-			&t.ID,
-			&t.TokenHash,
-			&t.TokenPrefix,
-			&t.Description,
-			&t.TargetRing,
-			&t.TargetTags,
-			&t.MaxUses,
-			&t.UsesCount,
-			&t.ExpiresAt,
-			&t.IsRevoked,
-			&t.CreatedAt,
-		); err != nil {
+		t, err := scanEnrollmentToken(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan enrollment token: %w", err)
-		}
-		if t.TargetTags == nil {
-			t.TargetTags = []string{}
 		}
 		tokens = append(tokens, t)
 	}
 	return tokens, rows.Err()
+}
+
+// GetEnrollmentToken reads one token by its UUID, or ErrEnrollmentTokenNotFound.
+func (r *Repository) GetEnrollmentToken(ctx context.Context, tokenID string) (*types.EnrollmentToken, error) {
+	query := `SELECT ` + enrollmentTokenColumns + ` FROM enrollment_tokens WHERE id = $1`
+	t, err := scanEnrollmentToken(r.pool.QueryRow(ctx, query, tokenID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrEnrollmentTokenNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get enrollment token: %w", err)
+	}
+	return &t, nil
 }
 
 // CreateEnrollmentToken creates a new dynamic enrollment token and returns its plaintext value.
@@ -3366,6 +3400,14 @@ func (r *Repository) CreateEnrollmentToken(ctx context.Context, req types.Create
 	if tags == nil {
 		tags = []string{}
 	}
+	var hostnamePattern *string
+	if hp := strings.TrimSpace(req.HostnamePattern); hp != "" {
+		hostnamePattern = &hp
+	}
+	var createdBy *string
+	if cb := strings.TrimSpace(req.CreatedBy); cb != "" {
+		createdBy = &cb
+	}
 
 	var expiresAt *time.Time
 	if req.ExpiresInHours > 0 {
@@ -3373,13 +3415,11 @@ func (r *Repository) CreateEnrollmentToken(ctx context.Context, req types.Create
 		expiresAt = &exp
 	}
 
-	const query = `
-		INSERT INTO enrollment_tokens (token_hash, token_prefix, description, target_ring, target_tags, max_uses, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, token_hash, token_prefix, description, target_ring, target_tags, max_uses, uses_count, expires_at, is_revoked, created_at
-	`
-	var t types.EnrollmentToken
-	err := r.pool.QueryRow(ctx, query,
+	query := `
+		INSERT INTO enrollment_tokens (token_hash, token_prefix, description, target_ring, target_tags, max_uses, expires_at, require_approval, hostname_pattern, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		RETURNING ` + enrollmentTokenColumns
+	t, err := scanEnrollmentToken(r.pool.QueryRow(ctx, query,
 		tokenHash,
 		tokenPrefix,
 		req.Description,
@@ -3387,24 +3427,45 @@ func (r *Repository) CreateEnrollmentToken(ctx context.Context, req types.Create
 		tags,
 		req.MaxUses,
 		expiresAt,
-	).Scan(
-		&t.ID,
-		&t.TokenHash,
-		&t.TokenPrefix,
-		&t.Description,
-		&t.TargetRing,
-		&t.TargetTags,
-		&t.MaxUses,
-		&t.UsesCount,
-		&t.ExpiresAt,
-		&t.IsRevoked,
-		&t.CreatedAt,
-	)
+		req.RequireApproval,
+		hostnamePattern,
+		createdBy,
+	))
 	if err != nil {
 		return nil, "", fmt.Errorf("insert enrollment token: %w", err)
 	}
-	if t.TargetTags == nil {
-		t.TargetTags = []string{}
+	return &t, rawToken, nil
+}
+
+// RotateEnrollmentToken generates a fresh secret for an existing token, keeping all its
+// settings and its usage/history. The old secret stops working immediately (its hash is
+// overwritten). Returns the updated token and the new plaintext secret.
+func (r *Repository) RotateEnrollmentToken(ctx context.Context, tokenID, rotatedBy string) (*types.EnrollmentToken, string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return nil, "", fmt.Errorf("generate token random bytes: %w", err)
+	}
+	rawToken := "spire_tok_" + hex.EncodeToString(b)
+	tokenHash := HashToken(rawToken)
+	tokenPrefix := rawToken[:12] + "..."
+
+	var createdBy *string
+	if cb := strings.TrimSpace(rotatedBy); cb != "" {
+		createdBy = &cb
+	}
+
+	query := `
+		UPDATE enrollment_tokens
+		SET token_hash = $2, token_prefix = $3, rotated_at = NOW(),
+		    created_by = COALESCE($4, created_by)
+		WHERE id = $1
+		RETURNING ` + enrollmentTokenColumns
+	t, err := scanEnrollmentToken(r.pool.QueryRow(ctx, query, tokenID, tokenHash, tokenPrefix, createdBy))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", ErrEnrollmentTokenNotFound
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("rotate enrollment token: %w", err)
 	}
 	return &t, rawToken, nil
 }
@@ -3426,49 +3487,69 @@ func (r *Repository) RevokeEnrollmentToken(ctx context.Context, tokenID string) 
 	return nil
 }
 
-// ValidateAndConsumeEnrollmentToken checks whether a raw enrollment token is valid, active, and increments its usage count.
-func (r *Repository) ValidateAndConsumeEnrollmentToken(ctx context.Context, rawToken string) (*types.EnrollmentToken, error) {
+// RecordEnrollmentRegistration appends one row to the token's enrollment history. It is
+// best-effort from the caller's point of view (a failure to record must not change the
+// enrollment outcome), but it returns the error so callers can log it.
+func (r *Repository) RecordEnrollmentRegistration(ctx context.Context, tokenID, deviceID *string, hwUUID, hostname, sourceIP, result, reason string) error {
+	const query = `
+		INSERT INTO enrollment_token_registrations (token_id, device_id, hardware_uuid, hostname, source_ip, result, reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+	_, err := r.pool.Exec(ctx, query, tokenID, deviceID, truncateStr(hwUUID, 255), truncateStr(hostname, 255), truncateStr(sourceIP, 64), result, reason)
+	if err != nil {
+		return fmt.Errorf("record enrollment registration: %w", err)
+	}
+	return nil
+}
+
+// ListEnrollmentRegistrations returns the most recent registration attempts for a token.
+func (r *Repository) ListEnrollmentRegistrations(ctx context.Context, tokenID string, limit int) ([]types.EnrollmentRegistration, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	const query = `
+		SELECT id, token_id, device_id, COALESCE(hardware_uuid,''), COALESCE(hostname,''),
+		       COALESCE(source_ip,''), result, COALESCE(reason,''), created_at
+		FROM enrollment_token_registrations
+		WHERE token_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`
+	rows, err := r.pool.Query(ctx, query, tokenID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list enrollment registrations: %w", err)
+	}
+	defer rows.Close()
+	var out []types.EnrollmentRegistration
+	for rows.Next() {
+		var e types.EnrollmentRegistration
+		if err := rows.Scan(&e.ID, &e.TokenID, &e.DeviceID, &e.HardwareUUID, &e.Hostname, &e.SourceIP, &e.Result, &e.Reason, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan enrollment registration: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ValidateEnrollmentToken checks whether a raw enrollment token is valid and active. It does
+// NOT consume a use: the use is counted atomically inside RegisterDeviceWithToken, so that a
+// refused registration (bad hostname, key conflict) does not burn a use and a one-time token
+// is only spent on an actual registration. Returns the token row or a specific sentinel error.
+func (r *Repository) ValidateEnrollmentToken(ctx context.Context, rawToken string) (*types.EnrollmentToken, error) {
 	trimmed := strings.TrimSpace(rawToken)
 	if trimmed == "" {
 		return nil, ErrEnrollmentTokenNotFound
 	}
-
 	tokenHash := HashToken(trimmed)
 
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin validate token tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	const query = `
-		SELECT id, token_hash, token_prefix, COALESCE(description, ''), target_ring, target_tags,
-		       max_uses, uses_count, expires_at, is_revoked, created_at
-		FROM enrollment_tokens
-		WHERE token_hash = $1
-		FOR UPDATE
-	`
-	var t types.EnrollmentToken
-	err = tx.QueryRow(ctx, query, tokenHash).Scan(
-		&t.ID,
-		&t.TokenHash,
-		&t.TokenPrefix,
-		&t.Description,
-		&t.TargetRing,
-		&t.TargetTags,
-		&t.MaxUses,
-		&t.UsesCount,
-		&t.ExpiresAt,
-		&t.IsRevoked,
-		&t.CreatedAt,
-	)
+	query := `SELECT ` + enrollmentTokenColumns + ` FROM enrollment_tokens WHERE token_hash = $1`
+	t, err := scanEnrollmentToken(r.pool.QueryRow(ctx, query, tokenHash))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrEnrollmentTokenNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query enrollment token: %w", err)
 	}
-
 	if t.IsRevoked {
 		return nil, ErrEnrollmentTokenRevoked
 	}
@@ -3478,29 +3559,35 @@ func (r *Repository) ValidateAndConsumeEnrollmentToken(ctx context.Context, rawT
 	if t.MaxUses > 0 && t.UsesCount >= t.MaxUses {
 		return nil, ErrEnrollmentTokenExhausted
 	}
-
-	// Increment usage count
-	_, err = tx.Exec(ctx, `UPDATE enrollment_tokens SET uses_count = uses_count + 1 WHERE id = $1`, t.ID)
-	if err != nil {
-		return nil, fmt.Errorf("increment token uses_count: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit token consume tx: %w", err)
-	}
-
-	t.UsesCount++
-	if t.TargetTags == nil {
-		t.TargetTags = []string{}
-	}
 	return &t, nil
 }
 
-// RegisterDeviceWithToken automatically registers and approves a device using an enrollment token.
-func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.EnrollmentToken, hwUUID, hostname string, tags []string) (*types.Device, string, error) {
-	rawBearerToken, tokenHash, err := GenerateToken()
-	if err != nil {
-		return nil, "", fmt.Errorf("generate device bearer token: %w", err)
+// ValidateAndConsumeEnrollmentToken is retained for compatibility. It validates the token
+// without consuming a use; the use is consumed atomically at registration time. Prefer
+// ValidateEnrollmentToken in new code.
+func (r *Repository) ValidateAndConsumeEnrollmentToken(ctx context.Context, rawToken string) (*types.EnrollmentToken, error) {
+	return r.ValidateEnrollmentToken(ctx, rawToken)
+}
+
+// RegisterDeviceWithToken registers a device using an enrollment token, binding the device's
+// enrollment key and honouring the token's require_approval policy, all in one transaction so
+// the token's max-uses holds under concurrent registrations.
+//
+// Security invariants enforced here:
+//   - The token use is consumed with an atomic conditional UPDATE: for a max-uses token, only
+//     a row where uses_count < max_uses is updated, so N concurrent callers against a
+//     one-time token can never all succeed.
+//   - A device already bound to a DIFFERENT enrollment key is refused (ErrEnrollmentKeyConflict)
+//     before anything about it changes, so a token can never let a second machine take over an
+//     existing device record. A device with no key yet (new, or pre-mTLS) binds the supplied key.
+//   - require_approval=true lands the device PENDING_APPROVAL with NO bearer token; false
+//     auto-approves and issues a bearer token (the historical behaviour).
+//
+// Returns the device, the raw bearer token (empty when pending), and whether it was approved.
+func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.EnrollmentToken, hwUUID, hostname string, tags []string, enrollmentKey string) (dev *types.Device, rawBearerToken string, approved bool, err error) {
+	keyHash := ""
+	if k := strings.TrimSpace(enrollmentKey); k != "" {
+		keyHash = HashToken(k)
 	}
 
 	ring := token.TargetRing
@@ -3508,7 +3595,7 @@ func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.E
 		ring = types.RingProduction
 	}
 
-	// Merge token tags with request tags
+	// Merge token tags with request tags (deduped, sorted).
 	mergedTagMap := make(map[string]bool)
 	for _, tg := range token.TargetTags {
 		if t := strings.TrimSpace(tg); t != "" {
@@ -3520,30 +3607,98 @@ func (r *Repository) RegisterDeviceWithToken(ctx context.Context, token *types.E
 			mergedTagMap[t] = true
 		}
 	}
-	var mergedTags []string
+	mergedTags := make([]string, 0, len(mergedTagMap))
 	for tg := range mergedTagMap {
 		mergedTags = append(mergedTags, tg)
 	}
 	sort.Strings(mergedTags)
 
-	const upsertDeviceQuery = `
-		INSERT INTO devices (hardware_uuid, hostname, status, patch_ring, tags, auth_token_hash, updated_at)
-		VALUES ($1, $2, 'APPROVED', $3, $4, $5, NOW())
-		ON CONFLICT (hardware_uuid) DO UPDATE
-		SET hostname = EXCLUDED.hostname,
-		    status = 'APPROVED',
-		    patch_ring = EXCLUDED.patch_ring,
-		    tags = EXCLUDED.tags,
-		    auth_token_hash = EXCLUDED.auth_token_hash,
-		    updated_at = NOW()
-		RETURNING ` + deviceSelectColumns
-
-	dev, err := scanDevice(r.pool.QueryRow(ctx, upsertDeviceQuery, hwUUID, hostname, string(ring), mergedTags, tokenHash))
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("register device with token: %w", err)
+		return nil, "", false, fmt.Errorf("begin register tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Consume a token use atomically. A dynamic token (ID set) is locked and conditionally
+	//    updated; the static-env fallback token has an empty ID and skips this step.
+	if token.ID != "" {
+		var newUses int
+		consume := `
+			UPDATE enrollment_tokens
+			SET uses_count = uses_count + 1
+			WHERE id = $1 AND is_revoked = FALSE
+			  AND (expires_at IS NULL OR expires_at > NOW())
+			  AND (max_uses = 0 OR uses_count < max_uses)
+			RETURNING uses_count
+		`
+		err = tx.QueryRow(ctx, consume, token.ID).Scan(&newUses)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The token was revoked, expired, or exhausted between validation and now — under
+			// a concurrent one-time-token race this is the loser. Treat as exhausted.
+			return nil, "", false, ErrEnrollmentTokenExhausted
+		}
+		if err != nil {
+			return nil, "", false, fmt.Errorf("consume enrollment token: %w", err)
+		}
 	}
 
-	return dev, rawBearerToken, nil
+	// 2. Refuse a hardware UUID already bound to a different key, BEFORE upserting the device.
+	var boundKey *string
+	err = tx.QueryRow(ctx, `SELECT enrollment_key_hash FROM devices WHERE hardware_uuid = $1 FOR UPDATE`, hwUUID).Scan(&boundKey)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, "", false, fmt.Errorf("lookup device for key check: %w", err)
+	}
+	if err == nil && boundKey != nil && keyHash != "" && *boundKey != keyHash {
+		return nil, "", false, ErrEnrollmentKeyConflict
+	}
+	// A device that already has a key but the request supplied none also cannot be taken over.
+	if err == nil && boundKey != nil && *boundKey != "" && keyHash == "" {
+		return nil, "", false, ErrEnrollmentKeyConflict
+	}
+
+	// 3. Decide the device's resulting status and bearer token.
+	status := "APPROVED"
+	var bearerHash *string
+	if token.RequireApproval {
+		status = "PENDING_APPROVAL"
+	} else {
+		raw, h, gerr := GenerateToken()
+		if gerr != nil {
+			return nil, "", false, fmt.Errorf("generate device bearer token: %w", gerr)
+		}
+		rawBearerToken = raw
+		bearerHash = &h
+	}
+
+	// 4. Upsert the device. The enrollment key is bound with COALESCE so an existing binding
+	//    is never overwritten (and we already refused a mismatching one above). A PENDING
+	//    registration must not clobber an already-APPROVED device's token, so we only set the
+	//    bearer hash on the auto-approve path.
+	var keyArg any
+	if keyHash != "" {
+		keyArg = keyHash
+	}
+	upsert := `
+		INSERT INTO devices (hardware_uuid, hostname, status, patch_ring, tags, auth_token_hash, enrollment_key_hash, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (hardware_uuid) DO UPDATE
+		SET hostname = EXCLUDED.hostname,
+		    status = EXCLUDED.status,
+		    patch_ring = EXCLUDED.patch_ring,
+		    tags = EXCLUDED.tags,
+		    auth_token_hash = COALESCE(EXCLUDED.auth_token_hash, devices.auth_token_hash),
+		    enrollment_key_hash = COALESCE(devices.enrollment_key_hash, EXCLUDED.enrollment_key_hash),
+		    updated_at = NOW()
+		RETURNING ` + deviceSelectColumns
+	d, err := scanDevice(tx.QueryRow(ctx, upsert, hwUUID, hostname, status, string(ring), mergedTags, bearerHash, keyArg))
+	if err != nil {
+		return nil, "", false, fmt.Errorf("register device with token: %w", err)
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, "", false, fmt.Errorf("commit register tx: %w", err)
+	}
+	return d, rawBearerToken, !token.RequireApproval, nil
 }
 
 // -----------------------------------------------------------------------------

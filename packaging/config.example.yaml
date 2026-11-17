@@ -28,3 +28,9 @@ agent:
   # connection (removes first-contact trust in the wipe-signing key). Optional.
   # server_ca_file: "/etc/spire/server-ca.pem"
   # server_ca_sha256: "<hex sha256 of the server leaf certificate>"
+  # Automated enrollment token. enrollment_token_file (preferred) points at a 0600 file the
+  # agent reads ONCE and DELETES on a successful enrollment; the secret never lives in this
+  # config. enrollment_token is the lowest-precedence fallback (file > env SPIRE_ENROLLMENT_TOKEN
+  # > this value); avoid it in favour of the file so the secret is not stored in config.yaml.
+  # enrollment_token_file: "/etc/spire/enrollment-token"
+  # enrollment_token: ""

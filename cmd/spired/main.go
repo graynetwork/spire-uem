@@ -41,9 +41,21 @@ func main() {
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	once := flag.Bool("once", false, "Run a single check-in/enforcement cycle and exit")
 	rollbackCheck := flag.Bool("rollback-check", false, "Run the independent agent-update rollback check and exit (invoked by the rollback timer; does not depend on a healthy new binary)")
+	resetIdentity := flag.Bool("reset-identity", false, "Securely delete this device's enrollment identity (token, enrollment key, device key/cert) and exit. Run BEFORE sealing a golden image so the clone enrolls as a fresh device rather than sharing one.")
 	flag.Parse()
 
 	cfg := config.Load(*configPath)
+
+	// Golden-image preparation: clear every on-disk identity artefact so a cloned image does
+	// not carry (and silently share) another device's identity. Does not touch the network or
+	// contact the server. Must run as the user that owns /etc/spire (root in production).
+	if *resetIdentity {
+		if err := resetDeviceIdentity(cfg.Agent.TokenPath); err != nil {
+			log.Fatalf("[spired] reset-identity failed: %v", err)
+		}
+		log.Printf("[spired] device identity cleared; this image is safe to seal")
+		return
+	}
 
 	// Rollback trigger entry point: reinstall the previous agent package if the just-installed
 	// one never confirmed healthy. This runs off on-disk state only, so a crash-looping new
@@ -178,43 +190,102 @@ func main() {
 				}
 				continue
 			}
-			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey, deviceKey, certPaths)
-			if netErr != nil {
-				backoffAttempt++
-				sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
-				log.Printf("[spired] network error during enrollment: %v (retrying in %s)", netErr, sleepDur)
-				if *once {
-					return
-				}
-				if !sleepContext(ctx, sleepDur) {
-					return
-				}
-				continue
-			}
-			backoffAttempt = 0
 
-			if enrolledToken == "" {
-				if *once {
-					return
+			// Automated enrollment: if an enrollment token is available (file > env > config),
+			// register in one request that binds the hardware UUID, the enrollment key and a
+			// CSR. On auto-approval we persist the issued bearer token and DELETE the token
+			// file so the secret does not linger. A refusal or a require_approval response
+			// falls through to the normal manual polling flow below.
+			if enrollTok, tokSource := resolveEnrollmentToken(cfg.Agent); enrollTok != "" {
+				log.Printf("[spired] attempting automated enrollment with token (source=%s)", tokSource)
+				bearer, pending, tokErr := registerWithToken(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, enrollTok, hwUUID, hostname, enrollKey, deviceKey, certPaths)
+				if tokErr != nil {
+					backoffAttempt++
+					sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
+					log.Printf("[spired] network error during token enrollment: %v (retrying in %s)", tokErr, sleepDur)
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, sleepDur) {
+						return
+					}
+					continue
 				}
-				if !sleepContext(ctx, cfg.Agent.PollInterval) {
-					return
+				if bearer != "" {
+					if err := persistToken(cfg.Agent.TokenPath, bearer); err != nil {
+						log.Printf("[spired] failed to persist token to %s: %v", cfg.Agent.TokenPath, err)
+						if *once {
+							return
+						}
+						if !sleepContext(ctx, cfg.Agent.PollInterval) {
+							return
+						}
+						continue
+					}
+					// Delete the one-time token file now that enrollment succeeded, so the
+					// secret does not linger on disk. Only the FILE source is deleted.
+					if tokSource == tokenSourceFile {
+						if derr := os.Remove(cfg.Agent.EnrollmentTokenFile); derr != nil && !os.IsNotExist(derr) {
+							log.Printf("[spired] warning: could not delete enrollment token file %s: %v", cfg.Agent.EnrollmentTokenFile, derr)
+						} else {
+							log.Printf("[spired] deleted consumed enrollment token file %s", cfg.Agent.EnrollmentTokenFile)
+						}
+					}
+					backoffAttempt = 0
+					log.Printf("[spired] device auto-approved via enrollment token! Token persisted to %s (mode 0600)", cfg.Agent.TokenPath)
+					token = bearer
+				} else if pending {
+					// Staged PENDING_APPROVAL by a require_approval token: delete the one-time
+					// file (it has been consumed) and fall through to the polling loop.
+					if tokSource == tokenSourceFile {
+						if derr := os.Remove(cfg.Agent.EnrollmentTokenFile); derr != nil && !os.IsNotExist(derr) {
+							log.Printf("[spired] warning: could not delete enrollment token file %s: %v", cfg.Agent.EnrollmentTokenFile, derr)
+						}
+					}
+					backoffAttempt = 0
 				}
-				continue
+				// On a flat refusal (bearer=="" && !pending), fall through to manual enrollment.
 			}
 
-			if err := persistToken(cfg.Agent.TokenPath, enrolledToken); err != nil {
-				log.Printf("[spired] failed to persist token to %s: %v", cfg.Agent.TokenPath, err)
-				if *once {
-					return
+			if token == "" {
+				enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey, deviceKey, certPaths)
+				if netErr != nil {
+					backoffAttempt++
+					sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
+					log.Printf("[spired] network error during enrollment: %v (retrying in %s)", netErr, sleepDur)
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, sleepDur) {
+						return
+					}
+					continue
 				}
-				if !sleepContext(ctx, cfg.Agent.PollInterval) {
-					return
+				backoffAttempt = 0
+
+				if enrolledToken == "" {
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, cfg.Agent.PollInterval) {
+						return
+					}
+					continue
 				}
-				continue
+
+				if err := persistToken(cfg.Agent.TokenPath, enrolledToken); err != nil {
+					log.Printf("[spired] failed to persist token to %s: %v", cfg.Agent.TokenPath, err)
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, cfg.Agent.PollInterval) {
+						return
+					}
+					continue
+				}
+				log.Printf("[spired] device approved! Token persisted to %s (mode 0600)", cfg.Agent.TokenPath)
+				token = enrolledToken
 			}
-			log.Printf("[spired] device approved! Token persisted to %s (mode 0600)", cfg.Agent.TokenPath)
-			token = enrolledToken
 		}
 
 		statusCode, checkErr := func() (int, error) {

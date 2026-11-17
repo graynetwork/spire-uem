@@ -56,11 +56,15 @@ After an OS reinstall or deletion of `/etc/spire`, revoke the old device record 
 
 ### 2.2 Dynamic enrollment tokens
 
-**Settings → Enrollment Tokens** creates `spire_tok_...` tokens for provisioning clients that call `POST /api/v1/enrollment/register`. Configure a description, target tags, maximum uses, expiry, and deployment ring.
+**Settings → Enrollment Tokens** (SUPER_ADMIN) creates `spire_tok_...` tokens for automated onboarding. Each token carries a description, target tags, maximum uses (`1` = one-time, `0` = unlimited), expiry, deployment ring, an optional **require approval** flag (default off — the device auto-approves), and an optional **allowed hostname pattern** (a glob such as `lab-*`; blank = any hostname). The creator is recorded (`created_by`).
 
-Supported token ring values are `CANARY`, `BETA`, `PILOT`, and `PRODUCTION`. The standard bootstrap does not accept `--token`, and `spired` does not currently call token registration itself.
+Tokens are stored **hashed**; the secret is shown **once** at creation (and once again after rotation). **Rotate** generates a fresh secret while keeping the token's settings and history — the old secret stops working immediately. **Revoke** disables the token. Each token's page lists its **enrollment history**: device, hardware UUID, hostname, time, source IP, and result (approved, pending, or refused with a reason).
 
-Revoked, expired, exhausted, or unknown tokens receive `401 Unauthorized`.
+Install an endpoint with a token using the bootstrap (see the onboarding runbook): `--enrollment-token-file PATH` (preferred; the file is `0600` and consumed once) or `--enrollment-token VALUE` (works, but prints a warning that it is visible in the process list and shell history). The agent registers in one request that binds the hardware UUID, its enrollment key, and a CSR for its device certificate; a token can never let a second machine take over an existing device record.
+
+Supported token ring values are `CANARY`, `BETA`, `PILOT`, and `PRODUCTION`. Revoked, expired, exhausted, unknown, hostname-mismatched, or key-conflicting registrations all receive the same uniform `401 Unauthorized` (so token existence is not revealed); the specific reason is recorded only in the token's history. Repeated failed attempts from one IP are rate limited (`429`).
+
+Token create, rotate, and revoke, and every registration attempt, are audited.
 
 ## 3. Declarative policy
 

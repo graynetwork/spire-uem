@@ -898,16 +898,50 @@ type EnrollmentToken struct {
 	ExpiresAt   *time.Time     `json:"expires_at,omitempty"`
 	IsRevoked   bool           `json:"is_revoked"`
 	CreatedAt   time.Time      `json:"created_at"`
+	// RequireApproval makes a device registered with this token land PENDING_APPROVAL
+	// instead of being auto-approved. Defaults to false for new and pre-existing tokens.
+	RequireApproval bool `json:"require_approval"`
+	// HostnamePattern, when set, is a glob (e.g. "lab-*") the registering hostname must
+	// match or the registration is refused. Empty means any hostname is accepted.
+	HostnamePattern string `json:"hostname_pattern,omitempty"`
+	// CreatedBy is the admin username that created (or last rotated) the token.
+	CreatedBy string `json:"created_by,omitempty"`
+	// RotatedAt is when the secret was last rotated, if ever.
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
 }
 
 // CreateTokenRequest defines the parameters for generating a new enrollment token.
 type CreateTokenRequest struct {
-	Description    string         `json:"description"`
-	TargetRing     DeploymentRing `json:"target_ring"`
-	TargetTags     []string       `json:"target_tags"`
-	MaxUses        int            `json:"max_uses"`
-	ExpiresInHours int            `json:"expires_in_hours"`
+	Description     string         `json:"description"`
+	TargetRing      DeploymentRing `json:"target_ring"`
+	TargetTags      []string       `json:"target_tags"`
+	MaxUses         int            `json:"max_uses"`
+	ExpiresInHours  int            `json:"expires_in_hours"`
+	RequireApproval bool           `json:"require_approval"`
+	HostnamePattern string         `json:"hostname_pattern,omitempty"`
+	// CreatedBy is filled in by the handler from the authenticated admin, never the client.
+	CreatedBy string `json:"-"`
 }
+
+// EnrollmentRegistration is one recorded attempt to register with an enrollment token.
+type EnrollmentRegistration struct {
+	ID           string    `json:"id"`
+	TokenID      *string   `json:"token_id,omitempty"`
+	DeviceID     *string   `json:"device_id,omitempty"`
+	HardwareUUID string    `json:"hardware_uuid"`
+	Hostname     string    `json:"hostname"`
+	SourceIP     string    `json:"source_ip"`
+	Result       string    `json:"result"`
+	Reason       string    `json:"reason,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// Enrollment registration result constants (stored in enrollment_token_registrations.result).
+const (
+	EnrollResultApproved = "approved"
+	EnrollResultPending  = "pending"
+	EnrollResultRefused  = "refused"
+)
 
 // EnrollmentRegisterRequest is submitted by an endpoint to POST /api/v1/enrollment/register.
 type EnrollmentRegisterRequest struct {
@@ -915,6 +949,13 @@ type EnrollmentRegisterRequest struct {
 	HardwareUUID string   `json:"hardware_uuid"`
 	Hostname     string   `json:"hostname"`
 	Tags         []string `json:"tags,omitempty"`
+	// EnrollmentKey binds the device record to the agent installation, exactly as in the
+	// manual enroll flow. A token can never let a second machine take over an existing
+	// device record bound to a different key. Required for token-based auto-enrollment.
+	EnrollmentKey string `json:"enrollment_key,omitempty"`
+	// CSRPEM is a PEM PKCS#10 request for the device's local key; when present and a device
+	// CA is configured the server issues a client-auth leaf at auto-approval.
+	CSRPEM string `json:"csr_pem,omitempty"`
 }
 
 // EnrollmentRegisterResponse is returned on successful registration.
@@ -924,6 +965,13 @@ type EnrollmentRegisterResponse struct {
 	PatchRing     DeploymentRing `json:"patch_ring"`
 	AuthToken     string         `json:"auth_token,omitempty"`
 	ServerBaseURL string         `json:"server_base_url,omitempty"`
+	// WipeSigningPublicKey lets the agent pin the server's Ed25519 wipe-order signing key
+	// at auto-approval (base64). Present only when a bearer token is issued.
+	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
+	// DeviceCertificatePEM is the PEM client-auth leaf issued for the request CSR, present
+	// only when a CSR was supplied, a CA is configured, and the device was auto-approved.
+	DeviceCertificatePEM string `json:"device_certificate_pem,omitempty"`
+	DeviceCertNotAfter   string `json:"device_cert_not_after,omitempty"`
 }
 
 // GeneralSettings encapsulates basic control plane operational parameters.
