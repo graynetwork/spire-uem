@@ -327,3 +327,20 @@ func capOutputDB(s string) string {
 	}
 	return s[:cap] + "\n...[truncated]"
 }
+
+// RetryFailedCampaignWork returns a stage's FAILED and INTERRUPTED work rows to PENDING so
+// those devices receive the work again, clearing their failure details. It is used when an
+// administrator resumes a halted campaign. UNSUPPORTED rows (agents too old to run campaigns)
+// are left alone, since retrying them cannot succeed. Returns the number of rows re-queued.
+func (r *Repository) RetryFailedCampaignWork(ctx context.Context, campaignID string, stage int) (int, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE campaign_device_work
+		SET state='PENDING', failure_class='', last_output='', dispatched_at=NULL,
+		    reboot_required=FALSE, updated_at=NOW()
+		WHERE campaign_id=$1 AND stage=$2 AND state IN ('FAILED','INTERRUPTED')`,
+		campaignID, stage)
+	if err != nil {
+		return 0, fmt.Errorf("retry failed campaign work: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}

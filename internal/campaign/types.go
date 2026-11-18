@@ -148,10 +148,16 @@ func (s DeviceWorkState) IsFailure() bool {
 
 // PackageWork is one (package, target version) the campaign must apply on a device.
 type PackageWork struct {
-	// Package is the binary/source package name (already validated).
+	// Package is the installed BINARY package name (already validated). Source names from
+	// CVE data are expanded to binaries before work is created.
 	Package string `json:"package"`
 	// Target is the target version, or TargetLatest.
 	Target string `json:"target"`
+	// MinVersion, when set, is the SOURCE version the package must reach (a CVE's fixed
+	// version). The agent upgrades to latest and then reports the package as not upgraded
+	// unless its installed source version is at least this, so a repository that does not yet
+	// carry the fix can never be counted as a success.
+	MinVersion string `json:"min_version,omitempty"`
 	// FromCVE records the CVE that introduced this work (empty for explicit-package or group
 	// campaigns), for reporting mean-time-to-remediate.
 	FromCVE string `json:"from_cve,omitempty"`

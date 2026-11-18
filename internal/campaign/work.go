@@ -19,6 +19,22 @@ type DeviceFacts struct {
 	// InstalledSource maps a source package name to its installed version, for explicit and
 	// group campaigns that upgrade named packages to latest.
 	InstalledSource map[string]string
+	// Binaries maps each installed BINARY package name to its source package name. apt
+	// installs binary packages, so work is always expressed per binary: a source name such as
+	// "vim" or "glibc" is not something apt can upgrade (it would skip it, or fail to find it).
+	Binaries map[string]string
+}
+
+// binariesOf returns the installed binary packages built from the given source, sorted.
+func (f DeviceFacts) binariesOf(source string) []string {
+	var out []string
+	for bin, src := range f.Binaries {
+		if src == source {
+			out = append(out, bin)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // riskExcludes reports whether an active risk acceptance covers (cve, pkg) for this device.
@@ -85,60 +101,65 @@ func riskScopeCovers(ra RiskAcceptance, facts DeviceFacts) bool {
 // ComputeWork derives the per-device package work for a campaign from the device's facts,
 // the active risk acceptances, and the campaign's exclusions. It is pure.
 //
-//   - TargetCVE: for each of the campaign's CVE ids that the device has OPEN with a fixed
-//     version available (NoFixAvailable == false and FixedVersion != ""), add work to bring
-//     the source package to that fixed version. A CVE with no fix available yields no work
-//     (there is nothing to install). Recomputed each time the device reports, so a CVE that
-//     is no longer matched drops out automatically.
-//   - TargetPackages: for each named package the device actually has installed, add work to
-//     bring it to latest available.
-//   - TargetGroup: upgrade the device's security-pending source packages (those with an open
-//     CVE match that has a fix) to their fixed versions — a group campaign remediates the
-//     group's outstanding fixable CVEs. (An empty result means the device is already clean.)
+// Work is always a list of installed BINARY packages, because that is what apt can upgrade.
+// CVE data names source packages, and an admin may name either kind, so names are expanded
+// to the binaries the device has installed:
 //
-// Risk acceptance and per-campaign package exclusions remove work items. When the campaign
-// pins a CVE's fixed version, two CVEs fixing the same package keep the HIGHER fixed version
-// (never downgrade below any required fix).
+//   - TargetCVE: for each of the campaign's CVE ids that the device has OPEN with a fixed
+//     version available (NoFixAvailable == false and FixedVersion != ""), every installed
+//     binary built from the affected source package is upgraded to the latest available
+//     version, and the agent must confirm its source version reached the fixed version
+//     (MinVersion). A CVE with no fix yields no work. Recomputed each time the device reports,
+//     so a CVE that is no longer matched drops out automatically.
+//   - TargetPackages: each named package the device has installed, as a binary name or as a
+//     source name (expanded to its installed binaries), is upgraded to latest available.
+//   - TargetGroup: as TargetCVE, for every open CVE match on the device that has a fix.
+//
+// The fixed version is a minimum, never an exact pin: the security archive keeps only the
+// newest build, so an exact pin to an older fix stops being installable, and binary versions
+// can differ from the source version. Two CVEs on one source keep the HIGHER minimum.
+// Risk acceptances and per-campaign package exclusions apply to the source name and to each
+// binary name, so excluding "vim" or "xxd" both work.
 func ComputeWork(c *Campaign, facts DeviceFacts, acceptances []RiskAcceptance, now time.Time) []PackageWork {
-	// pkg -> chosen (target, fromCVE); target is a concrete version or TargetLatest.
 	chosen := map[string]PackageWork{}
 
-	addPinned := func(pkg, fixed, cve string) {
-		if !ValidPackageName(pkg) || !ValidVersion(fixed) {
-			return
+	excluded := func(cve, source, bin string) bool {
+		if c.IsPackageExcluded(bin) || (source != "" && c.IsPackageExcluded(source)) {
+			return true
 		}
-		if c.IsPackageExcluded(pkg) {
-			return
+		if riskExcludes(acceptances, now, facts, cve, bin) {
+			return true
 		}
-		if riskExcludes(acceptances, now, facts, cve, pkg) {
-			return
-		}
-		if cur, ok := chosen[pkg]; ok {
-			// Keep the higher required fixed version; prefer a pin over "latest".
-			if cur.Target == TargetLatest {
-				chosen[pkg] = PackageWork{Package: pkg, Target: fixed, FromCVE: cve}
-			} else if debianNewer(fixed, cur.Target) {
-				chosen[pkg] = PackageWork{Package: pkg, Target: fixed, FromCVE: cve}
-			}
-			return
-		}
-		chosen[pkg] = PackageWork{Package: pkg, Target: fixed, FromCVE: cve}
+		return source != "" && source != bin && riskExcludes(acceptances, now, facts, cve, source)
 	}
 
-	addLatest := func(pkg string) {
-		if !ValidPackageName(pkg) {
+	add := func(bin, source, minVersion, cve string) {
+		if !ValidPackageName(bin) {
 			return
 		}
-		if c.IsPackageExcluded(pkg) {
+		if minVersion != "" && !ValidVersion(minVersion) {
 			return
 		}
-		if riskExcludes(acceptances, now, facts, "", pkg) {
+		if excluded(cve, source, bin) {
 			return
 		}
-		if _, ok := chosen[pkg]; ok {
-			return
+		next := PackageWork{Package: bin, Target: TargetLatest, MinVersion: minVersion, FromCVE: cve}
+		if cur, ok := chosen[bin]; ok {
+			// Keep the higher required minimum (never lower a required fix).
+			if minVersion == "" || (cur.MinVersion != "" && !debianNewer(minVersion, cur.MinVersion)) {
+				return
+			}
 		}
-		chosen[pkg] = PackageWork{Package: pkg, Target: TargetLatest}
+		chosen[bin] = next
+	}
+
+	addFix := func(m types.DeviceCVEMatch) {
+		if m.NoFixAvailable || strings.TrimSpace(m.FixedVersion) == "" {
+			return // no fix to install
+		}
+		for _, bin := range facts.binariesOf(m.SourcePackage) {
+			add(bin, m.SourcePackage, strings.TrimSpace(m.FixedVersion), m.CVEID)
+		}
 	}
 
 	switch c.TargetKind {
@@ -148,27 +169,24 @@ func ComputeWork(c *Campaign, facts DeviceFacts, acceptances []RiskAcceptance, n
 			want[strings.ToUpper(strings.TrimSpace(id))] = struct{}{}
 		}
 		for _, m := range facts.CVEMatches {
-			if _, ok := want[strings.ToUpper(m.CVEID)]; !ok {
-				continue
+			if _, ok := want[strings.ToUpper(m.CVEID)]; ok {
+				addFix(m)
 			}
-			if m.NoFixAvailable || strings.TrimSpace(m.FixedVersion) == "" {
-				continue // no fix to install
-			}
-			addPinned(m.SourcePackage, strings.TrimSpace(m.FixedVersion), m.CVEID)
 		}
 	case TargetPackages:
 		for _, pkg := range c.Packages {
 			pkg = strings.TrimSpace(pkg)
-			if _, ok := facts.InstalledSource[pkg]; ok {
-				addLatest(pkg)
+			if src, ok := facts.Binaries[pkg]; ok {
+				add(pkg, src, "", "")
+				continue
+			}
+			for _, bin := range facts.binariesOf(pkg) {
+				add(bin, pkg, "", "")
 			}
 		}
 	case TargetGroup:
 		for _, m := range facts.CVEMatches {
-			if m.NoFixAvailable || strings.TrimSpace(m.FixedVersion) == "" {
-				continue
-			}
-			addPinned(m.SourcePackage, strings.TrimSpace(m.FixedVersion), m.CVEID)
+			addFix(m)
 		}
 	}
 

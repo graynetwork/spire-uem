@@ -78,6 +78,11 @@ func newE2E(t *testing.T, nProd int, mutate func(*campaign.Campaign)) *e2eEnv {
 			VALUES ($1,$2,$3,'1.0-1','1.0-2','high',false)`, d.ID, e.cve, e.pkg); err != nil {
 			t.Fatal(err)
 		}
+		// The device's last inventory report: the binary package built from that source.
+		if _, err := pool.Exec(ctx, `UPDATE devices SET reported_state = jsonb_build_object('source_packages',
+			jsonb_build_array(jsonb_build_object('n', $2::text, 's', $2::text, 'v', '1.0-1'))) WHERE id=$1`, d.ID, e.pkg); err != nil {
+			t.Fatal(err)
+		}
 		d, _ = repo.GetDeviceByID(ctx, d.ID)
 		return devTok{dev: d, token: tok}
 	}
@@ -121,7 +126,14 @@ func (e *e2eEnv) loop() *campaignsync.Loop {
 
 func (e *e2eEnv) checkin(d devTok) []types.CampaignDirective {
 	e.t.Helper()
-	return postCheckin(e.t, e.h, d.token, types.CheckinRequest{HardwareUUID: d.dev.HardwareUUID, AgentVersion: "9.9.9"}).CampaignDirectives
+	return postCheckin(e.t, e.h, d.token, types.CheckinRequest{HardwareUUID: d.dev.HardwareUUID, AgentVersion: "9.9.9", SourcePackages: e.installed()}).CampaignDirectives
+}
+
+// installed is the package inventory every test device reports: one binary package built from
+// the source package the CVE matches. Campaign work names installed binaries, so a device
+// that reports no packages has nothing to upgrade.
+func (e *e2eEnv) installed() []types.ReportedPackage {
+	return []types.ReportedPackage{{Name: e.pkg, Source: e.pkg, SourceVersion: "1.0-1"}}
 }
 
 func (e *e2eEnv) report(d devTok, res campaign.DeviceRunResult) {
@@ -206,8 +218,9 @@ func TestCampaignE2E_CanaryPromoteThenHalt(t *testing.T) {
 	if len(dirs) != 1 || dirs[0].CampaignID != e.camp.ID {
 		t.Fatalf("CANARY device should get one directive, got %+v", dirs)
 	}
-	if len(dirs[0].Packages) != 1 || dirs[0].Packages[0].Package != e.pkg || dirs[0].Packages[0].Target != "1.0-2" {
-		t.Fatalf("unexpected work: %+v", dirs[0].Packages)
+	if len(dirs[0].Packages) != 1 || dirs[0].Packages[0].Package != e.pkg ||
+		dirs[0].Packages[0].Target != campaign.TargetLatest || dirs[0].Packages[0].MinVersion != "1.0-2" {
+		t.Fatalf("unexpected work (want latest with the fix as minimum): %+v", dirs[0].Packages)
 	}
 	if dirs[0].RebootPolicy != "notify" || !dirs[0].MayDefer || dirs[0].DeferralsLeft != 2 {
 		t.Errorf("directive should carry reboot policy and deferral allowance: %+v", dirs[0])
@@ -400,9 +413,10 @@ func TestCheckinResponse_OldAgentWireCompat(t *testing.T) {
 	if strings.Contains(string(b), "campaign_directives") {
 		t.Fatalf("empty campaign directives must be omitted: %s", b)
 	}
-	// And an old agent's request (no new fields) still checks in fine with a RUNNING campaign.
+	// And an agent that predates campaigns (it sends its package inventory, as agents always
+	// have, but none of the new fields) still checks in fine with a RUNNING campaign.
 	e := newE2E(t, 0, nil)
-	resp := postCheckin(t, e.h, e.canary.token, types.CheckinRequest{HardwareUUID: e.canary.dev.HardwareUUID})
+	resp := postCheckin(t, e.h, e.canary.token, types.CheckinRequest{HardwareUUID: e.canary.dev.HardwareUUID, SourcePackages: e.installed()})
 	if len(resp.CampaignDirectives) != 1 {
 		t.Fatalf("server should still dispatch to an agent that sends no new fields: %+v", resp.CampaignDirectives)
 	}
@@ -444,5 +458,42 @@ func TestCampaignE2E_PartialStageDoesNotComplete(t *testing.T) {
 	}
 	if ev := e.eval(); !ev.Completed {
 		t.Fatalf("expected completion once every device reported")
+	}
+}
+
+// TestCampaignE2E_ResumeAfterHaltRetriesFailedDevices was found on a real VM: after fixing a
+// held package and resuming, the campaign re-halted on the next evaluation over the same stale
+// failure, and the failed device was never sent the work again. Resume must re-queue the
+// current stage's failed devices, and a finished campaign must not be resumable.
+func TestCampaignE2E_ResumeAfterHaltRetriesFailedDevices(t *testing.T) {
+	e := newE2E(t, 0, nil)
+	if d := e.checkin(e.canary); len(d) != 1 {
+		t.Fatalf("canary directive: %+v", d)
+	}
+	e.report(e.canary, e.failed())
+	if ev := e.eval(); !ev.Halted {
+		t.Fatalf("expected halt, got %+v", ev)
+	}
+
+	// What the resume handler does for a HALTED campaign (the handler itself is covered in
+	// internal/web): re-queue the stage's failed devices, then set RUNNING.
+	if n, err := e.repo.RetryFailedCampaignWork(e.ctx, e.camp.ID, e.state().CurrentStage); err != nil || n != 1 {
+		t.Fatalf("re-queue: n=%d err=%v", n, err)
+	}
+	if err := e.repo.SetCampaignState(e.ctx, e.camp.ID, campaign.StateRunning); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.workState(e.canary); got != campaign.WorkPending {
+		t.Fatalf("failed device should be re-queued PENDING on resume, got %s", got)
+	}
+	if ev := e.eval(); ev.Halted {
+		t.Fatalf("resumed campaign re-halted on the stale failure")
+	}
+	if d := e.checkin(e.canary); len(d) != 1 {
+		t.Fatalf("re-queued device should get the work again, got %+v", d)
+	}
+	e.report(e.canary, e.upgraded())
+	if got := e.workState(e.canary); got != campaign.WorkSucceeded {
+		t.Fatalf("retry result: %s", got)
 	}
 }

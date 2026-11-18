@@ -13,3 +13,8 @@ func debianNewer(a, b string) bool {
 func debianOlder(a, b string) bool {
 	return cvematch.CompareDebianVersions(a, b) < 0
 }
+
+// VersionAtLeast reports whether Debian version v is equal to or newer than min.
+func VersionAtLeast(v, min string) bool {
+	return cvematch.CompareDebianVersions(v, min) >= 0
+}

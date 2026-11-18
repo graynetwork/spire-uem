@@ -157,7 +157,7 @@ func (r *Repository) deferralsUsed(ctx context.Context, campaignID, deviceID str
 func toDirectivePackages(work []campaign.PackageWork) []types.CampaignPackageWork {
 	out := make([]types.CampaignPackageWork, 0, len(work))
 	for _, w := range work {
-		out = append(out, types.CampaignPackageWork{Package: w.Package, Target: w.Target, FromCVE: w.FromCVE})
+		out = append(out, types.CampaignPackageWork{Package: w.Package, Target: w.Target, MinVersion: w.MinVersion, FromCVE: w.FromCVE})
 	}
 	return out
 }

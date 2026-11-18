@@ -88,7 +88,7 @@ func (r *Repository) ResolveCampaignTargetDeviceIDs(ctx context.Context, c *camp
 
 // deviceFactsFor loads the DeviceFacts a campaign work computation needs for one device.
 func (r *Repository) deviceFactsFor(ctx context.Context, deviceID string) (campaign.DeviceFacts, error) {
-	facts := campaign.DeviceFacts{DeviceID: deviceID, InstalledSource: map[string]string{}}
+	facts := campaign.DeviceFacts{DeviceID: deviceID, InstalledSource: map[string]string{}, Binaries: map[string]string{}}
 	dev, err := r.GetDeviceByID(ctx, deviceID)
 	if err != nil || dev == nil {
 		return facts, err
@@ -111,6 +111,9 @@ func (r *Repository) deviceFactsFor(ctx context.Context, deviceID string) (campa
 				}
 				if src != "" {
 					facts.InstalledSource[src] = p.SourceVersion
+					if bin := strings.TrimSpace(p.Name); bin != "" {
+						facts.Binaries[bin] = src
+					}
 				}
 			}
 		}

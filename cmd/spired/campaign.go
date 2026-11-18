@@ -56,6 +56,9 @@ type campaignDeps struct {
 	// InstalledVersion returns the currently installed version of a package ("" if unknown).
 	// It is read BEFORE the install so the report carries the previous version for rollback.
 	InstalledVersion func(ctx context.Context, pkg string) string
+	// InstalledSourceVersion returns the installed package's SOURCE version ("" if unknown),
+	// read after the install to confirm a CVE's fixed version was reached.
+	InstalledSourceVersion func(ctx context.Context, pkg string) string
 }
 
 // inflightEntry is one persisted in-flight (or completed-but-unreported) campaign run.
@@ -143,7 +146,7 @@ func runCampaignDirective(ctx context.Context, d campaignDeps, dir types.Campaig
 	}
 	works := make([]campaign.PackageWork, 0, len(dir.Packages))
 	for _, p := range dir.Packages {
-		works = append(works, campaign.PackageWork{Package: p.Package, Target: p.Target, FromCVE: p.FromCVE})
+		works = append(works, campaign.PackageWork{Package: p.Package, Target: p.Target, MinVersion: p.MinVersion, FromCVE: p.FromCVE})
 	}
 
 	// 1. Tell the active user, and give them a chance to defer when the server allows it.
@@ -186,6 +189,21 @@ func runCampaignDirective(ctx context.Context, d campaignDeps, dir types.Campaig
 		}
 	}
 	res := engine.ExecuteCampaignInstall(ctx, d.Runner, engine.CampaignInstallRequest{CampaignID: id, Packages: works})
+	if d.InstalledVersion != nil {
+		// Re-read dpkg after the run: the before/after versions, not apt's output, decide
+		// what was upgraded, what was never installed, and whether a CVE fix was reached.
+		after := map[string]string{}
+		srcAfter := map[string]string{}
+		for _, w := range works {
+			if campaign.ValidPackageName(w.Package) {
+				after[w.Package] = d.InstalledVersion(ctx, w.Package)
+				if d.InstalledSourceVersion != nil {
+					srcAfter[w.Package] = d.InstalledSourceVersion(ctx, w.Package)
+				}
+			}
+		}
+		res = engine.ReconcileCampaignResult(res, works, prev, after, srcAfter)
+	}
 	for i := range res.Packages {
 		if res.Packages[i].FromVersion == "" {
 			res.Packages[i].FromVersion = prev[res.Packages[i].Package]
@@ -257,11 +275,12 @@ func newCampaignDeps(client *http.Client, serverURL, token string, pending campa
 		Post: func(ctx context.Context, path string, body any) error {
 			return postJSON(ctx, client, serverURL+path, token, body)
 		},
-		InstalledVersion: dpkgInstalledVersion,
-		Pending:          pending,
-		StatePath:        campaignStatePath,
-		Grace:            campaignDeferGrace,
-		Sleep:            sleepContext,
+		InstalledVersion:       dpkgInstalledVersion,
+		InstalledSourceVersion: dpkgInstalledSourceVersion,
+		Pending:                pending,
+		StatePath:              campaignStatePath,
+		Grace:                  campaignDeferGrace,
+		Sleep:                  sleepContext,
 	}
 }
 
@@ -284,12 +303,28 @@ func notifyActiveUser(ctx context.Context, summary, body string) {
 // when it is not installed or unknown. The name is validated first and passed as one argv
 // element after "--", so it can never be read as an option or reach a shell.
 func dpkgInstalledVersion(ctx context.Context, pkg string) string {
+	return dpkgQueryField(ctx, pkg, "${Version}")
+}
+
+// dpkgInstalledSourceVersion returns the installed package's source version, which is what
+// CVE fixed versions are expressed in ("" if not installed).
+func dpkgInstalledSourceVersion(ctx context.Context, pkg string) string {
+	return dpkgQueryField(ctx, pkg, "${source:Version}")
+}
+
+// dpkgQueryField reads one dpkg-query field for an installed package. A package that is
+// known to dpkg but not installed (removed, config files only) reports "".
+func dpkgQueryField(ctx context.Context, pkg, field string) string {
 	if !campaign.ValidPackageName(pkg) {
 		return ""
 	}
-	out, err := exec.CommandContext(ctx, "dpkg-query", "--show", "--showformat=${Version}", "--", pkg).Output()
+	out, err := exec.CommandContext(ctx, "dpkg-query", "--show", "--showformat=${db:Status-Status}\t"+field, "--", pkg).Output()
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	status, val, ok := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	if !ok || status != "installed" {
+		return ""
+	}
+	return strings.TrimSpace(val)
 }

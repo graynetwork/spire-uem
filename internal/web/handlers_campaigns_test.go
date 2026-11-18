@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/campaign"
@@ -167,5 +168,79 @@ func TestWebRiskAcceptance_ExpiryCapAndScope(t *testing.T) {
 	h.CreateRiskAcceptance(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("valid in-scope acceptance should be created, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWebCampaign_ResumeControls: resuming a HALTED campaign re-queues the stage's failed
+// devices (otherwise the stale failure re-halts it at once, as seen on a real VM), and a
+// finished campaign can be neither resumed nor paused back to life.
+func TestWebCampaign_ResumeControls(t *testing.T) {
+	pool := campaignWebPool(t)
+	if pool == nil {
+		return
+	}
+	defer pool.Close()
+	ctx := context.Background()
+	repo := db.NewRepository(pool)
+	h, err := web.NewHandler(repo, nil, audit.NewForwarder(repo, ""))
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	sfx := time.Now().Format("150405.000000000")
+	superAdmin := &types.AdminUser{ID: "sa", Username: "sa", Role: types.RoleSuperAdmin}
+
+	c, err := repo.CreateCampaign(ctx, &campaign.Campaign{Name: "resume-" + sfx, TargetKind: campaign.TargetPackages, Packages: []string{"curl"}, RebootPolicy: campaign.RebootNever, CreatedBy: "sa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, _, err := repo.GetOrCreateDevice(ctx, "resume-"+sfx, "resume-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO campaign_device_work (campaign_id, device_id, stage, state, failure_class, last_output, dispatched_at)
+		VALUES ($1,$2,0,'FAILED','held','E: Held packages were changed', NOW())`, c.ID, dev.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetCampaignState(ctx, c.ID, campaign.StateHalted); err != nil {
+		t.Fatal(err)
+	}
+
+	control := func(action string, fn func(http.ResponseWriter, *http.Request)) int {
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", c.ID)
+		req := httptest.NewRequest(http.MethodPost, "/admin/campaigns/"+c.ID+"/"+action, nil)
+		req = seedAdmin(req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx)), superAdmin)
+		w := httptest.NewRecorder()
+		fn(w, req)
+		return w.Code
+	}
+
+	if code := control("resume", h.ResumeCampaign); code != http.StatusOK {
+		t.Fatalf("resume HTTP %d", code)
+	}
+	var state, class string
+	var dispatched *time.Time
+	if err := pool.QueryRow(ctx, `SELECT state, failure_class, dispatched_at FROM campaign_device_work WHERE campaign_id=$1 AND device_id=$2`, c.ID, dev.ID).Scan(&state, &class, &dispatched); err != nil {
+		t.Fatal(err)
+	}
+	if state != "PENDING" || class != "" || dispatched != nil {
+		t.Fatalf("failed device should be re-queued cleanly, got state=%s class=%q dispatched=%v", state, class, dispatched)
+	}
+	if got, _ := repo.GetCampaign(ctx, c.ID); got.State != campaign.StateRunning {
+		t.Fatalf("state = %s, want RUNNING", got.State)
+	}
+
+	if code := control("cancel", h.CancelCampaign); code != http.StatusOK {
+		t.Fatalf("cancel HTTP %d", code)
+	}
+	for action, fn := range map[string]func(http.ResponseWriter, *http.Request){
+		"resume": h.ResumeCampaign, "pause": h.PauseCampaign, "cancel": h.CancelCampaign,
+	} {
+		if code := control(action, fn); code != http.StatusBadRequest {
+			t.Errorf("%s of a cancelled campaign must be refused, got HTTP %d", action, code)
+		}
+	}
+	if got, _ := repo.GetCampaign(ctx, c.ID); got.State != campaign.StateCancelled {
+		t.Fatalf("state = %s, want CANCELLED", got.State)
 	}
 }

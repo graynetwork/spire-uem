@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -226,4 +227,53 @@ func capOutput(s string) string {
 		return s
 	}
 	return s[:campaignAptOutputCap] + "\n...[truncated]"
+}
+
+// ReconcileCampaignResult corrects a campaign result using the installed versions read from
+// dpkg before and after the run, which are authoritative where apt's output is not:
+//
+//   - A package that was not installed before the run is reported not_available. apt-get
+//     --only-upgrade skips it with exit status 0, which would otherwise read as success.
+//   - A package whose installed version changed is reported upgraded, with both versions.
+//     (A real, non-simulated apt run prints no "Inst" lines, so output parsing alone reports
+//     every real upgrade as already current.)
+//   - A work item with a MinVersion (a CVE fix) succeeds only when the package's installed
+//     SOURCE version afterwards is at least that version. Otherwise, including when the
+//     version cannot be read, it is reported not_available: the repository did not supply the
+//     fix, so the device is still vulnerable.
+//
+// before, after and sourceAfter map package -> version; a missing or empty entry means the
+// package is not installed (or could not be read).
+func ReconcileCampaignResult(res campaign.DeviceRunResult, works []campaign.PackageWork, before, after, sourceAfter map[string]string) campaign.DeviceRunResult {
+	minFor := make(map[string]string, len(works))
+	for _, w := range works {
+		minFor[w.Package] = w.MinVersion
+	}
+	for i := range res.Packages {
+		pr := &res.Packages[i]
+		b, a := before[pr.Package], after[pr.Package]
+		switch {
+		case b == "":
+			pr.State = campaign.PkgNotAvailable
+			pr.Output = "package is not installed on this device"
+			continue
+		case a != "" && a != b:
+			pr.State = campaign.PkgUpgraded
+			pr.FromVersion = b
+			pr.ToVersion = a
+			pr.Output = ""
+		}
+		if b != "" && pr.FromVersion == "" {
+			pr.FromVersion = b
+		}
+		min := minFor[pr.Package]
+		if min == "" || (pr.State != campaign.PkgUpgraded && pr.State != campaign.PkgAlreadyCurrent) {
+			continue
+		}
+		if src := sourceAfter[pr.Package]; src == "" || !campaign.VersionAtLeast(src, min) {
+			pr.State = campaign.PkgNotAvailable
+			pr.Output = fmt.Sprintf("installed source version %q is below the required fixed version %q; the repository does not provide the fix yet", src, min)
+		}
+	}
+	return res
 }

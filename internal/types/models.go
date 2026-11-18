@@ -817,7 +817,10 @@ type CampaignDirective struct {
 type CampaignPackageWork struct {
 	Package string `json:"package"`
 	Target  string `json:"target"`
-	FromCVE string `json:"from_cve,omitempty"`
+	// MinVersion is the source version the package must reach (see campaign.PackageWork).
+	// Older agents ignore it and upgrade to latest.
+	MinVersion string `json:"min_version,omitempty"`
+	FromCVE    string `json:"from_cve,omitempty"`
 }
 
 // PolicyExecutionItem represents a single policy enforcement outcome reported by spired.

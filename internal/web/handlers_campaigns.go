@@ -202,21 +202,48 @@ func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action
 		}
 		newState = campaign.StateRunning
 	case "pause":
+		if c.State != campaign.StateRunning {
+			http.Error(w, "only a running campaign can be paused", http.StatusBadRequest)
+			return
+		}
 		newState = campaign.StatePaused
 	case "resume":
-		// Resume clears a halt as well as a pause.
+		// Resume clears a halt as well as a pause. It never revives a finished campaign.
+		if c.State != campaign.StatePaused && c.State != campaign.StateHalted {
+			http.Error(w, "campaign cannot be resumed from "+string(c.State), http.StatusBadRequest)
+			return
+		}
 		newState = campaign.StateRunning
 	case "cancel":
+		if c.State == campaign.StateCompleted || c.State == campaign.StateCancelled {
+			http.Error(w, "campaign is already "+string(c.State), http.StatusBadRequest)
+			return
+		}
 		newState = campaign.StateCancelled
 	default:
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
 	}
+	detail := ""
+	if action == "resume" && c.State == campaign.StateHalted {
+		// The failures that caused the halt would otherwise halt it again on the next
+		// evaluation, and the failed devices would never be retried. An administrator
+		// resumes after fixing the cause, so the current stage's failed and interrupted
+		// devices go back to PENDING and receive the work again at their next check-in.
+		// This runs before the state change so the evaluation loop never sees the campaign
+		// RUNNING with the stale failures still counted.
+		n, err := h.repo.RetryFailedCampaignWork(r.Context(), c.ID, c.CurrentStage)
+		if err != nil {
+			http.Error(w, "failed to re-queue failed devices; campaign left halted", http.StatusInternalServerError)
+			return
+		}
+		detail = fmt.Sprintf("re-queued %d failed or interrupted device(s)", n)
+	}
 	if err := h.repo.SetCampaignState(r.Context(), c.ID, newState); err != nil {
 		http.Error(w, "failed to update campaign", http.StatusInternalServerError)
 		return
 	}
-	_ = h.repo.RecordCampaignEvent(r.Context(), c.ID, action, actor, "", c.CurrentStage)
+	_ = h.repo.RecordCampaignEvent(r.Context(), c.ID, action, actor, detail, c.CurrentStage)
 	h.auditCampaign(r, "CAMPAIGN_"+strings.ToUpper(action), c.ID, map[string]any{"from": string(c.State), "to": string(newState)})
 	writeCampaignJSON(w, http.StatusOK, map[string]any{"id": c.ID, "state": string(newState)})
 }

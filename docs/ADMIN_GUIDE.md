@@ -398,10 +398,22 @@ tags and can target only their own devices.
 **Create a campaign** (`POST /admin/campaigns`). Choose exactly one target:
 - a dynamic group (`"target_kind":"group","group_id":"..."`),
 - a list of CVE ids (`"target_kind":"cve","cve_ids":["CVE-2024-...", ...]`) — each targeted
-  device gets work to bring the affected source package to the CVE's fixed version, only when a
-  fix is available; a CVE with no fix yields no work,
+  device gets work for every installed binary package built from the affected source package
+  (for a CVE in source `vim`, that is `xxd`, `vim-tiny` and so on), only when a fix is
+  available; a CVE with no fix yields no work,
 - or explicit packages (`"target_kind":"packages","packages":["curl", ...]`) — every device that
-  has one of those packages installed is upgraded to the latest available.
+  has one of those packages installed is upgraded to the latest available. A name can be a
+  binary package (`xxd`) or a source package (`vim`, `glibc`); a source name is expanded to the
+  binaries the device has installed from it.
+
+**Fixed versions are minimums.** apt upgrades binary packages, while CVE data gives source
+versions, and the security archive keeps only the newest build. So CVE work upgrades each
+binary to the latest available version, and the agent then checks that the package's installed
+source version is at least the CVE's fixed version. If the device's repositories do not carry
+the fix yet, the package is reported `not_available` and the device counts as failed, never as
+remediated. Package exclusions and risk acceptances match either the source or the binary name.
+The agent decides what was upgraded by comparing dpkg's installed versions before and after the
+run, so a package that is not installed is reported `not_available` rather than as success.
 Optionally limit with `target_tags` and `target_ring`. Set `stages` (or accept the default
 CANARY -> PILOT -> PRODUCTION), `reboot_policy` (`never` / `notify` / `force`), `max_deferrals`,
 an optional `deadline_at`, a `blackout_cron` + `blackout_duration_minutes`, and
@@ -417,7 +429,11 @@ exceeded the whole campaign halts automatically, an alert is raised, and nothing
 dispatched until you resume it — halting always takes precedence over promotion.
 
 **Controls.** `POST /admin/campaigns/{id}/start|pause|resume|cancel`. Resume clears a halt as
-well as a pause. `GET /admin/campaigns/{id}` returns the campaign, its per-device work, a report
+well as a pause. Resuming a HALTED campaign also returns the current stage's failed and
+interrupted devices to pending, so fix the cause first (for example unhold a package): those
+devices receive the work again at their next check-in instead of re-halting the campaign on the
+old failures. Pause works only on a running campaign, resume only on a paused or halted one, and
+a completed or cancelled campaign accepts no further control. `GET /admin/campaigns/{id}` returns the campaign, its per-device work, a report
 (device counts by stage and state, failure classes) and its event log.
 `GET /admin/campaigns/{id}/export?format=csv|json` exports the per-device work, tag-scoped.
 
