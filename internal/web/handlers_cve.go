@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -17,11 +18,23 @@ const maxCVEUploadBytes = 512 * 1024 * 1024
 // VulnerabilitiesPage renders /admin/vulnerabilities: the fleet CVE list (CVE -> affected
 // host count) plus feed freshness.
 func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
-	cves, err := h.repo.ListFleetCVEsScoped(r.Context(), h.deviceScope(r))
+	groupFilter := strings.TrimSpace(r.URL.Query().Get("group"))
+	cves, err := h.repo.ListFleetCVEsScopedInGroup(r.Context(), h.deviceScope(r), groupFilter)
 	if err != nil {
 		log.Printf("[web] list fleet CVEs: %v", err)
 		http.Error(w, "Failed to load vulnerabilities", http.StatusInternalServerError)
 		return
+	}
+	// Mark findings covered by an active risk acceptance. They stay listed as "accepted"
+	// (with reason and expiry); on error they simply show as open (never hidden).
+	if aerr := h.repo.AnnotateFleetCVEsWithAcceptance(r.Context(), h.deviceScope(r), cves, time.Now().UTC()); aerr != nil {
+		log.Printf("[web] annotate accepted CVEs: %v", aerr)
+	}
+	acceptedCount := 0
+	for _, c := range cves {
+		if c.Accepted {
+			acceptedCount++
+		}
 	}
 	feedState, err := h.repo.GetCVEFeedState(r.Context())
 	if err != nil {
@@ -34,6 +47,7 @@ func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	scope := h.deviceScope(r)
 	feedCfg := cvefeed.LoadConfig(r.Context(), h.repo)
+	allGroups, _ := h.repo.ListGroups(r.Context(), scope)
 
 	data := map[string]any{
 		"Title":            "Fleet Vulnerabilities",
@@ -41,11 +55,15 @@ func (h *Handler) VulnerabilitiesPage(w http.ResponseWriter, r *http.Request) {
 		"CSRFToken":        CSRFTokenFromContext(r.Context()),
 		"AdminUser":        AdminUserFromContext(r.Context()),
 		"FleetCVEs":        cves,
+		"AcceptedCVECount": acceptedCount,
+		"OpenCVECount":     len(cves) - acceptedCount,
 		"FeedState":        feedState,
 		"FlashMessage":     r.URL.Query().Get("msg"),
 		"TotalHostsCount":  summary.TotalDevices,
 		"Scoped":           scope.Scoped,
 		"ScopeTags":        scope.Tags,
+		"Groups":           allGroups,
+		"FilterGroup":      groupFilter,
 		"AutoImport":       feedCfg.Enabled,
 		"AutoImportEnv":    feedCfg.EnabledFromEnv,
 		"CanSetAutoImport": AdminRoleFromContext(r.Context()) == types.RoleSuperAdmin,

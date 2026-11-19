@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 // cveImportBatch is how many feed entries are buffered before a CopyFrom flush during an
@@ -195,6 +197,20 @@ func (r *Repository) ReplaceDeviceCVEMatches(ctx context.Context, deviceID strin
 	}
 	defer tx.Rollback(ctx)
 
+	// Capture the prior CVE id set BEFORE deleting, so we can raise a cve_matched event only
+	// for genuinely new matches (not on every recompute of the same set).
+	prior := map[string]struct{}{}
+	prows, perr := tx.Query(ctx, `SELECT DISTINCT cve_id FROM device_cve_matches WHERE device_id = $1`, deviceID)
+	if perr == nil {
+		for prows.Next() {
+			var id string
+			if prows.Scan(&id) == nil {
+				prior[id] = struct{}{}
+			}
+		}
+		prows.Close()
+	}
+
 	if _, err := tx.Exec(ctx, `DELETE FROM device_cve_matches WHERE device_id = $1`, deviceID); err != nil {
 		return fmt.Errorf("delete old device cve matches: %w", err)
 	}
@@ -215,7 +231,28 @@ func (r *Repository) ReplaceDeviceCVEMatches(ctx context.Context, deviceID strin
 			return fmt.Errorf("insert device cve matches: %w", err)
 		}
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	// Raise cve_matched for each NEW cve id (best-effort; never fails the recompute). The
+	// urgency is normalised to high for the "high**" variants so a trigger filter on
+	// urgency=high catches both. One event per newly-seen CVE id.
+	seen := map[string]struct{}{}
+	for _, m := range matches {
+		if _, had := prior[m.CVEID]; had {
+			continue
+		}
+		if _, dup := seen[m.CVEID]; dup {
+			continue
+		}
+		seen[m.CVEID] = struct{}{}
+		urgency := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.Urgency)), "**")
+		r.EmitEvent(ctx, workflows.EventCVEMatched, deviceID, map[string]any{
+			"id": m.CVEID, "urgency": urgency, "source_package": m.SourcePackage,
+		}, false)
+	}
+	return nil
 }
 
 // ListDeviceCVEMatches returns a device's CVE matches, ordered by urgency (high first)
@@ -268,7 +305,19 @@ func (r *Repository) ListFleetCVEs(ctx context.Context) ([]types.FleetCVE, error
 
 // ListFleetCVEsScoped is ListFleetCVEs limited to the devices in scope.
 func (r *Repository) ListFleetCVEsScoped(ctx context.Context, scope DeviceScope) ([]types.FleetCVE, error) {
+	return r.ListFleetCVEsScopedInGroup(ctx, scope, "")
+}
+
+// ListFleetCVEsScopedInGroup is ListFleetCVEsScoped additionally restricted to members of
+// the given group. An empty groupID applies no group restriction.
+func (r *Repository) ListFleetCVEsScopedInGroup(ctx context.Context, scope DeviceScope, groupID string) ([]types.FleetCVE, error) {
 	scoped, tags := scope.sqlArgs()
+	groupPred := ""
+	args := []any{scoped, tags}
+	if strings.TrimSpace(groupID) != "" {
+		args = append(args, groupID)
+		groupPred = " AND EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.device_id = d.id AND gm.group_id = $3::uuid)"
+	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT m.cve_id,
 		       COALESCE(MAX(NULLIF(m.urgency, '')), '') AS urgency,
@@ -276,7 +325,7 @@ func (r *Repository) ListFleetCVEsScoped(ctx context.Context, scope DeviceScope)
 		       BOOL_OR(m.no_fix_available) AS no_fix
 		FROM device_cve_matches m
 		JOIN devices d ON d.id = m.device_id
-		WHERE (NOT $1::bool OR d.tags && $2::text[])
+		WHERE (NOT $1::bool OR d.tags && $2::text[])`+groupPred+`
 		GROUP BY m.cve_id
 		ORDER BY
 			CASE COALESCE(MAX(NULLIF(m.urgency, '')), '')
@@ -286,7 +335,7 @@ func (r *Repository) ListFleetCVEsScoped(ctx context.Context, scope DeviceScope)
 				ELSE 3 END,
 			affected_hosts DESC,
 			m.cve_id ASC
-	`, scoped, tags)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list fleet cves: %w", err)
 	}

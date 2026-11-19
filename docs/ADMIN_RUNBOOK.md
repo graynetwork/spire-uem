@@ -260,9 +260,29 @@ The bootstrap:
 2. installs the agent from the direct `.deb` or signed APT repository;
 3. installs `/usr/local/bin/spired`, `/usr/bin/spire-ctl`, Spire Hub, and `spired.service`;
 4. writes `/etc/spire/config.yaml` with the selected server URL and `/etc/spire/token` path;
-5. enables and starts `spired.service`.
+5. when an enrollment token is supplied, writes it to `/etc/spire/enrollment-token` (mode `0600`) and points `config.yaml` at it with `enrollment_token_file` — the secret is never written into `config.yaml`;
+6. enables and starts `spired.service`.
 
-The standard bootstrap does not accept a dynamic enrollment token. It uses the administrator-approval flow below. Dynamic `spire_tok_...` tokens are for provisioning clients that call `POST /api/v1/enrollment/register` directly.
+#### Automated enrollment with a token (skips manual approval)
+
+Create a token under **Settings → Enrollment Tokens** (SUPER_ADMIN), copy the one-time secret, and pass it to the bootstrap:
+
+```bash
+# Preferred: a root-only 0600 file the agent reads once and deletes on success.
+printf '%s\n' 'spire_tok_xxx' > /root/spire-token && chmod 0600 /root/spire-token
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com \
+  --enrollment-token-file /root/spire-token
+
+# Works, but the secret is visible in the process list and shell history (a warning prints):
+sudo bash /tmp/spire-install.sh --server-url https://spire.example.com \
+  --enrollment-token spire_tok_xxx
+```
+
+`spired` registers in one request binding the hardware UUID, its enrollment key, and a device CSR. A token with approval **not** required auto-approves the device and issues its bearer token (and a device certificate when the device CA is configured); a **require-approval** token stages the device `PENDING_APPROVAL` and the agent polls until an administrator approves it (Step 2). The one-time token file is deleted after a successful registration. Without a token, the administrator-approval flow below is unchanged. Registration rules for a device that already exists: a REVOKED or REJECTED device is always staged `PENDING_APPROVAL` and needs explicit re-approval, so a token can never undo a revocation; an APPROVED device re-registering with its own enrollment key stays approved and keeps the tags and ring an administrator assigned. Device tags come only from the token; tags sent by the registering client are ignored.
+
+**Upgrade note.** `require_approval` defaults to **false** for every token, including tokens that existed before this feature — matching the pre-feature behaviour where a token always auto-approved. Tick *Require admin approval* when creating a token to stage devices for review instead.
+
+**Golden images.** A sealed image must NOT contain `/etc/spire/{token,enrollment.key,device.key,device.crt}`, `/etc/spire/enrollment-token`, or a fixed `/etc/machine-id`. Either leave a first-boot token file for the agent to consume on first boot, or run `spired --reset-identity` before sealing to clear the identity safely. A cloned image that still carries an old enrollment key is refused rather than allowed to share a device record (unless it presents the SAME key, which is the same installation).
 
 ### Step 2: Tag and approve the endpoint
 1. Open `https://spire.example.com/admin/devices` and authenticate.
@@ -637,6 +657,37 @@ fleet does not trigger an N×M scan.
 - Only CVE-prefixed tracker keys are imported; `TEMP-`/`DLA-only` grouping keys are skipped.
 - The importer replaces the whole dataset per run (atomic swap), so an import reflects the
   feed at fetch time; between imports, new upstream CVEs are not yet known.
+
+## 10a. Rich Inventory
+
+Each agent collects a hardware/software/network/security snapshot and sends it on a check-in
+**at most once per `inventory_interval`** (agent config under `agent:`, env
+`SPIRE_INVENTORY_INTERVAL`; default `6h`). It is forced on the agent's first check-in after
+start and when an admin clicks **Request Inventory Refresh** (or `POST
+/admin/devices/{id}/inventory/refresh`, OPERATOR+, tag-scoped, audited). The agent records the
+last-sent time at `/var/lib/spire/inventory-last.json`; deleting that file forces a fresh
+report on the next check-in.
+
+Storage: scalar facts land in `device_attributes` (source `inventory`); the lists land in
+`device_inventory_packages`, `device_inventory_modules`, `device_inventory_listening`,
+`device_inventory_accounts`, `device_inventory_cacerts`, `device_inventory_usb`, and change
+history in `device_inventory_changes` (bounded to 500 rows/device). All cascade on device
+delete. These tables are created by migrations `000043` and `000044`; a standard `-Fc` dump
+(section 3) captures them. No new service or port is involved — inventory rides the existing
+check-in request and the existing device command queue.
+
+Sizing: the agent caps its report at 512 KiB and the server rejects any report over 1 MiB,
+so a single device cannot bloat a check-in. The per-device list cap is 4000 entries (packages,
+modules, sockets, accounts, USB) and 1000 CA certificates; a clipped list sets a `truncated`
+flag shown on the device page. Tune cadence with `inventory_interval`; there is no server-side
+schedule to configure.
+
+Verification: open a device's detail page and confirm the **Rich Inventory** panel shows facts
+and (after a second report) change history; a device with an old agent shows "No inventory
+reported" and keeps checking in normally. Fleet-wide, the **Inventory** page searches by
+attribute, package, listening port, or local admin, and exports CSV/JSON — both honour the
+signed-in admin's tag scope.
+
 ## 11. Agent Version Tracking & Self-Update
 
 Each `spired` agent reports its build version on every check-in. The server stores it per
@@ -1034,6 +1085,7 @@ What was made instance-safe:
   rows are swept opportunistically.
 - **TPM attestation challenges** were already stored in Postgres (no change needed).
 - **The admin session secret** must be shared via `SPIRE_SESSION_SECRET` (see above).
+- **Enrollment tokens.** The max-uses check is an atomic conditional `UPDATE` in Postgres, so a one-time token cannot be spent twice even across instances. The per-IP rate limiter on *failed* enrollment attempts, however, is an in-memory sliding counter per process (like the admin personal-access-token limiter): across N instances a guesser gets roughly N× the failures before being throttled. This bounds online guessing but is not a hard multi-instance limit; move it to shared state if that matters. Token validity (revoked/expired/exhausted) is always checked in the database, so revoking or exhausting a token takes effect on every instance immediately.
 
 **Gateway (device WebSocket) routing.** A device holds a WebSocket to exactly **one**
 instance. Each instance records which device sockets it owns (`devices.ws_instance_id` +
@@ -1167,3 +1219,232 @@ check-in response; the sealed envelopes remain in the policy payload at rest.
   policy NON_COMPLIANT with a withhold reason.
 - The dashboard **Attestation Untrusted** count matches the number of untrusted in-scope
   devices for your tag scope.
+
+
+## 16. Dynamic Device Groups & Saved Fleet Queries
+
+### 16.1 Overview
+
+Groups are materialised sets of devices defined by a JSON rule plus static include/exclude
+lists. `target` groups are usable by policies; `query` groups are saved fleet queries. View
+requires `AUDITOR`+; mutators require `SECURITY_ADMIN`+.
+
+### 16.2 Creating a group (API / JSON)
+
+```bash
+curl -X POST https://$SERVER/admin/groups \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -b "$COOKIE" \
+  -d '{
+    "name": "stale-approved",
+    "kind": "target",
+    "rule": {"all":[
+      {"field":"device.status","op":"eq","value":"APPROVED"},
+      {"field":"device.last_checkin_at","op":"older_than","value":"7d"}
+    ]},
+    "include_device_ids": [],
+    "exclude_device_ids": []
+  }'
+```
+
+### 16.3 Previewing a rule (before saving)
+
+```bash
+curl -X POST https://$SERVER/admin/groups/preview \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $CSRF" \
+  -b "$COOKIE" \
+  -d '{"rule":{"field":"device.reboot_required","op":"eq","value":true}}'
+```
+
+Returns `{"count": N, "devices": [...first 50...]}`.
+
+### 16.4 Targeting a policy at a group
+
+Add `target_group_ids` when creating or editing a policy:
+
+```json
+{"target_group_ids": ["<group-uuid>"]}
+```
+
+A policy without `target_group_ids` behaves identically to before groups existed.
+
+### 16.5 Recompute schedule
+
+| Trigger | Scope |
+|---------|-------|
+| Device check-in | One device across all groups |
+| Group saved | All devices in that group |
+| Periodic sweep (`SPIRE_GROUP_RECOMPUTE_INTERVAL`, default 5m) | All groups |
+
+The periodic sweep uses per-group advisory locks so two instances never recompute the same
+group at once. A rule evaluation failure keeps the last membership.
+
+### 16.6 Filtering by group
+
+The Devices, Vulnerabilities and compliance-export pages accept a `?group=<group-uuid>` query
+parameter to restrict results to the group's members.
+
+### 16.7 Diagnostics
+
+- A group's `last_rule_error` is shown on the groups page when the stored rule fails to
+  evaluate. Fix the rule; the next recompute will clear the error.
+- `SPIRE_GROUP_RECOMPUTE_INTERVAL=30s` shortens the sweep for debugging (minimum 30s).
+- Membership events in `group_membership_events` show entered/left transitions with reasons.
+  Capped at 500 per group; older events are trimmed on each recompute.
+
+## 17. Patch Campaigns, Risk Acceptance & Automatic Halting
+
+Staged package-upgrade rollouts with automatic halting. Schema: migrations 000052-000055
+(`patch_campaigns`, `campaign_device_work`, `campaign_package_results`, `campaign_deferrals`,
+`risk_acceptances`, `campaign_events`).
+
+**Endpoints (SECURITY_ADMIN+, tag-scope aware):**
+- `GET/POST /admin/campaigns`, `GET /admin/campaigns/{id}`, `GET /admin/campaigns/{id}/export?format=csv|json`
+- `POST /admin/campaigns/{id}/{start|pause|resume|cancel}`
+- `GET/POST /admin/risk-acceptances`, `DELETE /admin/risk-acceptances/{id}`
+- Device (bearer): `POST /api/v1/desktop/campaign/defer`, `POST /api/v1/desktop/campaign/report`
+- Spire Hub (local, seat0/root): `POST /v1/campaign/defer` on the agent socket, which forwards
+  to the device defer endpoint with the device's own token.
+
+**Multi-instance safety.** Promotion and halting run inside a per-campaign Postgres advisory
+lock (keyspace base `0x636d7000`), so two control-plane instances evaluating the same campaign
+promote it exactly once. Dispatch to a device is an atomic conditional `UPDATE` (`PENDING ->
+DISPATCHED`), so a device is dispatched to once even under a race. These are distinct from the
+group-recompute advisory band (`0x67727000`).
+
+**Halt precedence.** The orchestrator checks the failure-halt threshold before promotion; a
+stage over its failure threshold halts even when its success gate is also met. A halt sets the
+campaign `HALTED`, records a `campaign_events` row, and raises an alert through the existing
+notifier. Resume (`/resume`) clears the halt and sets the campaign `RUNNING` again.
+
+**Unsupported old agents.** A device that is dispatched a campaign directive but never reports
+within `UnsupportedAgentTimeout` (24h) is marked `UNSUPPORTED` — a failure for stage math, never
+a silent success. Run this from the evaluation path (`MarkUnsupportedTimedOut`).
+
+**Operational behaviour.**
+- *Dispatch happens at check-in.* A device receives a campaign directive only while its
+  campaign is `RUNNING`, outside any blackout window, in the campaign's active stage ring (stage
+  names `CANARY`/`BETA`/`PILOT`/`PRODUCTION` gate on the device's `patch_ring`), and in its
+  maintenance window when the campaign requires one. A halted, paused or cancelled campaign
+  dispatches nothing.
+- *The evaluation loop runs on every server instance* (default every minute; set
+  `SPIRE_CAMPAIGN_EVAL_INTERVAL`, e.g. `30s`, minimum 5s). Check the server log for
+  `[campaignsync] campaign evaluation every ...`. Two instances are safe: promotion/halt is taken
+  under the per-campaign advisory lock after re-reading the campaign.
+- *A stage does not promote or complete while any of its devices is still pending.* Offline,
+  deferred or undispatched devices keep the stage open. To find them:
+  `SELECT d.hostname, w.state, w.deferred_until FROM campaign_device_work w JOIN devices d ON d.id=w.device_id WHERE w.campaign_id=... AND w.stage=<n> AND w.state NOT IN ('SUCCEEDED','FAILED','INTERRUPTED','UNSUPPORTED','REMOVED','EXCLUDED');`
+  Cancel the campaign, take the device out of the target, or wait for the 24h unsupported timeout.
+- *Halts raise a `patch_failed` alert* whose details include `campaign_id` and `reason`. Resume
+  clears the halt; the same stage is then evaluated again from its current results, so fix or
+  exclude the failing devices first or it will halt again.
+- *Old agents.* An agent that does not understand directives never reports; after 24h its work is
+  marked `UNSUPPORTED` (a failure for the halt math). Upgrade those agents first
+  (`SELECT hostname, agent_version FROM devices ...`).
+- *Agent restart mid-install.* The agent keeps `/var/lib/spire/campaign-inflight.json` (root,
+  0600). After a restart the next check-in reports the run as `INTERRUPTED` once. If you see a
+  device stuck `DISPATCHED`, check that file and the agent log for `campaign ... report failed`.
+- *Not available:* admin-triggered rollback (planner and agent executor exist, no endpoint yet).
+
+**Inspecting state.**
+- `SELECT state, current_stage, halted_reason FROM patch_campaigns WHERE id=...;`
+- Per-device: `SELECT device_id, stage, state, failure_class, deferrals_used FROM campaign_device_work WHERE campaign_id=...;`
+- Events: `SELECT kind, actor, detail, created_at FROM campaign_events WHERE campaign_id=... ORDER BY id DESC;`
+- Active acceptances: `SELECT cve_id, package, scope_kind, expires_at FROM risk_acceptances WHERE expires_at > now();`
+
+**Risk acceptance expiry** is enforced in work computation (`expires_at > now`), so an expired
+acceptance stops excluding work with no sweep needed. The 180-day cap is enforced at creation.
+
+## 18. Reusable scripts, custom sensors, and SCRIPT_POLICY
+
+### Migrations
+
+Migrations `000045` (scripts + immutable versions), `000046` (script runs, sealed run secrets,
+sensors, sensor results, per-device sensor schedule state) and `000047` (adds `SCRIPT_POLICY`
+to the `policy_type` enum) are applied by the standard migration runner at server start, each
+in its own transaction under the migration advisory lock. `000047` uses
+`ALTER TYPE policy_type ADD VALUE IF NOT EXISTS`, the same idempotent pattern as the earlier
+policy-type additions.
+
+### Operational notes
+
+- Scripts run on endpoints as root (or the active seat user) with a timeout and an output cap.
+  A script is written to a `0700` file in a root-owned `0700` directory (`/run/spire/scripts`),
+  run by the fixed interpreter directly (never a shell), fed parameters only through
+  `SPIRE_PARAM_<NAME>` environment variables, and removed afterwards. The agent verifies each
+  version's sha256 before running and refuses a mismatch.
+- Secret script parameters are sealed with the server KEK and opened only when the directive
+  for the target device is built. If the server KEK is unavailable a run with secret parameters
+  is refused at queue time rather than sent without its secret.
+- A run left `RUNNING` past two hours (an agent that restarted mid-run) is marked `INTERRUPTED`
+  at the device's next check-in, so it is reported rather than lost.
+- Sensors are dispatched only when due (minimum interval 15 minutes); the per-device dispatch
+  state is in the database, so a server restart or a second server instance does not
+  re-dispatch a sensor every check-in.
+- Script and sensor directives ride on new `omitempty` check-in response fields, so an older
+  agent safely ignores them and the server behaves exactly as before for a device with none.
+
+### Verification
+
+- After deploying, `GET /admin/scripts` and `GET /admin/sensors` should return `200` with the
+  expected definitions. Queue a run with `POST /admin/scripts/{id}/run` against a test device
+  and confirm `GET /admin/devices/{id}/script-runs` shows the run move from `QUEUED` to a
+  terminal status after the device checks in.
+- Confirm secret parameters never appear in `script_runs.params` or in the audit log; the
+  `script_run_secrets` ciphertext must not contain the plaintext.
+- Confirm a scoped operator cannot run a script against a device outside their tags (the run
+  endpoint returns "no in-scope approved devices matched this target").
+
+## 19. Automation and remediation workflows
+
+The workflow engine runs in-process on every `spire-server` instance and starts automatically;
+there is nothing to enable. It owns four loops: event drain, schedule evaluation,
+approval-expiry, and a reaper.
+
+**Tables.**
+- `workflow_events` — the durable event log. `status` is PENDING → PROCESSING → PROCESSED/FAILED.
+  Events are claimed with `FOR UPDATE SKIP LOCKED`, so two instances never process one event
+  twice. `workflow_caused = true` marks an event produced by a workflow action; the engine skips
+  it (loop suppression). Processed/failed rows older than the retention (7 days) are reaped.
+- `workflows` — definitions. `version` bumps on every edit, so a run records the exact version it
+  evaluated even if the workflow changed while events were queued.
+- `workflow_runs` / `workflow_run_actions` — one row per (workflow, device) evaluation and one
+  per action, with the trigger, condition result, branch, each action's result and detail.
+- `workflow_approvals` — paused runs awaiting a `SECURITY_ADMIN` decision; `resume_actions` is the
+  parked tail. Expired approvals finalize the run EXPIRED and never run the tail.
+- `workflow_cooldowns` — per (workflow, device) last-fired time; a run within the cooldown window
+  is suppressed and recorded SKIPPED.
+- `workflow_action_budget` — per-UTC-minute count of actions actually taken, shared across
+  instances; when it reaches the per-minute budget the rest of a run is stopped.
+- `workflow_schedule_fires` — one `(workflow_id, minute)` row per scheduled fire; the primary key
+  makes the per-minute claim atomic across instances.
+
+**A backlog of PENDING events** usually means the engine is not draining (a crashed instance, or
+a flood of events). Check the pending count:
+
+```sql
+SELECT status, COUNT(*) FROM workflow_events GROUP BY status;
+```
+
+PROCESSING rows whose `locked_at` is older than 5 minutes are reclaimed automatically (a crash
+between claim and finish does not strand an event).
+
+**A workflow is not firing.** Confirm it is `enabled`, that its `trigger_kind` matches the event
+(or its `schedule_cron` matches the minute), that its condition is true for the device, and that
+it is not inside its cooldown. The run history (`GET /admin/workflows/runs?workflow_id=...`)
+records SKIPPED runs with the reason ("within cooldown window", "device revoked", "device outside
+the workflow creator's tag scope").
+
+**An agent-start workflow never fires for some devices.** Only agents new enough to send the
+`agent_started` flag on their first post-start check-in trigger it; an old agent never sends the
+flag, so the workflow simply never fires for it (by design — no error).
+
+**Scheduled runs did not happen.** The cron is evaluated once per minute; a server that was down
+for that minute misses it (there is no catch-up). Only one instance fires each minute
+(`workflow_schedule_fires`).
+
+**Tuning.** The engine's defaults (event batch 50, action budget 200/min, approval TTL 24h, event
+retention 7 days, quarantine tag `quarantine`) are compiled in via `workflows.DefaultConfig()`;
+adjust in `cmd/spire-server/main.go` if a deployment needs different bounds.

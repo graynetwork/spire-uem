@@ -79,6 +79,9 @@ class SpireIPCClient:
     def uninstall_policy(self, policy_id: str) -> dict:
         return self._request("POST", "/v1/uninstall", {"policy_id": policy_id}, timeout=900.0)
 
+    def defer_campaign(self, campaign_id: str) -> dict:
+        return self._request("POST", "/v1/campaign/defer", {"campaign_id": campaign_id})
+
 
 def get_status(socket_path: str = DEFAULT_SOCKET_PATH) -> dict:
     return SpireIPCClient(socket_path).get_status()
@@ -197,6 +200,17 @@ def build_gtk_app():
             self.row_overall.add_suffix(self.sync_button)
             self.baseline_group.add(self.row_overall)
 
+            # Shown only while a patch-campaign install is announced and may still be deferred.
+            self.row_campaign = Adw.ActionRow(title="Updates scheduled", subtitle="")
+            self.defer_button = Gtk.Button(label="Defer")
+            self.defer_button.add_css_class("pill")
+            self.defer_button.set_valign(Gtk.Align.CENTER)
+            self.defer_button.connect("clicked", self._on_defer_clicked)
+            self.row_campaign.add_suffix(self.defer_button)
+            self.row_campaign.set_visible(False)
+            self.pending_campaign_id = ""
+            self.baseline_group.add(self.row_campaign)
+
             self.row_tpm = Adw.ActionRow(
                 title="TPM 2.0 Attestation &amp; Secure Boot",
                 subtitle="Checking hardware root of trust...",
@@ -290,6 +304,18 @@ def build_gtk_app():
                     )
                     self.overall_tag.set_label("Non-Compliant")
                     self.overall_tag.set_css_classes(["caption", "heading", "error"])
+
+                # Pending patch-campaign install (Defer button), only when deferral is allowed.
+                pending = status.get("pending_campaign")
+                if pending and pending.get("may_defer"):
+                    self.pending_campaign_id = pending.get("campaign_id", "")
+                    name = pending.get("name") or "Security updates"
+                    left = pending.get("deferrals_left", 0)
+                    self.row_campaign.set_subtitle(f"{name} will be installed soon | Deferrals left: {left}")
+                    self.row_campaign.set_visible(True)
+                else:
+                    self.pending_campaign_id = ""
+                    self.row_campaign.set_visible(False)
 
                 # 1. TPM 2.0 & Secure Boot
                 att_status = status.get("attestation_status", "UNATTESTED")
@@ -484,6 +510,32 @@ def build_gtk_app():
                     subprocess.Popen([app_id])
             except Exception as exc:
                 self.show_toast(f"Unable to launch {app_id}: {exc}")
+
+        def _on_defer_clicked(self, btn: Gtk.Button):
+            campaign_id = self.pending_campaign_id
+            if not campaign_id:
+                return
+            btn.set_sensitive(False)
+
+            def worker():
+                try:
+                    res = self.ipc.defer_campaign(campaign_id)
+                    GLib.idle_add(self._on_defer_complete, btn, res, None)
+                except Exception as exc:
+                    GLib.idle_add(self._on_defer_complete, btn, None, str(exc))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _on_defer_complete(self, btn: Gtk.Button, res: dict | None, error_msg: str | None):
+            btn.set_sensitive(True)
+            if error_msg:
+                self.show_toast(f"Could not defer: {error_msg}")
+            elif res and res.get("deferred"):
+                self.show_toast("Updates deferred")
+                self.row_campaign.set_visible(False)
+            else:
+                self.show_toast("No more deferrals available; updates will install now")
+            return False
 
         def _on_sync_clicked(self, btn: Gtk.Button):
             btn.set_sensitive(False)

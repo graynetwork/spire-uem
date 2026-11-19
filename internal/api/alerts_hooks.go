@@ -7,6 +7,7 @@ import (
 
 	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 // maybeAlertPatchFailed raises a patch_failed alert when an agent reports a
@@ -23,6 +24,9 @@ func (h *Handler) maybeAlertPatchFailed(ctx context.Context, dev *types.Device, 
 			DeviceID: dev.ID,
 			Hostname: dev.Hostname,
 			Details:  map[string]any{"hostname": dev.Hostname, "last_patch_status": ps.LastPatchStatus},
+		})
+		h.emitWorkflowEvent(ctx, workflows.EventPatchFailed, dev.ID, map[string]any{
+			"last_patch_status": ps.LastPatchStatus,
 		})
 	}
 }
@@ -61,6 +65,11 @@ func (h *Handler) maybeAlertComplianceDrift(ctx context.Context, dev *types.Devi
 		Hostname: dev.Hostname,
 		Details:  map[string]any{"hostname": dev.Hostname, "policies": drifted},
 	})
+	for _, name := range drifted {
+		h.emitWorkflowEvent(ctx, workflows.EventComplianceChanged, dev.ID, map[string]any{
+			"policy": name, "to": "NON_COMPLIANT",
+		})
+	}
 }
 
 // maybeAlertAgentUpdateFailed raises an agent_update_failed alert when an agent reports a
@@ -97,5 +106,8 @@ func (h *Handler) maybeAlertAgentUpdateFailed(ctx context.Context, dev *types.De
 			"status":         status,
 			"message":        res.Message,
 		},
+	})
+	h.emitWorkflowEvent(ctx, workflows.EventAgentUpdateFailed, dev.ID, map[string]any{
+		"status": status, "target_version": res.TargetVersion, "from_version": res.FromVersion,
 	})
 }

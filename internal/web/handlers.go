@@ -32,6 +32,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -50,9 +51,14 @@ type Handler struct {
 	enforceHTTPS     bool
 	alertStore       *db.AlertStore
 	alertMgr         *alerts.Manager
+	// wfEngine drives automation/remediation workflows (resume on approval, etc.).
+	wfEngine *workflows.Engine
 	// deviceMTLSMode is shown read-only on the Settings page (off | optional | required).
 	deviceMTLSMode string
 }
+
+// SetWorkflowEngine wires the workflow engine used by the workflow admin + approval handlers.
+func (h *Handler) SetWorkflowEngine(e *workflows.Engine) { h.wfEngine = e }
 
 // SetDeviceMTLSMode records the device mutual-TLS mode for the read-only Settings display.
 func (h *Handler) SetDeviceMTLSMode(mode string) {
@@ -749,6 +755,22 @@ func (h *Handler) ExportComplianceAudit(w http.ResponseWriter, r *http.Request) 
 		records = kept
 	}
 
+	// Optional group filter (scoped): records are keyed by hardware UUID, so resolve the
+	// group's member hardware UUIDs and keep only matching records.
+	if groupFilter := strings.TrimSpace(r.URL.Query().Get("group")); groupFilter != "" {
+		members, gerr := h.repo.HardwareUUIDsInGroup(r.Context(), groupFilter)
+		if gerr != nil {
+			log.Printf("[web] compliance export group filter error: %v", gerr)
+		}
+		kept := records[:0]
+		for _, rec := range records {
+			if _, ok := members[rec.HardwareUUID]; ok {
+				kept = append(kept, rec)
+			}
+		}
+		records = kept
+	}
+
 	ts := time.Now().UTC().Format("20060102-150405")
 
 	if format == "json" {
@@ -934,6 +956,26 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 		devices = filtered
 	}
 
+	// Optional group filter (scoped): narrow to members of the chosen group.
+	groupFilter := strings.TrimSpace(r.URL.Query().Get("group"))
+	if groupFilter != "" {
+		memberIDs, gerr := h.repo.DevicesInGroup(r.Context(), groupFilter)
+		if gerr != nil {
+			log.Printf("[web] group filter lookup error: %v", gerr)
+		}
+		member := make(map[string]struct{}, len(memberIDs))
+		for _, id := range memberIDs {
+			member[id] = struct{}{}
+		}
+		kept := devices[:0]
+		for _, d := range devices {
+			if _, ok := member[d.ID]; ok {
+				kept = append(kept, d)
+			}
+		}
+		devices = kept
+	}
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(devices)
@@ -941,6 +983,7 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	allPolicies, _ := h.repo.ListPolicies(r.Context())
+	allGroups, _ := h.repo.ListGroups(r.Context(), h.deviceScope(r))
 
 	data := map[string]any{
 		"Title":           "Devices",
@@ -949,12 +992,14 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 		"AdminUser":       AdminUserFromContext(r.Context()),
 		"Devices":         devices,
 		"Policies":        allPolicies,
+		"Groups":          allGroups,
 		"Summary":         summary,
 		"TotalHostsCount": summary.TotalDevices,
 		"FilterSearch":    search,
 		"FilterTag":       tag,
 		"FilterStatus":    status,
 		"FilterRing":      ring,
+		"FilterGroup":     groupFilter,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1075,6 +1120,11 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 	// Device client certificate (mTLS): the most recent leaf, for the cert-status panel.
 	deviceCert, _ := h.repo.GetLatestDeviceCertificate(r.Context(), dev.ID)
 
+	// Rich inventory snapshot + change history for the inventory panel. HasInventory is
+	// false for a device that never reported (old agent / pre-feature); the template then
+	// shows "no inventory reported".
+	deviceInventory, _ := h.repo.GetDeviceInventory(r.Context(), dev.ID)
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(types.DeviceDetailResponse{
@@ -1150,6 +1200,7 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"AdminRole":          string(AdminRoleFromContext(r.Context())),
 		"DeviceCert":         deviceCert,
 		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
+		"Inventory":          deviceInventory,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1879,6 +1930,12 @@ func (h *Handler) HostPoliciesCompliancePartial(w http.ResponseWriter, r *http.R
 // TogglePolicy handles POST /admin/policies/{id}/toggle.
 func (h *Handler) TogglePolicy(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
 	pol, err := h.repo.TogglePolicyActive(r.Context(), id)
 	if err != nil {
 		log.Printf("[web] toggle policy %s error: %v", id, err)
@@ -1909,6 +1966,12 @@ func (h *Handler) TogglePolicy(w http.ResponseWriter, r *http.Request) {
 // TogglePolicySelfService handles POST /admin/policies/{id}/self-service.
 func (h *Handler) TogglePolicySelfService(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
 	pol, err := h.repo.TogglePolicySelfService(r.Context(), id)
 	if err != nil {
 		log.Printf("[web] toggle policy self-service %s error: %v", id, err)
@@ -2070,6 +2133,10 @@ func (h *Handler) CreatePolicyFromTemplate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithOptions(
 		r.Context(),
 		preset.Name,
@@ -2106,6 +2173,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		payloadRaw     json.RawMessage
 		targetTags     []string
 		targetRing     *types.DeploymentRing
+		targetGroupIDs []string
 		patchWindowID  *string
 		requiresReboot bool
 		assignmentType types.ApplicationAssignmentType
@@ -2120,6 +2188,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 			Payload        json.RawMessage                 `json:"payload"`
 			TargetTags     []string                        `json:"target_tags"`
 			TargetRing     string                          `json:"target_ring"`
+			TargetGroupIDs []string                        `json:"target_group_ids"`
 			PatchWindowID  string                          `json:"patch_window_id"`
 			RequiresReboot bool                            `json:"requires_reboot"`
 		}
@@ -2134,6 +2203,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		payloadRaw = body.Payload
 		targetTags = normalizeTagSlice(body.TargetTags)
 		targetRing = parseOptionalRing(body.TargetRing)
+		targetGroupIDs = body.TargetGroupIDs
 		if pw := strings.TrimSpace(body.PatchWindowID); pw != "" {
 			patchWindowID = &pw
 		}
@@ -2151,6 +2221,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		assignmentType = types.ApplicationAssignmentType(strings.ToUpper(strings.TrimSpace(r.FormValue("assignment_type"))))
 		targetTags = parseCommaSeparatedTags(r.FormValue("target_tags"))
 		targetRing = parseOptionalRing(r.FormValue("target_ring"))
+		targetGroupIDs = splitCSVIDs(r.FormValue("target_group_ids"))
 		if pw := strings.TrimSpace(r.FormValue("patch_window_id")); pw != "" {
 			patchWindowID = &pw
 		}
@@ -2203,6 +2274,10 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		payloadRaw = sealed
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, targetGroupIDs); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithAssignment(
 		r.Context(),
 		name,
@@ -2223,6 +2298,17 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[web] policy created id=%s name=%q type=%s target_tags=%v target_ring=%v",
 		pol.ID, pol.Name, pol.PolicyType, pol.TargetTags, pol.TargetRing)
+
+	// Group targeting: persist and reject unknown group ids. A validation failure here must
+	// not leave a half-targeted policy, so refuse the create outcome loudly.
+	if len(targetGroupIDs) > 0 {
+		if err := h.repo.SetPolicyTargetGroups(r.Context(), pol.ID, targetGroupIDs); err != nil {
+			log.Printf("[web] set policy target groups error: %v", err)
+			http.Error(w, "Invalid target groups: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		pol.TargetGroupIDs = targetGroupIDs
+	}
 
 	h.dispatchPolicyCheckin(r.Context(), pol)
 
@@ -2765,6 +2851,10 @@ func (h *Handler) UploadCustomBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithAssignment(
 		r.Context(),
 		name,
@@ -3000,6 +3090,10 @@ func (h *Handler) CreateApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	pol, err := h.repo.CreatePolicyWithAssignment(
 		r.Context(),
 		name,
@@ -3156,6 +3250,16 @@ func (h *Handler) UpdateApplicationAssignment(w http.ResponseWriter, r *http.Req
 	}
 
 	hasDescription := description != ""
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
+	if ok, msg := h.policyTargetsAllowed(r, targetTags, nil); !ok {
+		denyPolicyScope(w, msg)
+		return
+	}
 	updatedPol, err := h.repo.UpdateApplicationPolicy(
 		r.Context(),
 		id,
@@ -3228,6 +3332,12 @@ func (h *Handler) DeleteApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if existing, gerr := h.repo.GetPolicyByID(r.Context(), id); gerr == nil && existing != nil {
+		if ok, msg := h.policyManageAllowed(r, existing); !ok {
+			denyPolicyScope(w, msg)
+			return
+		}
+	}
 	revokedPol, err := h.repo.RevokeApplicationPolicy(r.Context(), id)
 	if err != nil {
 		log.Printf("[web] revoke application policy=%s error: %v", id, err)
@@ -3852,10 +3962,28 @@ func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 		if expHours := r.FormValue("expires_in_hours"); expHours != "" {
 			req.ExpiresInHours, _ = strconv.Atoi(strings.TrimSpace(expHours))
 		}
+		ra := strings.TrimSpace(r.FormValue("require_approval"))
+		req.RequireApproval = ra == "1" || strings.EqualFold(ra, "true") || strings.EqualFold(ra, "on")
+		req.HostnamePattern = strings.TrimSpace(r.FormValue("hostname_pattern"))
 	}
 
 	if req.TargetRing == "" {
 		req.TargetRing = types.RingProduction
+	}
+
+	// Record who created the token (never from the client body).
+	req.CreatedBy = adminUser
+
+	// Defence in depth: a tag-scoped admin (if ever permitted to reach this SUPER_ADMIN-only
+	// route) may not mint a token that assigns tags outside their own scope. SUPER_ADMIN is
+	// never scoped, so this is a no-op for them.
+	if u := AdminUserObjFromContext(r.Context()); userIsTagScoped(u) {
+		for _, tg := range req.TargetTags {
+			if !tagsIntersect([]string{tg}, u.AllowedTags) {
+				http.Error(w, "you may not assign tags outside your allowed scope", http.StatusForbidden)
+				return
+			}
+		}
 	}
 
 	token, rawToken, err := h.repo.CreateEnrollmentToken(r.Context(), req)
@@ -3867,11 +3995,13 @@ func (h *Handler) CreateToken(w http.ResponseWriter, r *http.Request) {
 
 	if h.auditor != nil {
 		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "TOKEN_CREATE", token.ID, r.RemoteAddr, map[string]any{
-			"token_id":    token.ID,
-			"prefix":      token.TokenPrefix,
-			"target_ring": token.TargetRing,
-			"target_tags": token.TargetTags,
-			"max_uses":    token.MaxUses,
+			"token_id":         token.ID,
+			"prefix":           token.TokenPrefix,
+			"target_ring":      token.TargetRing,
+			"target_tags":      token.TargetTags,
+			"max_uses":         token.MaxUses,
+			"require_approval": token.RequireApproval,
+			"hostname_pattern": token.HostnamePattern,
 		})
 	}
 
@@ -3946,6 +4076,89 @@ func (h *Handler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/admin/settings?tab=tokens", http.StatusSeeOther)
+}
+
+// RotateToken handles POST /admin/settings/tokens/{id}/rotate. It generates a fresh secret
+// for an existing token, keeping its settings and history; the old secret stops working
+// immediately. SUPER_ADMIN only (mounted under that group). Audited.
+func (h *Handler) RotateToken(w http.ResponseWriter, r *http.Request) {
+	tokenID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if tokenID == "" {
+		http.Error(w, "Missing token ID", http.StatusBadRequest)
+		return
+	}
+	adminUser := AdminUserFromContext(r.Context())
+	if adminUser == "" {
+		adminUser = "admin"
+	}
+
+	token, rawToken, err := h.repo.RotateEnrollmentToken(r.Context(), tokenID, adminUser)
+	if err != nil {
+		if errors.Is(err, db.ErrEnrollmentTokenNotFound) {
+			http.Error(w, "Token not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("[web] failed to rotate token %s: %v", tokenID, err)
+		http.Error(w, "Failed to rotate token: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if h.auditor != nil {
+		_, _, _ = h.auditor.Emit(r.Context(), adminUser, "TOKEN_ROTATE", token.ID, r.RemoteAddr, map[string]any{
+			"token_id": token.ID,
+			"prefix":   token.TokenPrefix,
+		})
+	}
+
+	if strings.Contains(r.Header.Get("Accept"), "application/json") || strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":            rawToken,
+			"enrollment_token": token,
+		})
+		return
+	}
+
+	tokens, _ := h.repo.ListEnrollmentTokens(r.Context())
+	data := map[string]any{
+		"Tokens":    tokens,
+		"CSRFToken": CSRFTokenFromContext(r.Context()),
+		"NewToken":  rawToken,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.tmpl.ExecuteTemplate(w, "tokens_table", data); err != nil {
+		http.Redirect(w, r, "/admin/settings?tab=tokens", http.StatusSeeOther)
+	}
+}
+
+// TokenHistory handles GET /admin/settings/tokens/{id}/history, returning the recent
+// enrollment attempts recorded against a token (approved, pending, refused).
+func (h *Handler) TokenHistory(w http.ResponseWriter, r *http.Request) {
+	tokenID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if tokenID == "" {
+		http.Error(w, "Missing token ID", http.StatusBadRequest)
+		return
+	}
+	history, err := h.repo.ListEnrollmentRegistrations(r.Context(), tokenID, 100)
+	if err != nil {
+		log.Printf("[web] failed to list enrollment history for %s: %v", tokenID, err)
+		http.Error(w, "Failed to list enrollment history", http.StatusInternalServerError)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "application/json") {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(history)
+		return
+	}
+	data := map[string]any{
+		"TokenID": tokenID,
+		"History": history,
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.tmpl.ExecuteTemplate(w, "token_history", data); err != nil {
+		log.Printf("[web] failed to render token_history: %v", err)
+		http.Error(w, "Failed to render enrollment history", http.StatusInternalServerError)
+	}
 }
 
 // TestSIEMSyslog handles POST /admin/settings/siem/test.

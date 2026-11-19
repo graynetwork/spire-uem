@@ -21,6 +21,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 var (
@@ -39,6 +40,9 @@ type Handler struct {
 	// REST/WebSocket endpoints require a verified client certificate.
 	mtlsMode     string
 	certValidity time.Duration
+	// enrollRL throttles FAILED token-registration attempts per client IP, to blunt online
+	// guessing of a token secret. Successful registrations do not count against it.
+	enrollRL *enrollRateLimiter
 }
 
 // SetDeviceMTLS configures the device mutual-TLS mode and the validity of issued leaves.
@@ -76,6 +80,7 @@ func NewHandler(repo *db.Repository) *Handler {
 		repo:             repo,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
 		artifacts:        newArtifactResolver("dist"),
+		enrollRL:         newEnrollRateLimiter(10, time.Minute),
 	}
 }
 
@@ -86,6 +91,7 @@ func NewHandlerWithHub(repo *db.Repository, hub *gateway.GatewayHub) *Handler {
 		hub:              hub,
 		bundleStorageDir: "/var/lib/spire/storage/bundles",
 		artifacts:        newArtifactResolver("dist"),
+		enrollRL:         newEnrollRateLimiter(10, time.Minute),
 	}
 }
 
@@ -271,6 +277,19 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[api] warning: CVE rematch failed for device %s: %v", dev.ID, err)
 		}
 	}
+
+	// Rich inventory report (optional; old agents omit it). Best-effort telemetry: a bad
+	// field is dropped with a parse warning and never fails the check-in. The whole report
+	// is dropped if it exceeds the per-report size ceiling.
+	h.processInventoryReport(r, dev, req.Inventory)
+	// Recompute this device's dynamic-group membership from its freshly reported state.
+	// Best-effort and AFTER inventory/CVE are updated so rules over those fields see current
+	// values; a failure must not fail the check-in. Assignment then follows at this same
+	// response (GetActivePoliciesForDevice / GetRevokedPoliciesForDevice read the refreshed
+	// group_memberships below).
+	if err := h.repo.RecomputeGroupsForDevice(r.Context(), dev.ID); err != nil {
+		log.Printf("[api] warning: group membership recompute failed for device %s: %v", dev.ID, err)
+	}
 	// Agent version tracking + self-update result (best-effort; never blocks check-in).
 	h.handleAgentVersionReporting(r, dev, &req)
 
@@ -316,6 +335,9 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 					"withheld":    mode == types.EnforcementEnforce,
 				},
 			})
+			h.emitWorkflowEvent(r.Context(), workflows.EventAttestationFailed, dev.ID, map[string]any{
+				"reason": trust.Reason, "enforcement": string(mode),
+			})
 		}
 	}
 
@@ -329,10 +351,57 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] warning: failed to claim queued commands for %s: %v", dev.ID, err)
 	}
 
+	// Resolve SCRIPT_POLICY version references into runnable detect/remediate/remove steps
+	// (content + sha256). A deleted version is flagged so the agent reports FAILED safely.
+	if resolved, rerr := h.repo.ResolveScriptPolicyPayloads(r.Context(), policies); rerr != nil {
+		log.Printf("[api] warning: failed to resolve SCRIPT_POLICY payloads for %s: %v", dev.ID, rerr)
+	} else {
+		policies = resolved
+	}
+
+	// Reusable scripts and sensors. A run left RUNNING past a generous cutoff (an agent that
+	// restarted mid-run) is marked INTERRUPTED so it is reported, not lost. Then claim queued
+	// script runs and the sensors now due, both atomically so a second server instance does
+	// not re-dispatch them. Clearing stale sensor attributes removes readings for sensors the
+	// device no longer matches (disabled, deleted, or out of target).
+	if n, serr := h.repo.RequeueStaleRunningScriptRuns(r.Context(), dev.ID, 2*time.Hour); serr != nil {
+		log.Printf("[api] warning: requeue stale script runs for %s: %v", dev.ID, serr)
+	} else if n > 0 {
+		log.Printf("[api] marked %d stale RUNNING script run(s) INTERRUPTED for %s", n, dev.ID)
+	}
+	scriptDirectives, serr := h.repo.ClaimScriptDirectivesForDevice(r.Context(), dev.ID)
+	if serr != nil {
+		log.Printf("[api] warning: claim script directives for %s: %v", dev.ID, serr)
+	}
+	if cleared, cerr := h.repo.ClearStaleSensorAttributesForDevice(r.Context(), dev.ID, dev.Tags, dev.PatchRing); cerr != nil {
+		log.Printf("[api] warning: clear stale sensor attrs for %s: %v", dev.ID, cerr)
+	} else if len(cleared) > 0 {
+		log.Printf("[api] cleared %d stale sensor attribute(s) for %s: %v", len(cleared), dev.ID, cleared)
+	}
+	sensorDirectives, serr := h.repo.ClaimDueSensorDirectivesForDevice(r.Context(), dev.ID, dev.Tags, dev.PatchRing, time.Now().UTC())
+	if serr != nil {
+		log.Printf("[api] warning: claim sensor directives for %s: %v", dev.ID, serr)
+	}
+
+	// Patch-campaign directives: for every RUNNING campaign the server refreshes this
+	// device's work, applies the campaign/ring/blackout/maintenance gates and atomically
+	// claims any dispatchable install, returning it here. Best-effort: a failure must not
+	// fail the check-in, and an old agent simply ignores the omitempty field (the server's
+	// unsupported-agent timeout then marks the claimed work UNSUPPORTED, never success).
+	campaignDirectives, cerr := h.repo.DispatchCampaignDirectivesForDevice(r.Context(), dev, time.Now().UTC())
+	if cerr != nil {
+		log.Printf("[api] warning: campaign dispatch for %s: %v", dev.ID, cerr)
+	}
+
 	// Record the location-ish facts the server already has: the IP this check-in came from
 	// and the last active user the agent reported. Shown on the device page when LOST.
 	seenIP := clientIP(r)
 	_ = h.repo.UpdateDeviceSeenFacts(r.Context(), dev.ID, seenIP, strings.TrimSpace(req.ActiveSession))
+
+	// Raise workflow events this check-in produced (agent started, active session change,
+	// primary address change). Best-effort: never fails the check-in. `dev` here is the
+	// device as it was BEFORE this check-in, so the comparison sees the real transition.
+	h.emitCheckinWorkflowEvents(r.Context(), dev, &req, seenIP)
 
 	// Append lost-device action directives to this check-in's command list. These are
 	// synthetic (not persisted command rows): the lost directive is re-delivered every
@@ -340,8 +409,8 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	// claimed atomically so its cancellation window closes exactly once.
 	queuedCommands = append(queuedCommands, h.pendingActionDirectives(r.Context(), dev)...)
 
-	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d",
-		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands))
+	log.Printf("[api] HTTP 200 check-in recorded for device id=%s hostname=%s ring=%s reboot=%v policies=%d revoked=%d commands=%d scripts=%d sensors=%d campaigns=%d",
+		dev.ID, dev.Hostname, dev.PatchRing, req.RebootRequired, len(policies), len(revokedPolicies), len(queuedCommands), len(scriptDirectives), len(sensorDirectives), len(campaignDirectives))
 	writeJSON(w, http.StatusOK, types.CheckinResponse{
 		DeviceID:                dev.ID,
 		Status:                  dev.Status,
@@ -353,6 +422,9 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		ServerKEKPublicPEM:      h.repo.KEKPublicPEM(),
 		AgentUpdate:             h.computeAgentUpdateDirective(r, dev, req.AgentVersion),
 		WipeSigningPublicKey:    h.repo.WipeSigningPublicKeyBase64(),
+		ScriptDirectives:        scriptDirectives,
+		SensorDirectives:        sensorDirectives,
+		CampaignDirectives:      campaignDirectives,
 	})
 }
 
@@ -1162,17 +1234,35 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-// RegisterWithToken handles POST /api/v1/enrollment/register.
+// uniformEnrollRefusal is the single error message every refused registration returns, so a
+// caller cannot tell a non-existent token from a revoked/expired/exhausted/mismatched one
+// (which would reveal token existence). The real reason is recorded in the history row.
+const uniformEnrollRefusal = "enrollment refused"
+
+// RegisterWithToken handles POST /api/v1/enrollment/register. It registers a device using an
+// enrollment token, binding the device's enrollment key and honouring the token's policy
+// (require_approval, hostname pattern, max uses, expiry, revocation). Every attempt is
+// recorded in the token's enrollment history; failed attempts are per-IP rate limited and
+// answered with a uniform error so token existence is not revealed.
 func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
+	ip := enrollClientIP(r.RemoteAddr)
+	if !h.enrollRL.Allowed(ip) {
+		log.Printf("[api] HTTP 429 enrollment rate limited remote=%s", r.RemoteAddr)
+		writeTooManyRequests(w)
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxSmallBodyBytes)
 	var req types.EnrollmentRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.enrollRL.RecordFailure(ip)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 	req.HardwareUUID = strings.TrimSpace(req.HardwareUUID)
 	req.Hostname = strings.TrimSpace(req.Hostname)
 	req.Token = strings.TrimSpace(req.Token)
+	req.EnrollmentKey = strings.TrimSpace(req.EnrollmentKey)
 
 	if req.Token == "" {
 		authHdr := r.Header.Get("Authorization")
@@ -1182,29 +1272,38 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Token == "" {
+		h.enrollRL.RecordFailure(ip)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token is required"})
 		return
 	}
 	if req.HardwareUUID == "" || req.Hostname == "" {
+		h.enrollRL.RecordFailure(ip)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hardware_uuid and hostname are required"})
 		return
 	}
+	// The enrollment key binds the device to this agent installation. It is required for
+	// token-based auto-enrollment except when the operator deliberately runs a static-env
+	// token (SPIRE_ENROLLMENT_TOKEN), which predates the key and has no device record to
+	// protect. Enforce the length bound only when a key is supplied.
+	if req.EnrollmentKey != "" && (len(req.EnrollmentKey) < 32 || len(req.EnrollmentKey) > 256) {
+		h.enrollRL.RecordFailure(ip)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "enrollment_key of 32-256 characters is required; upgrade the agent"})
+		return
+	}
 
-	tok, err := h.repo.ValidateAndConsumeEnrollmentToken(r.Context(), req.Token)
+	// refuse records the attempt and returns the uniform error, counting a rate-limit failure.
+	refuse := func(reason string, tokenID *string) {
+		h.enrollRL.RecordFailure(ip)
+		if rerr := h.repo.RecordEnrollmentRegistration(r.Context(), tokenID, nil, req.HardwareUUID, req.Hostname, ip, types.EnrollResultRefused, reason); rerr != nil {
+			log.Printf("[api] warning: could not record refused enrollment: %v", rerr)
+		}
+		log.Printf("[api] HTTP 401 enrollment refused remote=%s hw=%s reason=%q", r.RemoteAddr, req.HardwareUUID, reason)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": uniformEnrollRefusal})
+	}
+
+	tok, err := h.repo.ValidateEnrollmentToken(r.Context(), req.Token)
 	if err != nil {
-		if errors.Is(err, db.ErrEnrollmentTokenRevoked) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token has been revoked"})
-			return
-		}
-		if errors.Is(err, db.ErrEnrollmentTokenExpired) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token has expired"})
-			return
-		}
-		if errors.Is(err, db.ErrEnrollmentTokenExhausted) {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "enrollment token usage limit exceeded"})
-			return
-		}
-
+		// Static-env fallback token: only when no dynamic token matched.
 		staticTok := os.Getenv("SPIRE_ENROLLMENT_TOKEN")
 		if staticTok != "" && subtle.ConstantTimeCompare([]byte(staticTok), []byte(req.Token)) == 1 {
 			tok = &types.EnrollmentToken{
@@ -1213,17 +1312,51 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 				TargetTags:  []string{},
 			}
 		} else {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid enrollment token"})
+			// Any validation failure (not-found, revoked, expired, exhausted) returns the
+			// uniform error; the specific reason is only in the history row. A nil token id
+			// for not-found; the matched id otherwise is unknown here, so record without it.
+			reason := "invalid token"
+			switch {
+			case errors.Is(err, db.ErrEnrollmentTokenRevoked):
+				reason = "token revoked"
+			case errors.Is(err, db.ErrEnrollmentTokenExpired):
+				reason = "token expired"
+			case errors.Is(err, db.ErrEnrollmentTokenExhausted):
+				reason = "token usage limit exceeded"
+			}
+			refuse(reason, nil)
 			return
 		}
 	}
 
-	dev, rawBearerToken, err := h.repo.RegisterDeviceWithToken(r.Context(), tok, req.HardwareUUID, req.Hostname, req.Tags)
+	var tokIDPtr *string
+	if tok.ID != "" {
+		tokIDPtr = &tok.ID
+	}
+
+	// Hostname pattern: refuse before consuming a use.
+	if !hostnameMatchesPattern(tok.HostnamePattern, req.Hostname) {
+		refuse("hostname does not match token pattern", tokIDPtr)
+		return
+	}
+
+	dev, rawBearerToken, approved, err := h.repo.RegisterDeviceWithToken(r.Context(), tok, req.HardwareUUID, req.Hostname, req.Tags, req.EnrollmentKey)
 	if err != nil {
+		if errors.Is(err, db.ErrEnrollmentKeyConflict) {
+			refuse("enrollment key conflict (hardware UUID bound to a different key)", tokIDPtr)
+			return
+		}
+		if errors.Is(err, db.ErrEnrollmentTokenExhausted) {
+			refuse("token usage limit exceeded", tokIDPtr)
+			return
+		}
 		log.Printf("[api] register device with token error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register device"})
 		return
 	}
+
+	// Success: clear the IP's failure counter.
+	h.enrollRL.Reset(ip)
 
 	serverBaseURL := "http://localhost:8080"
 	if s, err := h.repo.GetSetting(r.Context(), "general.server_base_url"); err == nil && s != nil {
@@ -1233,14 +1366,35 @@ func (h *Handler) RegisterWithToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[api] HTTP 200 registered device id=%s hw=%s hostname=%s ring=%s via token", dev.ID, dev.HardwareUUID, dev.Hostname, dev.PatchRing)
-	writeJSON(w, http.StatusOK, types.EnrollmentRegisterResponse{
+	resp := types.EnrollmentRegisterResponse{
 		DeviceID:      dev.ID,
 		Status:        dev.Status,
 		PatchRing:     dev.PatchRing,
 		AuthToken:     rawBearerToken,
 		ServerBaseURL: serverBaseURL,
-	})
+	}
+
+	result := types.EnrollResultPending
+	if approved {
+		result = types.EnrollResultApproved
+		resp.WipeSigningPublicKey = h.repo.WipeSigningPublicKeyBase64()
+		// Issue a client-auth leaf for the CSR, if one was sent and a CA is configured.
+		// Issuance failure must not block enrollment: the agent can operate on the bearer
+		// token alone and obtain a certificate later via /cert/renew.
+		if certPEM, notAfter, cerr := h.issueAndStoreCert(r.Context(), dev.ID, req.CSRPEM, "DEVICE_CERT_ISSUE", r.RemoteAddr); cerr != nil {
+			log.Printf("[api] warning: device certificate issuance failed at token enroll for id=%s: %v", dev.ID, cerr)
+		} else if certPEM != "" {
+			resp.DeviceCertificatePEM = certPEM
+			resp.DeviceCertNotAfter = notAfter.UTC().Format(time.RFC3339)
+		}
+	}
+
+	if rerr := h.repo.RecordEnrollmentRegistration(r.Context(), tokIDPtr, &dev.ID, dev.HardwareUUID, dev.Hostname, ip, result, ""); rerr != nil {
+		log.Printf("[api] warning: could not record enrollment history: %v", rerr)
+	}
+
+	log.Printf("[api] HTTP 200 registered device id=%s hw=%s hostname=%s ring=%s result=%s via token", dev.ID, dev.HardwareUUID, dev.Hostname, dev.PatchRing, result)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // truncate shortens s to at most n bytes, for agent-reported free text stored server-side.
@@ -1260,4 +1414,30 @@ func capSourcePackages[T any](pkgs []T) []T {
 		return pkgs[:maxReportedSourcePackages]
 	}
 	return pkgs
+}
+
+// maxInventoryReportBytes is the server's ceiling on one encoded inventory report. The agent
+// caps itself lower (512 KiB); a report over this ceiling is dropped whole with a warning
+// rather than partially stored, so a malicious or broken agent cannot force unbounded work.
+const maxInventoryReportBytes = 1 << 20 // 1 MiB
+
+// processInventoryReport sanitizes and stores a rich inventory report. It is best-effort:
+// an oversized report is dropped, malformed entries are dropped with a parse warning, and a
+// storage error is logged. None of this ever fails the check-in (the inventory is telemetry;
+// policy delivery must not depend on it). A nil report (old agent) is a no-op.
+func (h *Handler) processInventoryReport(r *http.Request, dev *types.Device, rep *types.InventoryReport) {
+	if rep == nil {
+		return
+	}
+	if raw, err := json.Marshal(rep); err == nil && len(raw) > maxInventoryReportBytes {
+		log.Printf("[api] warning: inventory report for device %s is %d bytes (> %d); dropping", dev.ID, len(raw), maxInventoryReportBytes)
+		return
+	}
+	clean, warnings := db.SanitizeInventoryReport(rep)
+	if warnings > 0 {
+		log.Printf("[api] inventory report for device %s had %d malformed/over-limit entries (dropped)", dev.ID, warnings)
+	}
+	if err := h.repo.StoreInventoryReport(r.Context(), dev.ID, clean); err != nil {
+		log.Printf("[api] warning: failed to store inventory for device %s: %v", dev.ID, err)
+	}
 }

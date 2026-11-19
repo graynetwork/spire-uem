@@ -41,9 +41,21 @@ func main() {
 	configPath := flag.String("config", "", "Path to YAML configuration file")
 	once := flag.Bool("once", false, "Run a single check-in/enforcement cycle and exit")
 	rollbackCheck := flag.Bool("rollback-check", false, "Run the independent agent-update rollback check and exit (invoked by the rollback timer; does not depend on a healthy new binary)")
+	resetIdentity := flag.Bool("reset-identity", false, "Securely delete this device's enrollment identity (token, enrollment key, device key/cert) and exit. Run BEFORE sealing a golden image so the clone enrolls as a fresh device rather than sharing one.")
 	flag.Parse()
 
 	cfg := config.Load(*configPath)
+
+	// Golden-image preparation: clear every on-disk identity artefact so a cloned image does
+	// not carry (and silently share) another device's identity. Does not touch the network or
+	// contact the server. Must run as the user that owns /etc/spire (root in production).
+	if *resetIdentity {
+		if err := resetDeviceIdentity(cfg.Agent.TokenPath); err != nil {
+			log.Fatalf("[spired] reset-identity failed: %v", err)
+		}
+		log.Printf("[spired] device identity cleared; this image is safe to seal")
+		return
+	}
 
 	// Rollback trigger entry point: reinstall the previous agent package if the just-installed
 	// one never confirmed healthy. This runs off on-disk state only, so a crash-looping new
@@ -105,7 +117,7 @@ func main() {
 		if token == "" {
 			return fmt.Errorf("device is not yet enrolled/approved")
 		}
-		checkinResp, installedPkgs, statusCode, err := performCheckin(syncCtx, client, cfg.Agent.ServerURL, token, hwUUID, hostname)
+		checkinResp, installedPkgs, statusCode, err := performCheckinWithInventory(syncCtx, client, cfg.Agent.ServerURL, token, hwUUID, hostname, cfg.Agent.InventoryInterval)
 		if err != nil {
 			if ipcSrv != nil {
 				ipcSrv.UpdateStatus(false, time.Time{}, nil)
@@ -178,50 +190,109 @@ func main() {
 				}
 				continue
 			}
-			enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey, deviceKey, certPaths)
-			if netErr != nil {
-				backoffAttempt++
-				sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
-				log.Printf("[spired] network error during enrollment: %v (retrying in %s)", netErr, sleepDur)
-				if *once {
-					return
-				}
-				if !sleepContext(ctx, sleepDur) {
-					return
-				}
-				continue
-			}
-			backoffAttempt = 0
 
-			if enrolledToken == "" {
-				if *once {
-					return
+			// Automated enrollment: if an enrollment token is available (file > env > config),
+			// register in one request that binds the hardware UUID, the enrollment key and a
+			// CSR. On auto-approval we persist the issued bearer token and DELETE the token
+			// file so the secret does not linger. A refusal or a require_approval response
+			// falls through to the normal manual polling flow below.
+			if enrollTok, tokSource := resolveEnrollmentToken(cfg.Agent); enrollTok != "" {
+				log.Printf("[spired] attempting automated enrollment with token (source=%s)", tokSource)
+				bearer, pending, tokErr := registerWithToken(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, enrollTok, hwUUID, hostname, enrollKey, deviceKey, certPaths)
+				if tokErr != nil {
+					backoffAttempt++
+					sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
+					log.Printf("[spired] network error during token enrollment: %v (retrying in %s)", tokErr, sleepDur)
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, sleepDur) {
+						return
+					}
+					continue
 				}
-				if !sleepContext(ctx, cfg.Agent.PollInterval) {
-					return
+				if bearer != "" {
+					if err := persistToken(cfg.Agent.TokenPath, bearer); err != nil {
+						log.Printf("[spired] failed to persist token to %s: %v", cfg.Agent.TokenPath, err)
+						if *once {
+							return
+						}
+						if !sleepContext(ctx, cfg.Agent.PollInterval) {
+							return
+						}
+						continue
+					}
+					// Delete the one-time token file now that enrollment succeeded, so the
+					// secret does not linger on disk. Only the FILE source is deleted.
+					if tokSource == tokenSourceFile {
+						if derr := os.Remove(cfg.Agent.EnrollmentTokenFile); derr != nil && !os.IsNotExist(derr) {
+							log.Printf("[spired] warning: could not delete enrollment token file %s: %v", cfg.Agent.EnrollmentTokenFile, derr)
+						} else {
+							log.Printf("[spired] deleted consumed enrollment token file %s", cfg.Agent.EnrollmentTokenFile)
+						}
+					}
+					backoffAttempt = 0
+					log.Printf("[spired] device auto-approved via enrollment token! Token persisted to %s (mode 0600)", cfg.Agent.TokenPath)
+					token = bearer
+				} else if pending {
+					// Staged PENDING_APPROVAL by a require_approval token: delete the one-time
+					// file (it has been consumed) and fall through to the polling loop.
+					if tokSource == tokenSourceFile {
+						if derr := os.Remove(cfg.Agent.EnrollmentTokenFile); derr != nil && !os.IsNotExist(derr) {
+							log.Printf("[spired] warning: could not delete enrollment token file %s: %v", cfg.Agent.EnrollmentTokenFile, derr)
+						}
+					}
+					backoffAttempt = 0
 				}
-				continue
+				// On a flat refusal (bearer=="" && !pending), fall through to manual enrollment.
 			}
 
-			if err := persistToken(cfg.Agent.TokenPath, enrolledToken); err != nil {
-				log.Printf("[spired] failed to persist token to %s: %v", cfg.Agent.TokenPath, err)
-				if *once {
-					return
+			if token == "" {
+				enrolledToken, netErr := enrollAndPoll(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, hostname, enrollKey, deviceKey, certPaths)
+				if netErr != nil {
+					backoffAttempt++
+					sleepDur := backoffWithJitter(backoffAttempt, cfg.Agent.PollInterval)
+					log.Printf("[spired] network error during enrollment: %v (retrying in %s)", netErr, sleepDur)
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, sleepDur) {
+						return
+					}
+					continue
 				}
-				if !sleepContext(ctx, cfg.Agent.PollInterval) {
-					return
+				backoffAttempt = 0
+
+				if enrolledToken == "" {
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, cfg.Agent.PollInterval) {
+						return
+					}
+					continue
 				}
-				continue
+
+				if err := persistToken(cfg.Agent.TokenPath, enrolledToken); err != nil {
+					log.Printf("[spired] failed to persist token to %s: %v", cfg.Agent.TokenPath, err)
+					if *once {
+						return
+					}
+					if !sleepContext(ctx, cfg.Agent.PollInterval) {
+						return
+					}
+					continue
+				}
+				log.Printf("[spired] device approved! Token persisted to %s (mode 0600)", cfg.Agent.TokenPath)
+				token = enrolledToken
 			}
-			log.Printf("[spired] device approved! Token persisted to %s (mode 0600)", cfg.Agent.TokenPath)
-			token = enrolledToken
 		}
 
 		statusCode, checkErr := func() (int, error) {
 			checkinMu.Lock()
 			defer checkinMu.Unlock()
 
-			checkinResp, installedPkgs, code, err := performCheckin(ctx, client, cfg.Agent.ServerURL, token, hwUUID, hostname)
+			checkinResp, installedPkgs, code, err := performCheckinWithInventory(ctx, client, cfg.Agent.ServerURL, token, hwUUID, hostname, cfg.Agent.InventoryInterval)
 			if err != nil {
 				log.Printf("[WARN] Server unreachable; falling back to local policy cache (%v)", err)
 				cached, cacheErr := engine.LoadPolicyCache(engine.DefaultPolicyCachePath)
@@ -282,6 +353,18 @@ func main() {
 				if len(checkinResp.QueuedCommands) > 0 {
 					log.Printf("[spired] received %d queued diagnostic commands", len(checkinResp.QueuedCommands))
 					for _, cmdDTO := range checkinResp.QueuedCommands {
+						if cmdDTO.Command == types.InventoryRefreshCommand {
+							log.Printf("[spired] inventory refresh requested id=%s; arming forced report and triggering check-in", cmdDTO.ID)
+							armInventoryRefresh()
+							select {
+							case triggerCheckinCh <- struct{}{}:
+							default:
+							}
+							_ = reportCommandResult(ctx, client, cfg.Agent.ServerURL, token, types.CommandReportRequest{
+								CommandID: cmdDTO.ID, Status: "COMPLETED", ExitCode: 0, Stdout: "inventory refresh armed",
+							})
+							continue
+						}
 						if IsActionDirective(cmdDTO.Command) {
 							d, perr := parseActionDirective(cmdDTO.Command)
 							if perr != nil {
@@ -307,6 +390,19 @@ func main() {
 						}
 					}
 				}
+
+				// Reusable scripts and custom sensors dispatched by the server for this device.
+				// Older servers never set these fields, so these are no-ops then.
+				runScriptDirectives(ctx, client, cfg.Agent.ServerURL, token, hwUUID, checkinResp.ScriptDirectives)
+				runSensorDirectives(ctx, client, cfg.Agent.ServerURL, token, hwUUID, checkinResp.SensorDirectives)
+
+				// Patch campaigns: first report any run a previous process left in flight
+				// (INTERRUPTED, or a finished result whose report never landed), then execute
+				// the directives the server claimed for this check-in. Older servers never
+				// send directives, so this is a no-op for them.
+				campDeps := newCampaignDeps(client, cfg.Agent.ServerURL, token, ipcSrv)
+				reportRecoveredCampaigns(ctx, campDeps)
+				runCampaignDirectives(ctx, campDeps, checkinResp.CampaignDirectives)
 
 				if attResp, attErr := engine.PerformTPMAttestation(ctx, client, cfg.Agent.ServerURL, token, hwUUID); attErr != nil {
 					log.Printf("[spired] warning: TPM 2.0 attestation failed: %v", attErr)
@@ -443,6 +539,14 @@ func enrollAndPoll(ctx context.Context, client *http.Client, serverURL, tokenPat
 }
 
 func performCheckin(ctx context.Context, client *http.Client, serverURL, token, hwUUID, hostname string) (*types.CheckinResponse, map[string]bool, int, error) {
+	return performCheckinWithInventory(ctx, client, serverURL, token, hwUUID, hostname, 0)
+}
+
+// performCheckinWithInventory is performCheckin plus the rich-inventory cadence. When this
+// check-in is due an inventory report (or one was forced by an admin refresh), it collects a
+// full InventoryReport and attaches it; otherwise req.Inventory stays nil and the server
+// keeps the device's last inventory. invInterval<=0 uses the default cadence.
+func performCheckinWithInventory(ctx context.Context, client *http.Client, serverURL, token, hwUUID, hostname string, invInterval time.Duration) (*types.CheckinResponse, map[string]bool, int, error) {
 	pkgs, err := inventory.GetInstalledPackages()
 	if err != nil {
 		log.Printf("[spired] warning: package inventory collection failed: %v", err)
@@ -472,6 +576,18 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		log.Printf("[spired] warning: source package inventory collection failed: %v", srcErr)
 	}
 	releaseCodename := inventory.GetReleaseCodename()
+
+	// Rich inventory rides on this check-in only when the cadence is due or an admin forced
+	// a refresh. Collection is best-effort and never blocks or fails the check-in.
+	var invReport *types.InventoryReport
+	forced := consumeInventoryRefresh()
+	if inventory.ShouldCollect(inventory.DefaultInventoryStatePath, invInterval, time.Now(), forced) {
+		col := &inventory.Collector{}
+		invReport = col.CollectForCheckin(ctx)
+		inventory.MarkCollected(inventory.DefaultInventoryStatePath, time.Now())
+		log.Printf("[spired] attached rich inventory report (forced=%v truncated=%v)", forced, invReport.Truncated)
+	}
+
 	payload, _ := json.Marshal(types.CheckinRequest{
 		HardwareUUID:    hwUUID,
 		Hostname:        hostname,
@@ -486,6 +602,7 @@ func performCheckin(ctx context.Context, client *http.Client, serverURL, token, 
 		ReleaseCodename: releaseCodename,
 		AgentVersion:    version.Version,
 		UpdateResult:    engine.ConsumePendingUpdateResult(engine.DefaultUpdateStatePath),
+		Inventory:       invReport,
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/v1/desktop/checkin", bytes.NewReader(payload))
@@ -531,6 +648,16 @@ func executePoliciesAndCleanup(
 	results := make([]types.PolicyExecutionItem, 0, len(policies)+len(cleanupItems))
 	results = append(results, cleanupItems...)
 
+	// SCRIPT_POLICY unassignment runs the optional `remove` step. CleanupOrphanedPolicies
+	// cannot do this (it has no script runner), so handle those revoked policies here. It is
+	// reported REVOKED exactly once; CleanupOrphanedPolicies already reports every other
+	// revoked type, so skipping SCRIPT_POLICY there (default branch) avoids a double report.
+	for _, rev := range revokedPolicies {
+		if rev.PolicyType == types.PolicyTypeScriptPolicy {
+			results = append(results, engine.RunScriptPolicyRemove(ctx, engine.NewScriptRunner(""), rev))
+		}
+	}
+
 	_, installedFlatpaks := engine.GetInstalledFlatpaks(ctx)
 
 	var dconfIndices []int
@@ -573,6 +700,8 @@ func executePoliciesAndCleanup(
 			item = engine.ReconcileUSBDeviceControl(ctx, pol)
 		case types.PolicyTypeAuditdRules:
 			item = engine.EnforceAuditdRulesPolicy(ctx, pol)
+		case types.PolicyTypeScriptPolicy:
+			item = engine.EnforceScriptPolicy(ctx, engine.NewScriptRunner(""), pol)
 		default:
 			out, _ := json.Marshal(map[string]string{"note": "unsupported policy type"})
 			item = types.PolicyExecutionItem{

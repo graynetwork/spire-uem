@@ -184,6 +184,10 @@ type Policy struct {
 	Payload        json.RawMessage           `db:"payload" json:"payload"`
 	TargetTags     []string                  `db:"target_tags" json:"target_tags"`
 	TargetRing     *DeploymentRing           `db:"target_ring" json:"target_ring,omitempty"`
+	// TargetGroupIDs restricts a policy to members of the named device groups: targeting is
+	// (tag/ring rules) AND (no groups OR member of any listed group). Empty means no group
+	// restriction, i.e. exactly the pre-groups behaviour.
+	TargetGroupIDs []string                  `db:"target_group_ids" json:"target_group_ids"`
 	PatchWindowID  *string                   `db:"patch_window_id" json:"patch_window_id,omitempty"`
 	RequiresReboot bool                      `db:"requires_reboot" json:"requires_reboot"`
 	IsSelfService  bool                      `db:"is_self_service" json:"is_self_service"`
@@ -768,8 +772,17 @@ type CheckinRequest struct {
 	ReleaseCodename string            `json:"release_codename,omitempty"`
 	// AgentVersion is the build version of the reporting spired binary (internal/version.Version).
 	AgentVersion string `json:"agent_version,omitempty"`
+	// AgentStarted is set to true by the agent ONLY on its first check-in after the spired
+	// process (re)started, so workflows can fire an "agent started" automation. Old agents
+	// never send it (always false), so agent_start workflows simply never fire for them.
+	AgentStarted bool `json:"agent_started,omitempty"`
 	// UpdateResult, when set, reports the outcome of the agent's most recent self-update attempt.
 	UpdateResult *AgentUpdateResult `json:"update_result,omitempty"`
+
+	// Inventory carries the rich hardware/software/network/security snapshot, sent at most
+	// once per inventory_interval. Nil on most check-ins and always nil from an old agent;
+	// the server keeps working and shows "no inventory reported".
+	Inventory *InventoryReport `json:"inventory,omitempty"`
 }
 
 // CheckinResponse is returned by POST /api/v1/desktop/checkin.
@@ -790,6 +803,54 @@ type CheckinResponse struct {
 	// The agent pins it once and persists it next to its token, then refuses any wipe order
 	// not signed by it.
 	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
+	// ScriptDirectives are on-demand/scheduled/agent-start script runs for this device. Each
+	// carries its content, sha256 and resolved parameters. Older agents ignore this field.
+	ScriptDirectives []ScriptDirective `json:"script_directives,omitempty"`
+	// SensorDirectives are the sensors due on this device at this check-in. Older agents
+	// ignore this field.
+	SensorDirectives []SensorDirective `json:"sensor_directives,omitempty"`
+	// CampaignDirectives are patch-campaign installs the server has claimed for this device
+	// at this check-in. The server applies every gate (campaign state, the device's ring in
+	// the active stage, blackout/maintenance windows, deadline/deferral rules) and claims the
+	// work atomically BEFORE it appears here, so each directive is a committed assignment the
+	// agent should execute. Older agents that do not understand this field ignore it; the
+	// server's unsupported-agent timeout then marks the claimed work UNSUPPORTED (never a
+	// silent success). omitempty so an old agent's response is byte-identical to before.
+	CampaignDirectives []CampaignDirective `json:"campaign_directives,omitempty"`
+}
+
+// CampaignDirective is one claimed patch-campaign install for a device. It is fully
+// self-contained: the agent needs nothing else to execute it (packages to upgrade, whether
+// the user may still defer, the reboot policy, and whether the deadline has passed). The
+// server decides deferral allowance and deadline; the agent never recomputes them.
+type CampaignDirective struct {
+	CampaignID string `json:"campaign_id"`
+	// Name is a human label used in the user notification.
+	Name string `json:"name,omitempty"`
+	// Packages is the validated [{package,target,from_cve}] work list.
+	Packages []CampaignPackageWork `json:"packages"`
+	// RebootPolicy is one of "never" / "notify" / "force".
+	RebootPolicy string `json:"reboot_policy"`
+	// MayDefer is true when the user may still defer this install (deferrals remain and the
+	// deadline has not passed). When false the install proceeds without offering a deferral.
+	MayDefer bool `json:"may_defer"`
+	// DeferralsLeft is how many deferrals remain (informational, for the Spire Hub button).
+	DeferralsLeft int `json:"deferrals_left,omitempty"`
+	// DeadlinePassed is true when the campaign deadline has passed: the install proceeds
+	// without deferral and a "force" reboot policy applies.
+	DeadlinePassed bool `json:"deadline_passed,omitempty"`
+}
+
+// CampaignPackageWork is one (package, target version) the agent must apply. It mirrors
+// campaign.PackageWork but lives in types to keep the agent/server wire contract in one place
+// without the agent importing the server-side campaign package.
+type CampaignPackageWork struct {
+	Package string `json:"package"`
+	Target  string `json:"target"`
+	// MinVersion is the source version the package must reach (see campaign.PackageWork).
+	// Older agents ignore it and upgrade to latest.
+	MinVersion string `json:"min_version,omitempty"`
+	FromCVE    string `json:"from_cve,omitempty"`
 }
 
 // PolicyExecutionItem represents a single policy enforcement outcome reported by spired.
@@ -928,16 +989,50 @@ type EnrollmentToken struct {
 	ExpiresAt   *time.Time     `json:"expires_at,omitempty"`
 	IsRevoked   bool           `json:"is_revoked"`
 	CreatedAt   time.Time      `json:"created_at"`
+	// RequireApproval makes a device registered with this token land PENDING_APPROVAL
+	// instead of being auto-approved. Defaults to false for new and pre-existing tokens.
+	RequireApproval bool `json:"require_approval"`
+	// HostnamePattern, when set, is a glob (e.g. "lab-*") the registering hostname must
+	// match or the registration is refused. Empty means any hostname is accepted.
+	HostnamePattern string `json:"hostname_pattern,omitempty"`
+	// CreatedBy is the admin username that created (or last rotated) the token.
+	CreatedBy string `json:"created_by,omitempty"`
+	// RotatedAt is when the secret was last rotated, if ever.
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
 }
 
 // CreateTokenRequest defines the parameters for generating a new enrollment token.
 type CreateTokenRequest struct {
-	Description    string         `json:"description"`
-	TargetRing     DeploymentRing `json:"target_ring"`
-	TargetTags     []string       `json:"target_tags"`
-	MaxUses        int            `json:"max_uses"`
-	ExpiresInHours int            `json:"expires_in_hours"`
+	Description     string         `json:"description"`
+	TargetRing      DeploymentRing `json:"target_ring"`
+	TargetTags      []string       `json:"target_tags"`
+	MaxUses         int            `json:"max_uses"`
+	ExpiresInHours  int            `json:"expires_in_hours"`
+	RequireApproval bool           `json:"require_approval"`
+	HostnamePattern string         `json:"hostname_pattern,omitempty"`
+	// CreatedBy is filled in by the handler from the authenticated admin, never the client.
+	CreatedBy string `json:"-"`
 }
+
+// EnrollmentRegistration is one recorded attempt to register with an enrollment token.
+type EnrollmentRegistration struct {
+	ID           string    `json:"id"`
+	TokenID      *string   `json:"token_id,omitempty"`
+	DeviceID     *string   `json:"device_id,omitempty"`
+	HardwareUUID string    `json:"hardware_uuid"`
+	Hostname     string    `json:"hostname"`
+	SourceIP     string    `json:"source_ip"`
+	Result       string    `json:"result"`
+	Reason       string    `json:"reason,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// Enrollment registration result constants (stored in enrollment_token_registrations.result).
+const (
+	EnrollResultApproved = "approved"
+	EnrollResultPending  = "pending"
+	EnrollResultRefused  = "refused"
+)
 
 // EnrollmentRegisterRequest is submitted by an endpoint to POST /api/v1/enrollment/register.
 type EnrollmentRegisterRequest struct {
@@ -945,6 +1040,13 @@ type EnrollmentRegisterRequest struct {
 	HardwareUUID string   `json:"hardware_uuid"`
 	Hostname     string   `json:"hostname"`
 	Tags         []string `json:"tags,omitempty"`
+	// EnrollmentKey binds the device record to the agent installation, exactly as in the
+	// manual enroll flow. A token can never let a second machine take over an existing
+	// device record bound to a different key. Required for token-based auto-enrollment.
+	EnrollmentKey string `json:"enrollment_key,omitempty"`
+	// CSRPEM is a PEM PKCS#10 request for the device's local key; when present and a device
+	// CA is configured the server issues a client-auth leaf at auto-approval.
+	CSRPEM string `json:"csr_pem,omitempty"`
 }
 
 // EnrollmentRegisterResponse is returned on successful registration.
@@ -954,6 +1056,13 @@ type EnrollmentRegisterResponse struct {
 	PatchRing     DeploymentRing `json:"patch_ring"`
 	AuthToken     string         `json:"auth_token,omitempty"`
 	ServerBaseURL string         `json:"server_base_url,omitempty"`
+	// WipeSigningPublicKey lets the agent pin the server's Ed25519 wipe-order signing key
+	// at auto-approval (base64). Present only when a bearer token is issued.
+	WipeSigningPublicKey string `json:"wipe_signing_public_key,omitempty"`
+	// DeviceCertificatePEM is the PEM client-auth leaf issued for the request CSR, present
+	// only when a CSR was supplied, a CA is configured, and the device was auto-approved.
+	DeviceCertificatePEM string `json:"device_certificate_pem,omitempty"`
+	DeviceCertNotAfter   string `json:"device_cert_not_after,omitempty"`
 }
 
 // GeneralSettings encapsulates basic control plane operational parameters.

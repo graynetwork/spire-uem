@@ -699,6 +699,18 @@
                     class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
             </div>
 
+            <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Allowed Hostname Pattern (optional glob, e.g. lab-*)</label>
+                <input type="text" name="hostname_pattern" placeholder="e.g. lab-* (blank = any hostname)"
+                    class="w-full px-3 py-1.5 text-xs font-mono bg-[#0a0e17] border border-[#1a2234] rounded text-slate-200 focus:outline-none focus:border-blue-500">
+            </div>
+
+            <label class="flex items-center space-x-2 text-xs font-medium text-slate-300">
+                <input type="checkbox" name="require_approval" value="1"
+                    class="rounded border-[#1a2234] bg-[#0a0e17] text-blue-500 focus:ring-blue-500">
+                <span>Require admin approval (device lands PENDING_APPROVAL instead of auto-approving)</span>
+            </label>
+
             <div class="flex justify-end space-x-2 pt-3 border-t border-[#1a2234]">
                 <button type="button" onclick="document.getElementById('generate-token-modal').classList.add('hidden')"
                     class="px-3 py-1.5 bg-[#141b2a] hover:bg-[#1a2234] text-slate-300 text-xs font-medium rounded-md transition">
@@ -769,6 +781,7 @@ function copyToClipboard(text, elemId) {
                 <th class="px-4 py-2.5 font-medium">Description</th>
                 <th class="px-4 py-2.5 font-medium">Target Ring</th>
                 <th class="px-4 py-2.5 font-medium">Target Tags</th>
+                <th class="px-4 py-2.5 font-medium">Approval</th>
                 <th class="px-4 py-2.5 font-medium">Usage</th>
                 <th class="px-4 py-2.5 font-medium">Expires</th>
                 <th class="px-4 py-2.5 font-medium">Status</th>
@@ -796,6 +809,14 @@ function copyToClipboard(text, elemId) {
                     {{else}}
                         <span class="text-slate-600">—</span>
                     {{end}}
+                    {{if .HostnamePattern}}<div class="text-[10px] text-slate-500 mt-0.5">host: {{.HostnamePattern}}</div>{{end}}
+                </td>
+                <td class="px-4 py-3">
+                    {{if .RequireApproval}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 font-semibold">Manual</span>
+                    {{else}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">Auto</span>
+                    {{end}}
                 </td>
                 <td class="px-4 py-3 text-slate-300 font-mono">
                     {{.UsesCount}} / {{if eq .MaxUses 0}}&infin;{{else}}{{.MaxUses}}{{end}}
@@ -817,6 +838,13 @@ function copyToClipboard(text, elemId) {
                 <td class="px-4 py-3 text-right">
                     {{if not .IsRevoked}}
                     <button type="button"
+                        hx-post="/admin/settings/tokens/{{.ID}}/rotate"
+                        hx-target="#tokens-container"
+                        hx-confirm="Rotate this token's secret? The current secret stops working immediately; settings and history are kept."
+                        class="px-2 py-1 text-[11px] rounded bg-blue-950/30 hover:bg-blue-900/50 border border-blue-800/40 text-blue-300 transition mr-1">
+                        Rotate
+                    </button>
+                    <button type="button"
                         hx-delete="/admin/settings/tokens/{{.ID}}"
                         hx-target="#tokens-container"
                         hx-confirm="Are you sure you want to revoke this enrollment token? Endpoints using it will no longer be able to register."
@@ -830,9 +858,50 @@ function copyToClipboard(text, elemId) {
             </tr>
             {{else}}
             <tr>
-                <td colspan="8" class="px-4 py-8 text-center text-slate-500">
+                <td colspan="9" class="px-4 py-8 text-center text-slate-500">
                     No enrollment tokens generated yet. Click "Generate Token" above to create one.
                 </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+
+{{define "token_history"}}
+<div class="bg-[#0f1420] border border-[#1a2234] rounded-lg overflow-hidden">
+    <table class="w-full text-left text-xs">
+        <thead class="bg-[#141b2a] text-slate-400 border-b border-[#1a2234]">
+            <tr>
+                <th class="px-4 py-2.5 font-medium">When</th>
+                <th class="px-4 py-2.5 font-medium">Hostname</th>
+                <th class="px-4 py-2.5 font-medium">Hardware UUID</th>
+                <th class="px-4 py-2.5 font-medium">Source IP</th>
+                <th class="px-4 py-2.5 font-medium">Result</th>
+                <th class="px-4 py-2.5 font-medium">Reason</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-[#1a2234]">
+            {{range .History}}
+            <tr class="hover:bg-[#141b2a]/40 transition">
+                <td class="px-4 py-3 text-slate-400 font-mono">{{timeAgo .CreatedAt}}</td>
+                <td class="px-4 py-3 text-slate-200">{{.Hostname}}</td>
+                <td class="px-4 py-3 text-slate-400 font-mono">{{.HardwareUUID}}</td>
+                <td class="px-4 py-3 text-slate-400 font-mono">{{.SourceIP}}</td>
+                <td class="px-4 py-3">
+                    {{if eq .Result "approved"}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">approved</span>
+                    {{else if eq .Result "pending"}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-amber-500/10 text-amber-400 border border-amber-500/30 font-semibold">pending</span>
+                    {{else}}
+                        <span class="px-2 py-0.5 text-[10px] font-mono rounded bg-rose-500/10 text-rose-400 border border-rose-500/30 font-semibold">refused</span>
+                    {{end}}
+                </td>
+                <td class="px-4 py-3 text-slate-400">{{if .Reason}}{{.Reason}}{{else}}<span class="text-slate-600">—</span>{{end}}</td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="6" class="px-4 py-8 text-center text-slate-500">No enrollment attempts recorded for this token yet.</td>
             </tr>
             {{end}}
         </tbody>

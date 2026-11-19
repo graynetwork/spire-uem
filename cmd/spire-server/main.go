@@ -17,12 +17,15 @@ import (
 	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/api"
 	"github.com/spire-uem/spire-uem/internal/audit"
+	"github.com/spire-uem/spire-uem/internal/campaignsync"
 	"github.com/spire-uem/spire-uem/internal/config"
 	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
+	"github.com/spire-uem/spire-uem/internal/groupsync"
 	"github.com/spire-uem/spire-uem/internal/web"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 func main() {
@@ -129,6 +132,21 @@ func main() {
 	alertMgr := alerts.NewManager(alertStore, repo.LoadAlertConfig(ctx))
 	go alertMgr.RunWorkers(ctx)
 
+	// Automation & remediation workflows: durable event log, triggers/conditions/actions,
+	// approvals, scheduled + agent-start script runs. The engine runs on every instance and
+	// claims events / schedule fires atomically so each is handled once cluster-wide.
+	wfStore := repo.WorkflowStore()
+	wfEngine := workflows.NewEngine(wfStore, workflows.NewRegistry(), workflows.DefaultConfig())
+	repo.NewWorkflowActions(alertMgr, wfEngine.Config().QuarantineTag).RegisterBuiltins(wfEngine.Registry())
+	// Patch campaigns join workflows through the action registry (start_campaign).
+	repo.RegisterCampaignWorkflowAction(wfEngine.Registry())
+	// Forward offline-device detections from the alerts ticker into the workflow event log.
+	alertMgr.SetOfflineHook(func(c context.Context, deviceID, hostname string, minutes int) {
+		repo.EmitEvent(c, workflows.EventDeviceOffline, deviceID,
+			map[string]any{"hostname": hostname, "offline_minutes": minutes}, false)
+	})
+	go wfEngine.RunWorkers(ctx)
+
 	r := chi.NewRouter()
 	r.Use(web.TrustedProxyRealIPMiddleware)
 	r.Use(middleware.Logger)
@@ -153,6 +171,7 @@ func main() {
 	webHandler.SetAptRepoDir(cfg.Server.AptRepoDir)
 	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
 	webHandler.SetAlerting(alertStore, alertMgr)
+	webHandler.SetWorkflowEngine(wfEngine)
 	webHandler.SetDeviceMTLSMode(mtlsMode)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 
@@ -194,6 +213,16 @@ func main() {
 	// Debian Security Tracker CVE feed importer: periodic online import + fleet rematch.
 	// Honours cve.feed_* settings and SPIRE_CVE_FEED_URL / _FILE / _INTERVAL / _ENABLED.
 	go cvefeed.New(repo).Schedule(ctx)
+
+	// Dynamic device-group membership: periodic materialisation (default every 5 minutes).
+	// Per-device recompute also runs on each check-in; this loop catches time-based rules
+	// and offline devices. Advisory-locked per group, so both instances may run it safely.
+	go groupsync.New(repo).Run(ctx)
+
+	// Patch-campaign evaluation: halt/soak/promote/complete each RUNNING campaign (default
+	// every minute, SPIRE_CAMPAIGN_EVAL_INTERVAL). Per-campaign advisory lock + re-read under
+	// the lock make it safe to run on both instances. Halts raise a patch_failed alert.
+	go campaignsync.New(repo, alertMgr).Run(ctx)
 
 	<-ctx.Done()
 	log.Printf("[spire-server] shutting down...")

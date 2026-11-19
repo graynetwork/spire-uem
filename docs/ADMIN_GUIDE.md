@@ -25,7 +25,7 @@ Create named database-backed administrators, configure MFA, and reserve the stat
 | `OPERATOR` | Device sync, reboot, patch, scan, lock, queued root commands, root PTY, and remote-assistance requests. |
 | `AUDITOR` | Read-only device, policy, vulnerability, audit, and export access. |
 
-`OPERATOR` and `SECURITY_ADMIN` can be limited to devices carrying specified tags. Their device lists, dashboard totals, vulnerability counts, audit events, and device-targeted actions are filtered server-side. An empty allowed-tag list is unrestricted. `SUPER_ADMIN` and `AUDITOR` are not tag-scoped.
+`OPERATOR` and `SECURITY_ADMIN` can be limited to devices carrying specified tags. Their device lists, dashboard totals, vulnerability counts, audit events, and device-targeted actions are filtered server-side. An empty allowed-tag list is unrestricted. A tag-scoped admin can create or change a policy or application only if every target tag is one of their tags (fleet-wide targeting is refused) and every target group is one they may edit; they cannot toggle, edit or delete a policy that reaches outside their tags. `SUPER_ADMIN` and `AUDITOR` are not tag-scoped.
 
 `OPERATOR` can execute commands and open a root PTY on every device within their scope. Grant that role only to administrators trusted with root access to those endpoints.
 
@@ -56,11 +56,15 @@ After an OS reinstall or deletion of `/etc/spire`, revoke the old device record 
 
 ### 2.2 Dynamic enrollment tokens
 
-**Settings → Enrollment Tokens** creates `spire_tok_...` tokens for provisioning clients that call `POST /api/v1/enrollment/register`. Configure a description, target tags, maximum uses, expiry, and deployment ring.
+**Settings → Enrollment Tokens** (SUPER_ADMIN) creates `spire_tok_...` tokens for automated onboarding. Each token carries a description, target tags, maximum uses (`1` = one-time, `0` = unlimited), expiry, deployment ring, an optional **require approval** flag (default off — the device auto-approves), and an optional **allowed hostname pattern** (a glob such as `lab-*`; blank = any hostname). The creator is recorded (`created_by`).
 
-Supported token ring values are `CANARY`, `BETA`, `PILOT`, and `PRODUCTION`. The standard bootstrap does not accept `--token`, and `spired` does not currently call token registration itself.
+Tokens are stored **hashed**; the secret is shown **once** at creation (and once again after rotation). **Rotate** generates a fresh secret while keeping the token's settings and history — the old secret stops working immediately. **Revoke** disables the token. Each token's page lists its **enrollment history**: device, hardware UUID, hostname, time, source IP, and result (approved, pending, or refused with a reason).
 
-Revoked, expired, exhausted, or unknown tokens receive `401 Unauthorized`.
+Install an endpoint with a token using the bootstrap (see the onboarding runbook): `--enrollment-token-file PATH` (preferred; the file is `0600` and consumed once) or `--enrollment-token VALUE` (works, but prints a warning that it is visible in the process list and shell history). The agent registers in one request that binds the hardware UUID, its enrollment key, and a CSR for its device certificate; a token can never let a second machine take over an existing device record.
+
+Supported token ring values are `CANARY`, `BETA`, `PILOT`, and `PRODUCTION`. Revoked, expired, exhausted, unknown, hostname-mismatched, or key-conflicting registrations all receive the same uniform `401 Unauthorized` (so token existence is not revealed); the specific reason is recorded only in the token's history. Repeated failed attempts from one IP are rate limited (`429`).
+
+Token create, rotate, and revoke, and every registration attempt, are audited.
 
 ## 3. Declarative policy
 
@@ -94,6 +98,71 @@ The Applications page supports Debian package policies, Flathub applications, an
 
 Uploaded bundles are stored under `SPIRE_BUNDLE_STORAGE_DIR`, defaulting to `/var/lib/spire/storage/bundles`. The agent downloads the bundle, verifies its SHA-256 digest, and installs it system-wide.
 
+## 4a. Device groups and saved fleet queries
+
+The **Groups** page defines dynamic device groups and saved fleet queries. Viewing is open to
+`AUDITOR`+; creating, editing and deleting require `SECURITY_ADMIN`+.
+
+A group has:
+
+- a **name** and optional **description**;
+- a **kind** — `target` (the group can be used to target policies and applications) or
+  `query` (a saved fleet query, usable only for viewing and export);
+- an optional **rule** (JSON); and
+- static **include** and **exclude** device-ID lists.
+
+Membership is `(rule matches OR device is included) AND device is NOT excluded`. The exclude
+list wins over both the rule and the include list.
+
+**Writing a rule.** A rule is a JSON tree of `all` / `any` / `not` combinators and leaf
+conditions `{"field":..., "op":..., "value":...}`, capped at 6 levels deep and 64 leaves.
+Example — approved devices that have not checked in for a week and have open high-urgency CVEs:
+
+```json
+{"all":[
+  {"field":"device.status","op":"eq","value":"APPROVED"},
+  {"field":"device.last_checkin_at","op":"older_than","value":"7d"},
+  {"field":"cve.open_high_or_critical","op":"gt","value":0}
+]}
+```
+
+Selectable fields are a fixed list: the device columns (`device.hostname`, `device.status`,
+`device.tags`, `device.patch_ring`, `device.agent_version`, `device.last_checkin_at`,
+`device.attestation_status`, `device.os_name`, `device.kernel_version`,
+`device.release_codename`, `device.pending_updates`, `device.security_updates`,
+`device.reboot_required`, `device.ws_connected`, `device.compliance`), CVE state (`cve.id`,
+`cve.open_high_or_critical`) and `attr.<key>` for any device attribute. Operators depend on
+the field's type; `device.tags` uses `contains_any` / `contains_all`, datetimes use
+`before` / `after` / `older_than` / `newer_than` (durations like `7d`, `12h`), and any field
+supports `exists` / `missing`. An unknown field, an operator that does not fit the type, an
+over-deep or over-wide tree, or a `matches` pattern Postgres cannot compile is rejected with a
+clear error before the group is saved.
+
+**Preview** evaluates the current rule and shows the match count and the first 50 hostnames
+before you save, scoped to your own tags if you are a scoped admin.
+
+**Using a group for targeting.** On the policy form, add one or more target groups. A policy
+with target groups is applied to a device only when its existing tag/ring rules match AND the
+device is a member of at least one of the listed groups. A policy with no groups is unchanged
+from before this feature. When a device gains or loses membership, assignment follows at its
+next check-in; a device that leaves every targeted group has the policy revoked through the
+normal cleanup path. A group that is referenced by a policy cannot be deleted — the server
+lists the referencing policies instead.
+
+**Filtering.** The Devices list, the Vulnerabilities page and the compliance export each
+accept a `group` filter to narrow their results to a group's members (scoped to your tags).
+
+**Tag scoping.** If your account is tag-scoped, every group you create carries an implicit
+"device has one of my tags" filter, you see only in-scope members and counts, and you can edit
+only groups created by a scoped admin whose scope overlaps yours — never a group created by an
+unscoped administrator.
+
+**Recompute and reliability.** Membership is recomputed for a device when it checks in, for a
+group when you save it, and for all groups on a periodic sweep (default every 5 minutes). The
+group page records enter/leave history with a reason. If a group's rule fails to evaluate, the
+last good membership is kept (the group is never silently emptied) and the error is shown on
+the group's row.
+
 ## 5. OIDC
 
 Under **Settings → Single Sign-On**, configure:
@@ -116,6 +185,20 @@ The Vulnerabilities page imports Debian Security Tracker data and matches instal
 Under **Settings → Agent Rollout**, a `SUPER_ADMIN` can set a target version per ring and a minimum supported version. Agents verify the advertised size and SHA-256 before installation, AND an independent Ed25519 release signature when a signed manifest is published beside the package. The signing key is held off the control plane and the public key is pinned inside the agent package, so a compromised control plane cannot push a forged agent to agents that require signed updates. Agents require signed updates by default; see the [production operations runbook](ADMIN_RUNBOOK.md) for signing a release, key rotation, and the unsigned-to-signed transition.
 
 Each device's row shows its agent version and self-update status. A failed or refused update shows **FAILED**; an update whose new agent never confirmed healthy and was automatically reverted shows **ROLLED_BACK → previous version**. Both raise an alert through the configured channels (`agent_update_failed`), a signature/verification failure and a rollback at critical severity.
+
+## 6A. Inventory
+
+Each agent collects a rich hardware, software, network, and security snapshot and sends it on a check-in **at most once per `inventory_interval`** (agent config, default 6 hours). A fresh report is forced on the agent's first check-in after start and when an administrator requests a refresh. Most check-ins carry no inventory, so this does not grow the ordinary check-in payload.
+
+**What is collected.** Hardware: CPU model/cores/threads, memory, system and board vendor/product/serial, BIOS vendor/version/date, TPM presence and version, disks (size, model, rotational, transport, whether LUKS-encrypted), battery capacity and health, GPUs, connected monitor count, and virtualisation. Network: interfaces with MAC/state/addresses, default gateway, DNS servers, and the primary IPv4/MAC. Software: package count and per-package name/version/arch/origin/install-time, kernel modules, listening TCP/UDP sockets with the owning process, local accounts with UID ≥ 1000 and sudo/admin membership (**never password hashes**), CA certificates in the system trust store (subject/expiry/SHA-256), and USB devices. Security: detected products from a fixed list (clamav, wazuh-agent, falcon-sensor, mdatp, elastic-agent, sentinelone, osquery) with installed/running state, firewall-active (nftables ruleset present), auditd, and usbguard. The agent reads only this metadata; it never reads file contents, keys, or user files.
+
+**Where it is stored.** Scalar facts become typed device attributes under a fixed key catalogue (for example `hw.memory_mb`, `hw.bios.version`, `hw.disk.encrypted_all`, `net.primary_ipv4`, `sec.firewall_active`, `sw.package_count`). The large lists (packages, kernel modules, listening sockets, local accounts, CA certificates, USB devices) go to dedicated tables that are replaced wholesale on each report. A device that has never reported (an older agent, or one that has not yet reached its first interval) shows **"No inventory reported"**.
+
+**Change history.** The device page shows a bounded, field-level history (the most recent 500 changes per device) of attribute changes and list membership changes — a new listening port, a new local admin, a package install or removal — each marked added, removed, or modified.
+
+**Device page.** Each device detail drawer shows the scalar facts, the collapsible lists, and the change history. `OPERATOR` and above see a **Request Inventory Refresh** button that queues a refresh over the existing device command path; the agent collects and sends a fresh report on its next check-in. The action is tag-scoped and audited (`INVENTORY_REFRESH`).
+
+**Fleet search and export.** The **Inventory** sidebar page (any authenticated role) filters devices by an attribute key/operator/value, by installed package name, by listening port, or by local admin username. Results and counts respect the admin's tag scope. `AUDITOR` and above can export the current filter as CSV or JSON from `GET /admin/inventory/export?format=csv|json`; the export is tag-scoped and audited (`INVENTORY_EXPORT`), so a scoped operator can never export a device outside their tags.
 
 ## 7. Commands, terminal, and remote assistance
 
@@ -190,3 +273,200 @@ sets how long a result stays fresh. In `enforce`, an untrusted device receives n
 network-profile secrets — affected policies arrive marked withheld and the agent skips them
 without writing a blank credential or disturbing a working profile. The dashboard shows an
 **Attestation Untrusted** count honouring your tag scope.
+
+
+## Reusable scripts, custom sensors, and script-based policies
+
+These features are managed through the admin JSON API (routes under `/admin`); there is no
+dedicated HTML page yet. Role requirements and tag scoping are enforced by the server.
+
+### Scripts
+
+A script has a fixed interpreter (`bash` or `python3` only), a run-as identity (`root` or
+`active_user`), a timeout (default 300 s, max 3600 s), an output cap (default 64 KiB, max
+1 MiB), and a parameter schema. Parameter names must match `^[A-Z][A-Z0-9_]{0,31}$`; a
+parameter may be `string`, `integer` or `boolean`, required, defaulted, and marked `secret`.
+
+- `GET /admin/scripts`, `GET /admin/scripts/{id}` — list / inspect (any role that can read).
+- `POST /admin/scripts` — create (SECURITY_ADMIN+). Body: `name`, `interpreter`, `run_as`,
+  `timeout_seconds`, `max_output_bytes`, `content`, `params`.
+- `POST /admin/scripts/{id}` — change metadata only (SECURITY_ADMIN+).
+- `POST /admin/scripts/{id}/versions` — add a new immutable version with new content/params
+  (SECURITY_ADMIN+). Editing content is always a new version; old versions keep running where
+  they were pinned.
+- `POST /admin/scripts/{id}/versions/{versionID}/current` — mark a version current.
+- `DELETE /admin/scripts/{id}` — delete the script and its history.
+
+Editing a script never mutates an existing version. Each version carries its own sha256, which
+the agent verifies before running.
+
+### Running a script
+
+`POST /admin/scripts/{id}/run` (OPERATOR+). Body selects a target — `device_ids`, `tags`, or
+`ring` — with `params` and an optional `version_id` (defaults to the current version). A
+tag-scoped operator's target is intersected with their allowed tags, and only APPROVED devices
+run. The run is reported per device with status, exit code, capped stdout/stderr and duration;
+`GET /admin/devices/{id}/script-runs` shows recent runs for a device. Secret parameter values
+are stored sealed, delivered only to the target device, and never shown or logged again.
+
+Parameters reach the script only as environment variables named `SPIRE_PARAM_<NAME>`. Inside a
+bash script read `"$SPIRE_PARAM_PORT"`, inside python `os.environ["SPIRE_PARAM_PORT"]`. Values
+are passed literally, so a value such as `$(reboot)` is just that string, never executed.
+
+### Sensors
+
+A sensor runs a script version on a schedule and stores its typed result as the device
+attribute `sensor.<name>`. Sensor names match `^[a-z][a-z0-9_]{0,47}$`, the interval is at
+least 15 minutes, and the return type is `string`, `integer`, `boolean`, `datetime` (RFC 3339)
+or `json`. A non-zero exit or output that does not parse to the declared type records an error
+and leaves the device's last good value in place.
+
+- `GET /admin/sensors`, `POST /admin/sensors` (create), `POST /admin/sensors/{id}` (update,
+  name is immutable), `DELETE /admin/sensors/{id}` — SECURITY_ADMIN+.
+- `GET /admin/devices/{id}/sensors/{name}` — a device's recent readings.
+
+Disabling or deleting a sensor, or a device leaving the sensor's target tags/ring, removes that
+device's `sensor.<name>` attribute at its next check-in. A sensor can never overwrite an
+inventory key: each source owns only the keys it writes.
+
+### SCRIPT_POLICY
+
+Create a policy of type `SCRIPT_POLICY` whose payload references script version ids for
+`detect` (exit 0 means compliant), optional `remediate`, and optional `remove`. The agent runs
+detect; if non-compliant and a remediate step is set it runs remediate and detects again,
+reporting compliance from that second detect. On unassignment the agent runs `remove` once if
+set. If a referenced version has been deleted the policy reports FAILED and does nothing, so a
+deleted script never leaves a device in an unknown state.
+
+## Automation and remediation workflows
+
+A **workflow** reacts to something that happens in the fleet, or runs on a schedule, and takes
+bounded actions on each matching device. `SECURITY_ADMIN`+ create and edit workflows; `AUDITOR`+
+can view workflows and their run history. A tag-scoped admin's workflow only ever fires for
+devices in their tag scope, and can only make tag/ring/group changes inside that scope.
+
+A workflow has:
+
+- **A trigger** — exactly one of:
+  - an **event** (one kind, with an optional filter on event fields), chosen from: device
+    enrolled, device approved, inventory attribute changed, compliance changed, CVE matched,
+    device offline, patch failed, agent update failed, attestation failed, baseline mismatch,
+    agent started, active session changed, primary address changed. Example filter:
+    `{"urgency":"high"}` on a CVE-matched trigger, or `{"key":"sec.firewall_active"}` on an
+    attribute-changed trigger.
+  - a **schedule** — a standard 5-field cron expression evaluated once per minute, over a target
+    (a dynamic group, a tag set, or a ring).
+- **A condition** (optional) — a rule in the same language as dynamic groups, evaluated against
+  the candidate device at run time. If it is false, the `else` actions run instead of `then`.
+- **`then` / `else` actions** — any of: add tag, remove tag, set ring, add the device to / remove
+  it from a group's static include list, run a library script version (with parameters), send an
+  alert, lock the device's sessions, quarantine (adds the configured quarantine tag, default
+  `quarantine`), require approval, or start a patch campaign.
+
+**Start campaign** (`start_campaign`, `params.campaign_id`) moves a prepared DRAFT or PAUSED patch campaign to RUNNING, for example when a high-urgency CVE is matched. It never resumes a HALTED campaign (that needs an administrator) or restarts a completed or cancelled one, and a tag-scoped workflow can only start campaigns created inside its scope. The campaign's own targeting, stages and gates then decide which devices receive work.
+
+**Require-approval** pauses the run: the actions after it do not run until a `SECURITY_ADMIN`
+approves (from the pending-approvals list) or rejects it, or it expires (default 24h), after
+which the remaining actions are abandoned.
+
+**Scheduled and agent-start script runs.** A `run_script` action on a scheduled workflow queues
+the run with the `scheduled` trigger; on an "agent started" workflow it uses the `agent_start`
+trigger. This is how you run a script on every device in a group each night, or once each time an
+agent restarts.
+
+**Safety.** Workflows are deterministic and bounded. A change a workflow makes never triggers
+another workflow (loop suppression). Each workflow is rate-limited per device by a **cooldown**
+(default 1 hour) and the whole fleet is bounded by a **global per-minute action budget**. Turn on
+**dry run** to see what a workflow *would* do (recorded in its run history) without changing
+anything. Every run and every action is written to the audit log with actor `workflow:<name>`.
+
+A device that is revoked between the event and the action is skipped; a run_script action whose
+script version was deleted fails and is recorded (it never leaves the device in an unknown
+state).
+
+The admin surface is a JSON API: `GET/POST /admin/workflows`, `POST /admin/workflows/{id}`,
+`POST /admin/workflows/{id}/toggle`, `DELETE /admin/workflows/{id}`, `GET /admin/workflows/runs`,
+`GET /admin/workflows/approvals`, and `POST /admin/workflows/approvals/{id}/approve|reject`.
+
+## 11. Patch campaigns, risk acceptance, and automatic halting
+
+A patch campaign rolls a set of package upgrades out to a target set of devices in ordered
+stages, halting automatically if too many devices fail. Campaigns are managed by
+`SECURITY_ADMIN` and above; a tag-scoped admin sees and controls only campaigns within their
+tags and can target only their own devices.
+
+**Create a campaign** (`POST /admin/campaigns`). Choose exactly one target:
+- a dynamic group (`"target_kind":"group","group_id":"..."`),
+- a list of CVE ids (`"target_kind":"cve","cve_ids":["CVE-2024-...", ...]`) — each targeted
+  device gets work for every installed binary package built from the affected source package
+  (for a CVE in source `vim`, that is `xxd`, `vim-tiny` and so on), only when a fix is
+  available; a CVE with no fix yields no work,
+- or explicit packages (`"target_kind":"packages","packages":["curl", ...]`) — every device that
+  has one of those packages installed is upgraded to the latest available. A name can be a
+  binary package (`xxd`) or a source package (`vim`, `glibc`); a source name is expanded to the
+  binaries the device has installed from it.
+
+**Fixed versions are minimums.** apt upgrades binary packages, while CVE data gives source
+versions, and the security archive keeps only the newest build. So CVE work upgrades each
+binary to the latest available version, and the agent then checks that the package's installed
+source version is at least the CVE's fixed version. If the device's repositories do not carry
+the fix yet, the package is reported `not_available` and the device counts as failed, never as
+remediated. Package exclusions and risk acceptances match either the source or the binary name.
+The agent decides what was upgraded by comparing dpkg's installed versions before and after the
+run, so a package that is not installed is reported `not_available` rather than as success.
+Optionally limit with `target_tags` and `target_ring`. Set `stages` (or accept the default
+CANARY -> PILOT -> PRODUCTION), `reboot_policy` (`never` / `notify` / `force`), `max_deferrals`,
+an optional `deadline_at`, a `blackout_cron` + `blackout_duration_minutes`, and
+`respect_maintenance_window`. Per-campaign `package_exclusions` drop named packages from the
+work. Package names and versions are validated against Debian rules at creation; an invalid name
+is rejected.
+
+**Stages.** Each stage has a minimum device count, a success threshold (e.g. 95%), a soak time,
+and a failure-halt threshold (a percentage of reporting devices and/or an absolute count).
+A stage promotes to the next automatically once its success threshold holds for the soak time
+(set a stage's promotion to manual to require a click instead). If the failure-halt threshold is
+exceeded the whole campaign halts automatically, an alert is raised, and nothing further is
+dispatched until you resume it — halting always takes precedence over promotion.
+
+**Controls.** `POST /admin/campaigns/{id}/start|pause|resume|cancel`. Resume clears a halt as
+well as a pause. Resuming a HALTED campaign also returns the current stage's failed and
+interrupted devices to pending, so fix the cause first (for example unhold a package): those
+devices receive the work again at their next check-in instead of re-halting the campaign on the
+old failures. Pause works only on a running campaign, resume only on a paused or halted one, and
+a completed or cancelled campaign accepts no further control. `GET /admin/campaigns/{id}` returns the campaign, its per-device work, a report
+(device counts by stage and state, failure classes) and its event log.
+`GET /admin/campaigns/{id}/export?format=csv|json` exports the per-device work, tag-scoped.
+
+**How devices receive work.** There is nothing to trigger by hand. After you start a campaign,
+each device picks up its work at its next check-in when the campaign is running, no blackout
+window is active, the campaign's current stage matches the device's patch ring (a `CANARY` stage
+reaches only CANARY devices), and, if the campaign respects maintenance windows, the device is
+inside one. A server loop (every minute by default) then advances the campaign: it promotes a
+stage after its soak time, halts on failures, and completes the campaign. **A stage only advances
+once every device in it has a result**, so devices that are offline or have deferred keep it open.
+A device that does not run the new agent never reports and is counted as failed (`UNSUPPORTED`)
+after 24 hours.
+
+**End-user deferral.** Before installing, the active user is notified. If the server still allows
+deferral, Spire Hub shows an "Updates scheduled" row with a **Defer** button for about a minute; a
+deferral postpones that device's install by 4 hours (never past the deadline), up to
+`max_deferrals` times. After the deadline (if set) or once deferrals are used up, the install
+proceeds without a Defer button. Reboot policy: `never` does not reboot; `notify` tells the user a
+restart is needed; `force` only notifies before the deadline, and at or after it warns the user and
+restarts the computer five minutes later. If the agent is restarted mid-install the device is
+reported `INTERRUPTED` (not success).
+
+**Rollback.** The agent records each package's previous version when it upgrades it, and the
+rollback planner only ever targets packages the campaign upgraded, and only to a version that is
+still available from the device's repositories. **There is no admin rollback action yet**; it is
+not available from the UI or API in this release.
+
+**Risk acceptance and exclusions** (`/admin/risk-acceptances`). Accept a CVE and/or package for
+all devices, a group, or a tag set, with a required reason and an expiry (maximum 180 days).
+Accepted findings are excluded from new campaign work and shown as "accepted" rather than hidden;
+on the **Vulnerabilities** page an accepted CVE keeps its row with an "accepted" badge, the reason,
+the expiry date and who accepted it ("accepted on N of M" when only some hosts are covered), and the
+header counts open and accepted CVEs. The page only counts your own devices if you are tag-scoped.
+An acceptance stops applying the moment it expires and the finding is open again. A tag-scoped admin may only accept risk within
+their own tags and may not create a fleet-wide acceptance. Every create, control action and
+deletion is audited with the acting admin.

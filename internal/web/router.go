@@ -111,12 +111,34 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Get("/policies/host-compliance", h.HostPoliciesCompliancePartial)
 		r.Get("/policies/wallpapers/{filename}", h.ServeWallpaperPreview)
 
+		// Reusable scripts & custom sensors: read views (AUDITOR+). Secret parameter VALUES
+		// are never rendered (only the sealed declaration flag), so listing is read-only-safe.
+		r.Get("/scripts", h.ListScripts)
+		r.Get("/scripts/{id}", h.GetScript)
+		r.Get("/sensors", h.ListSensors)
+		r.Get("/devices/{id}/script-runs", h.ListDeviceScriptRuns)
+		r.Get("/devices/{id}/sensors/{name}", h.ListDeviceSensorResults)
+		// Dynamic device groups and saved fleet queries. Viewing is AUDITOR+; the
+		// create/edit/delete/preview mutators live in the SECURITY_ADMIN+ group below.
+		r.Get("/groups", h.ListGroupsPage)
+		r.Get("/groups/{id}/members", h.GroupMembers)
+		r.Get("/groups/{id}/history", h.GroupHistory)
+
+		// Automation & remediation workflows — read views (AUDITOR+).
+		r.Get("/workflows", h.ListWorkflows)
+		r.Get("/workflows/runs", h.ListWorkflowRuns)
+
 		r.Get("/applications", h.ListApplications)
 		r.Get("/applications/{id}/edit", h.EditApplicationModal)
 
 		r.Get("/compliance/export", h.ExportComplianceAudit)
 		r.Head("/compliance/export", h.ExportComplianceAudit)
 		r.Get("/audit/events", h.ListSystemAuditEventsJSON)
+
+		// Fleet inventory search + export (tag-scoped; AUDITOR+ read-only view).
+		r.Get("/inventory", h.InventorySearchPage)
+		r.Get("/inventory/export", h.ExportInventory)
+		r.Head("/inventory/export", h.ExportInventory)
 
 		r.Get("/vulnerabilities", h.VulnerabilitiesPage)
 
@@ -146,6 +168,12 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/remote-assist", h.RequestRemoteAssist)
 			// Lock all graphical sessions now (lost-device action). OPERATOR+.
 			r.Post("/devices/{id}/lock", h.LockDevice)
+
+			// Run a reusable script against devices/tags/ring (same authority as a queued root
+			// command). Tag-scoped operators can only reach devices in their scope. OPERATOR+.
+			r.Post("/scripts/{id}/run", h.RunScript)
+			// Request a fresh rich inventory report from the device (tag-scoped, audited).
+			r.Post("/devices/{id}/inventory/refresh", h.RequestInventoryRefresh)
 		})
 
 		// ------------------------------------------------------------------
@@ -182,6 +210,23 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/policies/{id}/self-service", h.TogglePolicySelfService)
 			r.Post("/policies/upload-wallpaper", h.UploadWallpaperAsset)
 
+			// Dynamic device group mutators (SECURITY_ADMIN+). Preview is a mutator-group
+			// route because it evaluates a candidate rule before it is saved.
+			r.Post("/groups", h.CreateGroup)
+			r.Post("/groups/preview", h.PreviewGroup)
+			r.Post("/groups/{id}", h.UpdateGroup)
+			r.Delete("/groups/{id}", h.DeleteGroup)
+			r.Post("/groups/{id}/delete", h.DeleteGroup)
+
+			// Automation & remediation workflows — create/edit/delete + approvals. SECURITY_ADMIN+.
+			r.Post("/workflows", h.CreateWorkflow)
+			r.Post("/workflows/{id}", h.UpdateWorkflow)
+			r.Post("/workflows/{id}/toggle", h.ToggleWorkflow)
+			r.Delete("/workflows/{id}", h.DeleteWorkflow)
+			r.Post("/workflows/{id}/delete", h.DeleteWorkflow)
+			r.Get("/workflows/approvals", h.ListPendingApprovals)
+			r.Post("/workflows/approvals/{id}/{decision}", h.DecideWorkflowApproval)
+
 			r.Get("/applications/new", h.NewApplicationModal)
 			r.Post("/applications", h.CreateApplication)
 			r.Post("/applications/upload", h.UploadCustomBundle)
@@ -190,6 +235,35 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/applications/{id}/delete", h.DeleteApplication)
 
 			r.Post("/patch-windows", h.CreatePatchWindow)
+
+			// Reusable scripts & custom sensors: create/edit/delete. SECURITY_ADMIN+.
+			r.Post("/scripts", h.CreateScript)
+			r.Post("/scripts/{id}", h.UpdateScriptMeta)
+			r.Delete("/scripts/{id}", h.DeleteScript)
+			r.Post("/scripts/{id}/delete", h.DeleteScript)
+			r.Post("/scripts/{id}/versions", h.AddScriptVersion)
+			r.Post("/scripts/{id}/versions/{versionID}/current", h.SetCurrentScriptVersion)
+
+			r.Post("/sensors", h.CreateSensor)
+			r.Post("/sensors/{id}", h.UpdateSensor)
+			r.Delete("/sensors/{id}", h.DeleteSensor)
+			r.Post("/sensors/{id}/delete", h.DeleteSensor)
+
+			// Patch campaigns (SECURITY_ADMIN+, tag-scope aware). JSON API.
+			r.Get("/campaigns", h.ListCampaigns)
+			r.Post("/campaigns", h.CreateCampaign)
+			r.Get("/campaigns/{id}", h.GetCampaign)
+			r.Get("/campaigns/{id}/export", h.ExportCampaign)
+			r.Post("/campaigns/{id}/start", h.StartCampaign)
+			r.Post("/campaigns/{id}/pause", h.PauseCampaign)
+			r.Post("/campaigns/{id}/resume", h.ResumeCampaign)
+			r.Post("/campaigns/{id}/cancel", h.CancelCampaign)
+
+			// Risk acceptances and exclusions (SECURITY_ADMIN+, tag-scope aware).
+			r.Get("/risk-acceptances", h.ListRiskAcceptances)
+			r.Post("/risk-acceptances", h.CreateRiskAcceptance)
+			r.Delete("/risk-acceptances/{id}", h.DeleteRiskAcceptance)
+			r.Post("/risk-acceptances/{id}/delete", h.DeleteRiskAcceptance)
 		})
 
 		// ------------------------------------------------------------------
@@ -229,6 +303,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/settings/tokens", h.CreateToken)
 			r.Delete("/settings/tokens/{id}", h.RevokeToken)
 			r.Post("/settings/tokens/{id}/delete", h.RevokeToken)
+			r.Post("/settings/tokens/{id}/rotate", h.RotateToken)
+			r.Get("/settings/tokens/{id}/history", h.TokenHistory)
 			r.Post("/settings/siem/test", h.TestSIEMSyslog)
 
 			// OIDC Group Mappings
