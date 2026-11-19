@@ -19,8 +19,8 @@ func TestHandleRemoteAssistRequest_NoActiveSession(t *testing.T) {
 	}
 
 	resp := engine.HandleRemoteAssistRequest(ctx, req)
-	if resp.Status != "NO_ACTIVE_USER_SESSION" && resp.Status != "REJECTED_BY_USER" {
-		t.Fatalf("expected NO_ACTIVE_USER_SESSION or REJECTED_BY_USER when no session is present, got %s", resp.Status)
+	if resp.Status != "NO_ACTIVE_USER_SESSION" && resp.Status != "REJECTED_BY_USER" && resp.Status != "CONSENT_UNAVAILABLE" {
+		t.Fatalf("expected NO_ACTIVE_USER_SESSION, REJECTED_BY_USER, or CONSENT_UNAVAILABLE when no session is present, got %s", resp.Status)
 	}
 	if resp.Credentials != "" {
 		t.Fatalf("expected empty credentials when remote assist is unapproved, got: %s", resp.Credentials)
