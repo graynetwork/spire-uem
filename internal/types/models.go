@@ -122,6 +122,9 @@ type Device struct {
 	IsLost         bool   `db:"-" json:"is_lost"`
 	LastSeenIP     string `db:"-" json:"last_seen_ip,omitempty"`
 	LastActiveUser string `db:"-" json:"last_active_user,omitempty"`
+	// PostureState is the device's effective access posture (COMPLIANT / NONCOMPLIANT /
+	// QUARANTINED / UNKNOWN). Filled by the device list only.
+	PostureState string `db:"-" json:"posture_state,omitempty"`
 }
 
 // PendingPkg represents an upgradeable Debian package identified via apt simulation.
@@ -193,6 +196,9 @@ type Policy struct {
 	IsSelfService  bool                      `db:"is_self_service" json:"is_self_service"`
 	AssignmentType ApplicationAssignmentType `db:"assignment_type" json:"assignment_type"`
 	IsActive       bool                      `db:"is_active" json:"is_active"`
+	// AllowedInQuarantine: delivered to a quarantined device (default false). Filled by the
+	// repository's policy readers; see Repository.PolicyIDsAllowedInQuarantine.
+	AllowedInQuarantine bool      `db:"allowed_in_quarantine" json:"allowed_in_quarantine"`
 	Version        int                       `db:"version" json:"version"`
 	CreatedAt      time.Time                 `db:"created_at" json:"created_at"`
 	UpdatedAt      time.Time                 `db:"updated_at" json:"updated_at"`
@@ -747,6 +753,11 @@ type AssignedPolicy struct {
 	// profile on account of it. WithheldReason is a short human-readable explanation.
 	SecretsWithheld bool   `json:"secrets_withheld,omitempty"`
 	WithheldReason  string `json:"withheld_reason,omitempty"`
+	// QuarantineWithheld is set when the device is quarantined and this policy is not marked
+	// allowed_in_quarantine. The policy stays in the list (so the agent's orphan cleanup does
+	// not treat its absence as a revocation) but the agent MUST NOT enforce, remove or report
+	// on it. See docs/ARCHITECTURE.md (device posture).
+	QuarantineWithheld bool `json:"quarantine_withheld,omitempty"`
 }
 
 // CommandDTO is dispatched to a device in CheckinResponse.
