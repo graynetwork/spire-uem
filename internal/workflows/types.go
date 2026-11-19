@@ -37,6 +37,7 @@ const (
 	EventAgentStarted        EventKind = "agent_started"        // first check-in after process start
 	EventActiveSessionChange EventKind = "active_session_changed" // fields: old, new
 	EventPrimaryAddrChange   EventKind = "primary_address_changed" // fields: old, new
+	EventPostureChanged      EventKind = "posture_changed"         // fields: from, to, reasons
 )
 
 // AllEventKinds is the catalog surfaced to the workflow builder as event triggers.
@@ -44,7 +45,7 @@ var AllEventKinds = []EventKind{
 	EventDeviceEnrolled, EventDeviceApproved, EventAttributeChanged, EventComplianceChanged,
 	EventCVEMatched, EventDeviceOffline, EventPatchFailed, EventAgentUpdateFailed,
 	EventAttestationFailed, EventBaselineMismatch, EventAgentStarted,
-	EventActiveSessionChange, EventPrimaryAddrChange,
+	EventActiveSessionChange, EventPrimaryAddrChange, EventPostureChanged,
 }
 
 // Valid reports whether k is an event a WORKFLOW may trigger on. Webhook-only kinds (below)
