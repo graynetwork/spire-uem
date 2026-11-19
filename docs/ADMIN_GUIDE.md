@@ -307,6 +307,10 @@ A script has a fixed interpreter (`bash` or `python3` only), a run-as identity (
 `active_user`), a timeout (default 300 s, max 3600 s), an output cap (default 64 KiB, max
 1 MiB), and a parameter schema. Parameter names must match `^[A-Z][A-Z0-9_]{0,31}$`; a
 parameter may be `string`, `integer` or `boolean`, required, defaulted, and marked `secret`.
+API responses never include a secret parameter's default: it is removed and
+`"default_set": true` marks that one exists. Runs still receive it, sealed like any secret
+value. The default is stored in the version's parameter schema, so for a value that should
+live only in sealed storage, leave the default empty and supply it with each run.
 
 - `GET /admin/scripts`, `GET /admin/scripts/{id}` — list / inspect (any role that can read).
 - `POST /admin/scripts` — create (SECURITY_ADMIN+). Body: `name`, `interpreter`, `run_as`,

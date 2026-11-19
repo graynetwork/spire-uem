@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -28,6 +29,7 @@ const (
 
 type scriptsEnv struct {
 	t       *testing.T
+	pool    *pgxpool.Pool
 	repo    *db.Repository
 	router  chi.Router
 	cookies map[string]*http.Cookie
@@ -46,7 +48,7 @@ func newScriptsEnv(t *testing.T) *scriptsEnv {
 	}
 	router := chi.NewRouter()
 	h.RegisterRoutes(router, "admin", "unused-break-glass-pass")
-	return &scriptsEnv{t: t, repo: repo, router: router,
+	return &scriptsEnv{t: t, pool: pool, repo: repo, router: router,
 		cookies: map[string]*http.Cookie{}, csrf: map[string]string{},
 		sfx: strings.ReplaceAll(time.Now().Format("150405.000000000"), ".", "")}
 }
@@ -516,5 +518,58 @@ func TestScriptsPages_ManageFlowThroughRoutes(t *testing.T) {
 	e.router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("create without CSRF token: %d, want 403", rec.Code)
+	}
+}
+
+// TestScriptsJSON_SecretDefaultsRedacted: the JSON API is readable by AUDITORs, so a secret
+// parameter's default must not appear in any script or version response. A run that relies on
+// the default must still receive it (it is read from storage, not from the response).
+func TestScriptsJSON_SecretDefaultsRedacted(t *testing.T) {
+	e := newScriptsEnv(t)
+	e.user("aud", types.RoleAuditor, nil)
+	e.user("sec", types.RoleSecurityAdmin, nil)
+	e.user("op", types.RoleOperator, nil)
+	dev := e.seedDevice("eng")
+	s, v := e.seedScript([]types.ScriptParam{
+		{Name: "API_TOKEN", Type: types.ScriptParamString, Secret: true, Default: secretDefault},
+		{Name: "PORT", Type: types.ScriptParamInteger, Default: "8080"},
+	})
+
+	for _, path := range []string{"/admin/scripts", "/admin/scripts/" + s.ID} {
+		w := e.do("aud", http.MethodGet, path, "application/json", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d", path, w.Code)
+		}
+		body := w.Body.String()
+		if strings.Contains(body, secretDefault) {
+			t.Errorf("%s: JSON returned the secret default to an auditor", path)
+		}
+		if !strings.Contains(body, `"default_set":true`) || !strings.Contains(body, "8080") {
+			t.Errorf("%s: want default_set flag and the plain default: %s", path, body)
+		}
+	}
+	// Mutating responses are redacted too.
+	w := e.do("sec", http.MethodPost, "/admin/scripts/"+s.ID+"/versions", "", map[string]any{
+		"content": "#!/bin/bash\necho v2\n",
+		"params":  []types.ScriptParam{{Name: "API_TOKEN", Type: types.ScriptParamString, Secret: true, Default: secretDefault}},
+	})
+	if w.Code != http.StatusCreated || strings.Contains(w.Body.String(), secretDefault) {
+		t.Errorf("add version response: %d, leaks secret: %v", w.Code, strings.Contains(w.Body.String(), secretDefault))
+	}
+
+	// A run without a supplied value still gets the stored default, sealed.
+	w = e.do("op", http.MethodPost, "/admin/scripts/"+s.ID+"/run", "", map[string]any{
+		"version_id": v.ID, "device_ids": []string{dev.ID},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("run: %d %s", w.Code, w.Body.String())
+	}
+	var sealed int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM script_run_secrets p JOIN script_runs r ON r.id = p.run_id WHERE r.script_version_id = $1 AND p.param_name = 'API_TOKEN'`, v.ID).Scan(&sealed); err != nil {
+		t.Fatalf("count sealed: %v", err)
+	}
+	if sealed != 1 {
+		t.Errorf("secret default not passed to the run as a sealed param (rows=%d)", sealed)
 	}
 }
