@@ -121,6 +121,7 @@ func NewHandler(repo *db.Repository, hub *gateway.GatewayHub, auditor *audit.For
 			b, err := json.Marshal(v)
 			return string(b), err
 		},
+		"add1": func(i int) int { return i + 1 },
 		"joinTags": func(tags []string) string {
 			return strings.Join(tags, ", ")
 		},

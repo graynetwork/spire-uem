@@ -470,3 +470,20 @@ header counts open and accepted CVEs. The page only counts your own devices if y
 An acceptance stops applying the moment it expires and the finding is open again. A tag-scoped admin may only accept risk within
 their own tags and may not create a fleet-wide acceptance. Every create, control action and
 deletion is audited with the acting admin.
+
+**Admin pages.** Campaigns and risk acceptances have pages as well as the JSON API: open
+**Campaigns** in the sidebar (`/admin/campaigns`, `/admin/campaigns/{id}`,
+`/admin/risk-acceptances`). The same URLs return the JSON described above unless the client sends
+`Accept: text/html`, which browsers do. The list shows target, state, current stage, device
+progress (pending, succeeded, failed, deferred) and created/started times, with a form to create a
+campaign (target, stages, thresholds, blackout, deadline, deferrals, reboot policy; validation
+errors appear next to the form). A campaign page shows the stage timeline with per-stage counts and
+the halt reason, the per-device results (status, failure class, package versions before and after,
+device-reported output shown as plain text), the history, CSV/JSON export, and Start, Pause, Resume
+and Cancel buttons that appear only where the server's state machine allows them. The server still
+decides: a refused action is shown as an error on the page. A tag-scoped admin sees the same
+campaigns, devices and counts as in the JSON API. The risk acceptance page lists every acceptance,
+including expired ones, and creates (reason and expiry of 1 to 180 days required) and deletes them.
+A tag-scoped admin can only delete acceptances within their own tags. A blackout cron that is not
+five fields is rejected at creation, in the API too, because the dispatcher treats a malformed one
+as always blacked out.
