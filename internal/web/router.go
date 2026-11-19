@@ -210,6 +210,10 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			// Approved PCR baselines (SECURITY_ADMIN+, tag-scope aware).
 			r.Get("/baselines", h.ListBaselinesPage)
 			r.Post("/baselines", h.CreateBaseline)
+
+			// Reverse-proxy forward-auth settings (fleet-wide; refused to tag-scoped admins).
+			r.Get("/access-proxy", h.AccessProxyPage)
+			r.Post("/access-proxy", h.SaveAccessProxy)
 			r.Post("/baselines/{id}/deactivate", h.DeactivateBaseline)
 			// Per-device attestation exception (reason + mandatory expiry). Scoped via the
 			// /admin/devices/{id}/... path through DeviceScopeMiddleware.

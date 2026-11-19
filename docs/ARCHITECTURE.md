@@ -757,3 +757,31 @@ alert (enable routing for that kind on an alert channel). Finished deliveries ar
 
 Signing secrets are sealed with the server KEK (same envelope as alert channel secrets), generated
 server-side, returned once on create/rotate, and never returned by any read.
+
+## 12b. Posture connectors: read API, forward-auth, Authentik
+
+Connectors read the single verdict in `device_posture` and never compute one. All of them authenticate as service
+accounts holding `posture:read`; a tag-scoped account sees an out-of-scope device exactly as an unknown one (the
+scope is applied before ambiguity is counted).
+
+* **Read API** (`internal/web/adminapi_posture.go`): `GET /devices/{id}/posture` and `GET /posture/lookup`.
+  Identities resolve through `ResolveAccessIdentity`; a MAC, IP or user that matches several devices is
+  `ambiguous identity` and denies. Responses label weak identities.
+* **Forward-auth** (`internal/web/adminapi_forwardauth.go`): `GET /api/admin/v1/access/forward-auth`. Decision order:
+  connector credential (401), settings readable (503), TCP peer inside the trusted-proxy ranges, identity (a
+  configured certificate header verified against the device CA, else the configured address header when weak identity
+  is enabled), exactly one in-scope device, effective state `COMPLIANT`. Anything else is a `403` with one generic
+  body; a database error is `503`. The real TCP peer is recorded by `TrustedProxyRealIPMiddleware` before
+  `SPIRE_TRUST_PROXY` rewrites `RemoteAddr`, so a header cannot make a client look like the proxy.
+* **Settings** are `system_settings` rows in category `access` (`access.proxy_trusted_cidrs`, `access.proxy_ip_header`,
+  `access.proxy_cert_header`, `access.allow_weak_identity`). All default closed, malformed values read as the
+  default, and changes are audited (`ACCESS_PROXY_SETTINGS_CHANGE`). No migration was needed.
+* **Token transport**: `Authorization: Bearer` or, on forward-auth only, `X-Spire-Connector-Token`, so Traefik can
+  attach the token with a headers middleware and strip it again before the application.
+* **Authentik** (`contrib/authentik/`): an expression policy that calls the lookup endpoint at login, failing closed.
+
+Performance: forward-auth costs the service-account authentication plus about three indexed queries (settings,
+identity, posture) and measures roughly 0.5 ms per request on a local database, so there is no cache. A cache
+would delay the effect of a quarantine, which is what connectors exist to enforce.
+
+See `docs/ACCESS_PROXY.md` and `docs/ACCESS_AUTHENTIK.md`.

@@ -548,6 +548,9 @@ func BasicAuthMiddleware(expectedUser, expectedPass string) func(http.Handler) h
 func TrustedProxyRealIPMiddleware(next http.Handler) http.Handler {
 	trustProxy := TrustProxyEnabled()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Keep the TCP peer: forward-auth must know which proxy is actually talking to it,
+		// and RemoteAddr is about to be replaced by a header value.
+		r = r.WithContext(context.WithValue(r.Context(), peerAddrCtxKey, r.RemoteAddr))
 		if trustProxy {
 			if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
 				r.RemoteAddr = xrip

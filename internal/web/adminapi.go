@@ -555,6 +555,19 @@ func (h *Handler) registerAdminAPIv1(r chi.Router) {
 			}
 
 			r.With(requireAPI(types.ScopeAuditRead, types.RoleAuditor)).Get("/audit/events", h.apiListAudit)
+
+			// Conditional access: read-only posture for connectors (posture:read).
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/devices/{id}/posture", h.apiGetDevicePosture)
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/posture/lookup", h.apiPostureLookup)
+		})
+
+		// Reverse-proxy forward-auth. Same Bearer authentication and limiter as above, plus the
+		// X-Spire-Connector-Token transport for proxies that cannot set Authorization on the
+		// auth call only (Traefik).
+		r.Group(func(r chi.Router) {
+			r.Use(connectorTokenHeaderMiddleware)
+			r.Use(h.apiAuthMiddleware(limiter))
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/access/forward-auth", h.apiForwardAuth)
 		})
 	})
 }

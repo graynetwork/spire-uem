@@ -639,3 +639,21 @@ quarantine state cannot be read at check-in the device is treated as quarantined
 
 Webhook events: `posture_changed`, `device_quarantined`, `device_released` (see `docs/WEBHOOKS.md`).
 
+## Access proxy and Authentik (device posture for other systems)
+
+SpireUEM can tell a reverse proxy or Authentik whether the device behind a request is compliant. This is a read-only
+view of the device's posture verdict; blocking happens in the other system.
+
+1. Create a service account (role cap Auditor, scope `posture:read` only, tags if you want to limit it) and keep its
+   token for the proxy. Never give it to the application you protect.
+2. Open **Access Proxy** in the sidebar (Super Admin or an unscoped Security Admin). Add the addresses of the
+   proxies that call SpireUEM, and nothing else, as trusted proxies. Choose the header that carries the client
+   address. Turn on "accept a source IP address" only where the address is bound to the device (a WireGuard or
+   NetBird overlay); on a LAN it can be spoofed or shared. Every save is audited with before and after values.
+3. Configure the proxy as shown in `docs/ACCESS_PROXY.md` (Traefik, Pangolin, nginx, Caddy). The proxy must
+   overwrite or strip any client-supplied `X-Forwarded-For` and certificate header.
+4. For login-time checks in Authentik see `docs/ACCESS_AUTHENTIK.md`.
+
+Defaults deny: with no trusted proxy configured, forward-auth refuses every request. A device with no verdict, an
+expired verdict, or an address shared by several devices is refused too. A `403` carries no reason; the SpireUEM log
+line `[forward-auth] deny` says why.
