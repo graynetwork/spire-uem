@@ -40,7 +40,7 @@ func TestCollectForCheckin_SizeCapFallback(t *testing.T) {
 	for i := 0; i < 20000; i++ {
 		big.SW.Packages = append(big.SW.Packages, types.InventoryPackage{
 			Name:    "package-with-a-reasonably-long-name-" + itoaLocal(i),
-			Version: "1.2.3-4ubuntu5.6",
+			Version: "1.2.3-4deb12u1",
 			Origin:  "Debian",
 		})
 	}

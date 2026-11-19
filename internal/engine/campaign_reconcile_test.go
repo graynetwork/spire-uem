@@ -6,7 +6,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/campaign"
 )
 
-// Found on a real Ubuntu VM: a non-simulated apt run prints no "Inst" lines, so every real
+// Found on a physical/VM test target: a non-simulated apt run prints no "Inst" lines, so every real
 // upgrade was reported "already_current" with no new version, and a package that is not
 // installed was skipped by --only-upgrade with exit 0 and also reported as a success.
 func TestReconcileCampaignResult(t *testing.T) {

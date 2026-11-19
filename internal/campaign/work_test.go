@@ -126,7 +126,7 @@ func TestComputeWork_InvalidFixedVersionRejected(t *testing.T) {
 	}
 }
 
-// A real Debian/Ubuntu device: apt upgrades BINARY packages, and source names such as "vim"
+// A real Debian device: apt upgrades BINARY packages, and source names such as "vim"
 // or "glibc" are not installable. Work must name the device's installed binaries, whether the
 // campaign named a binary, a source, or a CVE on a source. Before this, a packages campaign for
 // "xxd" produced no work, and one for "vim" sent "apt-get install --only-upgrade vim", which

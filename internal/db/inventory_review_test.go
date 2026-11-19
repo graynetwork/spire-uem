@@ -32,7 +32,7 @@ func TestInventory_SearchTextAndNumericValues(t *testing.T) {
 		want bool
 	}{
 		{"text eq", db.InventoryFilter{Key: "os.name", Op: "eq", Value: "Debian GNU/Linux 12"}, true},
-		{"text ne", db.InventoryFilter{Key: "os.name", Op: "ne", Value: "Ubuntu"}, true},
+		{"text ne", db.InventoryFilter{Key: "os.name", Op: "ne", Value: "RedHat"}, true},
 		{"number gt", db.InventoryFilter{Key: "hw.memory_mb", Op: "gt", Value: "8000"}, true},
 		{"number lt", db.InventoryFilter{Key: "hw.memory_mb", Op: "lt", Value: "8000"}, false},
 		{"text value on integer key", db.InventoryFilter{Key: "hw.memory_mb", Op: "eq", Value: "lots"}, false},
