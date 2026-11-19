@@ -90,6 +90,18 @@ func authenticatePATRequest(
 		return fail(), false
 	}
 
+	// Load the owner's account: tag scoping and every other per-user check read it from the
+	// request context, so without it a scoped admin's token would act fleet-wide. A failed
+	// lookup is refused (fail closed) but not counted against the IP, since it is not a guess.
+	owner, oerr := repo.GetAdminUserByID(r.Context(), tok.OwnerUserID)
+	if oerr != nil || owner == nil {
+		return patAuthResult{}, false
+	}
+	ownerCopy := *owner
+	// The token may carry a lower role than its owner; the context object must not let
+	// anything read the owner's higher role back out.
+	ownerCopy.Role = effective
+
 	limiter.Reset(ip)
 
 	// Record usage; audit first use exactly once.
@@ -105,6 +117,7 @@ func authenticatePATRequest(
 		authenticated: true,
 		username:      ownerUsername(tok),
 		effectiveRole: effective,
+		userObj:       &ownerCopy,
 		tokenID:       tok.ID,
 	}, false
 }
@@ -124,6 +137,9 @@ func ownerUsername(tok *types.PersonalAccessToken) string {
 func patContext(ctx context.Context, res patAuthResult) context.Context {
 	ctx = context.WithValue(ctx, AdminUserCtxKey, res.username)
 	ctx = context.WithValue(ctx, AdminRoleCtxKey, res.effectiveRole)
+	if res.userObj != nil {
+		ctx = context.WithValue(ctx, AdminUserObjCtxKey, res.userObj)
+	}
 	ctx = context.WithValue(ctx, PATIDCtxKey, res.tokenID)
 	ctx = context.WithValue(ctx, AuthMethodCtxKey, AuthMethodTokenID)
 	return ctx
