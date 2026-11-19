@@ -62,7 +62,10 @@ func (h *Handler) validateWorkflow(r *http.Request, w *workflows.Workflow) error
 		// registered executor; without this carve-out the API rejected every approval step.
 		known = func(t workflows.ActionType) bool { return t == workflows.ActionRequireApproval || reg.Known(t) }
 	}
-	return workflows.ValidateDefinition(w, ruleValidator, known)
+	if err := workflows.ValidateDefinition(w, ruleValidator, known); err != nil {
+		return err
+	}
+	return h.checkWorkflowScriptSecrets(r.Context(), w)
 }
 
 // CreateWorkflow handles POST /admin/workflows. SECURITY_ADMIN+.
@@ -158,6 +161,7 @@ func (h *Handler) ListWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeWFError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	wfs = h.redactWorkflows(r.Context(), wfs)
 	if wantsHTML(r) {
 		h.renderWorkflowsList(w, r, wfs)
 		return
@@ -188,6 +192,7 @@ func (h *Handler) ListPendingApprovals(w http.ResponseWriter, r *http.Request) {
 		writeWFError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	aps = h.redactApprovals(r.Context(), aps)
 	if wantsHTML(r) {
 		h.renderWorkflowApprovals(w, r, aps)
 		return

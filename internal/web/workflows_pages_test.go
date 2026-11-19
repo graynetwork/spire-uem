@@ -683,3 +683,57 @@ func TestWorkflowEditor_ScopedAdminSeesOnlyOwnWorkflowsAndPickers(t *testing.T) 
 		}
 	}
 }
+
+// TestWorkflow_SecretScriptParamsNeverStoredOrReturned: workflow definitions are plain JSON
+// readable by AUDITORs, so a run_script action must not carry a secret parameter value. New
+// definitions that try are refused; any stored before the check are redacted on read.
+func TestWorkflow_SecretScriptParamsNeverStoredOrReturned(t *testing.T) {
+	e := newWFEnv(t)
+	ctx := context.Background()
+	const secretVal = "WF-S3CR3T-PARAM-VALUE"
+	s, err := e.repo.CreateScript(ctx, &types.Script{
+		Name: "wfsecret-" + e.sfx, Interpreter: types.InterpreterBash, RunAs: types.RunAsRoot,
+	}, "#!/bin/bash\necho hi\n", []types.ScriptParam{
+		{Name: "TOKEN", Type: types.ScriptParamString, Secret: true},
+		{Name: "PORT", Type: types.ScriptParamInteger},
+	}, "seed")
+	if err != nil {
+		t.Fatalf("create script: %v", err)
+	}
+
+	body := func(params string) string {
+		return `{"name":"wfs-` + e.sfx + `","trigger":{"Kind":"agent_started"},"then_actions":[{"type":"run_script","script_id":"` + s.ID + `","params":` + params + `}]}`
+	}
+	if rec := e.do(e.sec, http.MethodPost, "/admin/workflows", "", body(`{"TOKEN":"`+secretVal+`"}`)); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "secret parameters") {
+		t.Errorf("workflow setting a secret param: got %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	if rec := e.do(e.sec, http.MethodPost, "/admin/workflows", "", body(`{"PORT":"8080"}`)); rec.Code != http.StatusCreated {
+		t.Errorf("workflow setting a plain param: got %d %s, want 201", rec.Code, rec.Body.String())
+	}
+
+	// A definition stored before the check (written straight through the repo).
+	legacy := workflows.Action{Type: workflows.ActionRunScript, ScriptID: s.ID, Params: map[string]string{"TOKEN": secretVal, "PORT": "9090"}}
+	wfID := e.mkWorkflow("legacy-"+e.sfx, nil, legacy)
+	dev := e.mkDevice(nil, "wfsec-"+e.sfx)
+	e.mkApproval(wfID, "legacy-"+e.sfx, nil, dev, []workflows.Action{legacy})
+
+	for _, accept := range []string{"application/json", htmlAccept} {
+		rec := e.do(e.auditor, http.MethodGet, "/admin/workflows", accept, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list (%s): %d", accept, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), secretVal) {
+			t.Errorf("workflow list (%s) returned a secret script parameter value to an auditor", accept)
+		}
+		if accept == "application/json" && !strings.Contains(rec.Body.String(), "9090") {
+			t.Errorf("workflow list (%s) dropped the non-secret parameter", accept)
+		}
+		rec = e.do(e.sec, http.MethodGet, "/admin/workflows/approvals", accept, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("approvals (%s): %d", accept, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), secretVal) {
+			t.Errorf("approvals (%s) returned a secret script parameter value", accept)
+		}
+	}
+}

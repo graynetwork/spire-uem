@@ -374,6 +374,13 @@ the run with the `scheduled` trigger; on an "agent started" workflow it uses the
 trigger. This is how you run a script on every device in a group each night, or once each time an
 agent restarts.
 
+A `run_script` action can't set a secret script parameter, because workflow definitions are
+stored as plain JSON and auditors can read them. Saving one is refused with a 400. Give the
+parameter a default on the script instead: runs receive it sealed, and responses never show it.
+A parameter counts as secret if any version of the script marks it secret. Values saved before
+this check are hidden in every workflow and approval response, and are dropped if the workflow
+is edited and saved again.
+
 **Safety.** Workflows are deterministic and bounded. A change a workflow makes never triggers
 another workflow (loop suppression). Each workflow is rate-limited per device by a **cooldown**
 (default 1 hour) and the whole fleet is bounded by a **global per-minute action budget**. Turn on
