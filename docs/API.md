@@ -103,3 +103,20 @@ curl -s -H "Authorization: Bearer $TOKEN" "$API/audit/events?actor=sa:ci-patchin
 
 Device actions are queued: `sync`, `lock` and `reboot` return `202` once the request is accepted, not when the
 device has acted.
+
+## RADIUS authorize (`posture:read`)
+
+`POST /api/admin/v1/access/radius/authorize` is the decision endpoint FreeRADIUS calls through
+`rlm_rest`. It takes FreeRADIUS's JSON request (`{"User-Name":{"type":"string","value":["x"]}, ...}`;
+`Calling-Station-Id`, `NAS-IP-Address`, `NAS-Identifier`, `Acct-Session-Id`, `TLS-Client-Cert-Serial`
+are read) and answers **200** with an `rlm_rest` reply (`control:Tmp-String-0 = spire-accept`, optional
+`reply:Tunnel-*` VLAN attributes, `control:Tmp-String-1 = strong|weak`) to accept, or **403**
+`{"decision":"reject"}` to reject. Any other status must be treated as reject. It needs the
+`posture:read` scope; a tag-scoped service account sees out-of-scope devices as unknown. It does not
+accept an `Idempotency-Key`: decisions are never replayed. Details: [ACCESS_RADIUS.md](ACCESS_RADIUS.md).
+
+Admin-page endpoints (session or Basic auth, CSRF for cookies): `GET /admin/radius` (JSON with
+`Accept: application/json`), `POST /admin/radius/settings`, `POST /admin/radius/nas`,
+`POST /admin/radius/nas/{id}`, `POST /admin/radius/nas/{id}/delete`. NAS responses never contain
+the shared secret; a generated one is returned once by create.
+

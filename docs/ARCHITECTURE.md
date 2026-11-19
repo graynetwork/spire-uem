@@ -719,3 +719,32 @@ alert (enable routing for that kind on an alert channel). Finished deliveries ar
 
 Signing secrets are sealed with the server KEK (same envelope as alert channel secrets), generated
 server-side, returned once on create/rotate, and never returned by any read.
+
+## 13. RADIUS / NAC connector (internal/radius, internal/db/radius.go)
+
+A connector, not an identity provider: FreeRADIUS calls `POST /api/admin/v1/access/radius/authorize`
+(service account with `posture:read`) and SpireUEM maps the device's `device_posture` verdict
+(`GetDevicePosture` + `EffectiveState`, never a verdict of its own) to accept, reject or a VLAN.
+Full setup, identity strength and VPN notes: [ACCESS_RADIUS.md](ACCESS_RADIUS.md).
+
+* **Fail closed.** Every non-accept answer is a 403/401/5xx, which `rlm_rest` maps to reject, userlock or
+  fail; an accept carries a marker attribute the FreeRADIUS policy requires (`contrib/freeradius`).
+  Unknown, stale, ambiguous, out-of-scope, unparseable and database-error cases reject. The guest
+  VLAN (explicit, audited, default off) only ever covers "unknown device" and UNKNOWN posture.
+* **Identity.** A device-CA certificate serial (hex from `TLS-Client-Cert-Serial`, stored as decimal)
+  is strong and never falls back to the MAC. A MAC from `Calling-Station-Id` is weak, accepted only
+  when an admin enables it, and labelled `identity_strength: weak` in the reply and a header.
+  Tag-scoped service accounts treat out-of-scope devices exactly like missing ones; ambiguity is
+  judged on the unscoped match list.
+* **Storage (migrations 070-071).** `radius_settings` (singleton mapping), `radius_nas_clients`
+  (KEK-sealed shared secret, IP literal, CoA port), `radius_sessions` (admitted sessions, only for
+  registered NAS addresses), `radius_coa_cursor`, `radius_coa_deliveries` (outbox and delivery log).
+* **Disconnect loop** (`radius.Loop`, every server): scan `device_posture` past a persisted cursor
+  (30 s lookback, reading only id/state/time so one corrupt row cannot stall it), insert one delivery
+  per live session admitted under a different state, claim with `FOR UPDATE SKIP LOCKED`, send an
+  RFC 5176 Disconnect-Request (own encoder, standard library, checked against FreeRADIUS), bounded
+  retries, NAK is final. A single advisory lock serialises the scan; the unique delivery key makes it
+  idempotent across servers. The NAS address is an admin-entered IP literal re-checked with the
+  webhook package's address classes at connect time.
+* **Audit.** `RADIUS_SETTINGS_UPDATE`, `RADIUS_GUEST_VLAN_CHANGE`, `RADIUS_WEAK_IDENTITY_CHANGE`,
+  `RADIUS_NAS_CREATE/UPDATE/DELETE`. Secrets never appear in details.

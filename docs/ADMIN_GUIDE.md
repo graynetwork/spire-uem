@@ -599,3 +599,21 @@ revoking tokens are audited with the administrator who did it. Token secrets are
 
 **Retries.** Send an `Idempotency-Key` header on POST requests so a retry cannot repeat an action (a
 second lock or reboot, a second campaign start). See `docs/API.md`.
+
+## RADIUS / NAC (network access control and VPN)
+
+**Admin → RADIUS / NAC** configures how FreeRADIUS access decisions follow device posture. SpireUEM
+does not replace FreeRADIUS; FreeRADIUS asks SpireUEM. Setup, the FreeRADIUS files and VPN notes are in
+[ACCESS_RADIUS.md](ACCESS_RADIUS.md).
+
+* **Decision mapping** (SUPER_ADMIN, SECURITY_ADMIN; AUDITOR reads): VLAN ids for compliant,
+  quarantined and non-compliant devices. An empty quarantine or remediation VLAN means reject.
+  Unknown devices and UNKNOWN posture are rejected unless you enable the **guest VLAN**.
+* **Accept MAC identity** (off by default): lets MAC authentication bypass work. A MAC address can be
+  copied by anyone on the segment, so prefer certificates. Both switches are audited.
+* **NAS clients**: the switches, APs and VPN gateways SpireUEM may send Disconnect-Requests to (IP,
+  CoA port, shared secret). The secret is write-only: leave it empty to have one generated and shown
+  once. Tag-scoped administrators can read this page but not change it.
+* **Delivery log**: the last 50 disconnects with their status (`ACKED`, `NAKED`, `FAILED`).
+* The connector credential is a service account with only `posture:read` (Admin → API Access).
+
