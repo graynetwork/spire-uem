@@ -52,6 +52,10 @@ type scriptCreateRequest struct {
 
 // ListScripts GET /admin/scripts — all scripts with current versions.
 func (h *Handler) ListScripts(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		h.renderScriptsListPage(w, r)
+		return
+	}
 	scripts, err := h.repo.ListScripts(r.Context())
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to list scripts")
@@ -62,6 +66,10 @@ func (h *Handler) ListScripts(w http.ResponseWriter, r *http.Request) {
 
 // GetScript GET /admin/scripts/{id} — one script + version history.
 func (h *Handler) GetScript(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		h.renderScriptDetailPage(w, r)
+		return
+	}
 	id := chi.URLParam(r, "id")
 	s, err := h.repo.GetScript(r.Context(), id)
 	if err != nil || s == nil {
@@ -168,6 +176,7 @@ type runScriptRequest struct {
 	DeviceIDs []string          `json:"device_ids,omitempty"`
 	Tags      []string          `json:"tags,omitempty"`
 	Ring      string            `json:"ring,omitempty"`
+	GroupID   string            `json:"group_id,omitempty"`
 	Params    map[string]string `json:"params,omitempty"`
 }
 
@@ -237,7 +246,7 @@ func (h *Handler) RunScript(w http.ResponseWriter, r *http.Request) {
 
 // buildScriptTarget constructs a db.ScriptTarget from the request + scope.
 func buildScriptTarget(req runScriptRequest, allowed []string, scoped bool) db.ScriptTarget {
-	t := db.ScriptTarget{DeviceIDs: req.DeviceIDs, Tags: req.Tags}
+	t := db.ScriptTarget{DeviceIDs: req.DeviceIDs, Tags: req.Tags, GroupID: strings.TrimSpace(req.GroupID)}
 	if ring := strings.TrimSpace(req.Ring); ring != "" {
 		dr := types.DeploymentRing(strings.ToUpper(ring))
 		t.Ring = &dr
