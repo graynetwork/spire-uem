@@ -599,3 +599,43 @@ revoking tokens are audited with the administrator who did it. Token secrets are
 
 **Retries.** Send an `Idempotency-Key` header on POST requests so a retry cannot repeat an action (a
 second lock or reboot, a second campaign start). See `docs/API.md`.
+
+## Access posture and quarantine
+
+SpireUEM computes one access verdict per device, shown as **Access** in the device list and as the
+**Access Posture** panel on the device page: `COMPLIANT`, `NONCOMPLIANT`, `QUARANTINED` or `UNKNOWN`.
+Connectors (reverse proxies, Authentik, RADIUS) read that verdict. They never compute their own.
+
+**Rule set (Access Posture page).** One fleet-wide rule set, versioned and audited. Auditors can view it;
+SUPER_ADMIN and SECURITY_ADMIN can edit it. A tag-scoped admin cannot, because a fleet-wide edit would change
+the verdict of devices outside their tags. Checks (all off except the first on a fresh install, so enabling a
+connector does not lock everyone out):
+
+| Check | Passes when |
+|---|---|
+| `checkin_fresh` | last check-in is within N hours (default 24) |
+| `attestation_trusted` | TPM attestation is trusted (same decision as secret withholding; enabling the check applies it even when attestation enforcement is `off`) |
+| `disk_encrypted` | inventory reports `hw.disk.encrypted_all` true; a device that does not report it fails |
+| `policies_compliant` | no assigned policy is NON_COMPLIANT or FAILED (PENDING fails only if you tick "PENDING also fails"; REVOKED history is ignored) |
+| `patches_current` | no pending security updates, or (grace days > 0) the last patch run succeeded within the grace period; a device that never reported patch status fails |
+| `no_critical_cves` | no open CVE at or above the chosen urgency, except those covered by an active risk acceptance |
+| `group_rule` | the device matches the given dynamic-group rule |
+
+A device that is not approved or is marked lost is never COMPLIANT (built-in check `device_active`).
+
+**When it is evaluated.** After each check-in (in the background; it never delays the check-in), on a periodic
+sweep every 5 minutes (`SPIRE_POSTURE_INTERVAL`, minimum 30s), immediately on quarantine or release, and for
+the whole fleet after a rule-set edit. A verdict is valid for 15 minutes; after that it reads as `UNKNOWN`, so a
+stopped server cannot leave a device COMPLIANT. An evaluation error stores `UNKNOWN` with the error class.
+
+**Quarantine.** SECURITY_ADMIN or SUPER_ADMIN (within tag scope) can quarantine a device from its page with a
+required reason, and release it with a required reason. Both are audited. The workflow `quarantine` action also
+creates a quarantine record (source `workflow`) and still adds the quarantine tag. Releasing is admin-only.
+While quarantined: the posture is `QUARANTINED` whatever else is true; the device receives only policies marked
+**Allowed in quarantine** (a checkbox on the policy form, default off); sealed network-profile secrets are never
+sent; script policy bodies are not sent. Withheld policies stay in the list flagged `quarantine_withheld` so
+the agent does not remove their configuration; the agent skips them and reports nothing for them. If the
+quarantine state cannot be read at check-in the device is treated as quarantined.
+
+Webhook events: `posture_changed`, `device_quarantined`, `device_released` (see `docs/WEBHOOKS.md`).
+

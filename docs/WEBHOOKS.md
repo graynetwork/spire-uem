@@ -114,6 +114,9 @@ Event types marked (no device) have `device: null`.
 | `device_revoked` | device revoked, credentials invalidated | `hostname` |
 | `device_marked_lost` | device marked lost | `marked_by` |
 | `device_wiped` | device reported a completed wipe | `request_id`, `status` |
+| `posture_changed` | the device's access posture state changed (not sent for a device's first verdict) | `from`, `to`, `reasons` |
+| `device_quarantined` | an admin or workflow quarantined the device | `reason`, `actor`, `source` |
+| `device_released` | the quarantine was released | `actor`, `reason` |
 | `device_offline` | missed check-ins past the threshold | `offline_minutes` |
 | `agent_started` | first check-in after agent start | `agent_version` |
 | `active_session_changed` | logged-in user changed | `old`, `new` |
