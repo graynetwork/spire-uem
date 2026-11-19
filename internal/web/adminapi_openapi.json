@@ -28,6 +28,9 @@
   },
   {
    "name": "audit"
+  },
+  {
+   "name": "posture"
   }
  ],
  "paths": {
@@ -1328,6 +1331,256 @@
      }
     }
    }
+  },
+  "/devices/{id}/posture": {
+   "get": {
+    "operationId": "getDevicePosture",
+    "summary": "Get a device's access posture verdict",
+    "tags": [
+     "posture"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Posture (UNKNOWN with reason 'no posture verdict' when never evaluated)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/DevicePosture"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/posture/lookup": {
+   "get": {
+    "operationId": "lookupPosture",
+    "summary": "Resolve an identity to a device and return its verdict",
+    "tags": [
+     "posture"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "description": "Give exactly one of serial, fingerprint, mac, ip or user. serial/fingerprint (a device-CA certificate the CALLER has verified) are strong identities; mac, ip and user are weak. Tag-scoped credentials only match devices inside their tags before ambiguity is judged. Connectors must treat any non-200 as a deny.",
+    "parameters": [
+     {
+      "name": "serial",
+      "in": "query",
+      "description": "Decimal serial of a device-CA certificate",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "fingerprint",
+      "in": "query",
+      "description": "SHA-256 fingerprint (hex) of a device-CA certificate",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "mac",
+      "in": "query",
+      "description": "MAC address in any common notation",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "ip",
+      "in": "query",
+      "description": "IPv4 or IPv6 address the device last checked in from",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "user",
+      "in": "query",
+      "description": "Last active desktop user, case-insensitive",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Lookup result",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/PostureLookup"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/access/forward-auth": {
+   "get": {
+    "operationId": "forwardAuth",
+    "summary": "Reverse-proxy forward-auth decision",
+    "tags": [
+     "posture"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "description": "Called by a trusted reverse proxy for every request it protects. 200 = allow (response headers X-Spire-Device-Id, X-Spire-Posture, X-Spire-Identity-Strength may be passed upstream); 403 = deny, always with the same generic body; 401 = the proxy's own credential is bad; 503 = posture could not be checked, which also denies. The proxy credential may be sent as Authorization: Bearer or, for Traefik, X-Spire-Connector-Token. The client identity comes from the configured certificate header or forwarded-address header and is only believed when the TCP peer is inside the trusted-proxy ranges (Admin > Access Proxy).",
+    "responses": {
+     "200": {
+      "description": "Allow",
+      "headers": {
+       "X-Spire-Device-Id": {
+        "schema": {
+         "type": "string",
+         "format": "uuid"
+        }
+       },
+       "X-Spire-Posture": {
+        "schema": {
+         "type": "string",
+         "enum": [
+          "COMPLIANT"
+         ]
+        }
+       },
+       "X-Spire-Identity-Strength": {
+        "schema": {
+         "type": "string",
+         "enum": [
+          "strong",
+          "weak"
+         ]
+        }
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "allowed"
+         ],
+         "properties": {
+          "allowed": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "503": {
+      "description": "Posture check unavailable (denies)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "allowed": {
+           "type": "boolean"
+          },
+          "reason": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
   }
  },
  "components": {
@@ -1672,6 +1925,166 @@
      "created_at": {
       "type": "string",
       "format": "date-time"
+     }
+    }
+   },
+   "DevicePosture": {
+    "type": "object",
+    "description": "A device's access verdict. state is the EFFECTIVE state: a missing or expired verdict reads UNKNOWN.",
+    "required": [
+     "device_id",
+     "state",
+     "allowed",
+     "stale",
+     "reasons",
+     "checks"
+    ],
+    "properties": {
+     "device_id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "COMPLIANT",
+       "NONCOMPLIANT",
+       "QUARANTINED",
+       "UNKNOWN"
+      ]
+     },
+     "allowed": {
+      "type": "boolean",
+      "description": "True only when state is COMPLIANT."
+     },
+     "stale": {
+      "type": "boolean",
+      "description": "A stored verdict exists but is past valid_until."
+     },
+     "stored_state": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "The state as stored, before staleness is applied; null when never evaluated."
+     },
+     "reasons": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "checks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "required": [
+        "id",
+        "passed"
+       ],
+       "properties": {
+        "id": {
+         "type": "string"
+        },
+        "passed": {
+         "type": "boolean"
+        },
+        "detail": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "rule_set_version": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "evaluated_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "valid_until": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "state_changed_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     }
+    }
+   },
+   "PostureLookup": {
+    "type": "object",
+    "description": "Result of resolving an identity to a device and reading its verdict. An unknown device, a device outside the caller's tag scope and an unusable identity all read the same: allowed=false, state=UNKNOWN, device_id=null. Only an identity matching several devices says 'ambiguous identity', and then no device id is returned.",
+    "required": [
+     "allowed",
+     "state",
+     "device_id",
+     "hostname",
+     "identity_strength",
+     "matched_by",
+     "reasons"
+    ],
+    "properties": {
+     "allowed": {
+      "type": "boolean"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "COMPLIANT",
+       "NONCOMPLIANT",
+       "QUARANTINED",
+       "UNKNOWN"
+      ]
+     },
+     "device_id": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "uuid"
+     },
+     "hostname": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "identity_strength": {
+      "type": "string",
+      "enum": [
+       "strong",
+       "weak"
+      ],
+      "description": "weak = resolved by MAC, IP or user name, which can be spoofed or shared."
+     },
+     "matched_by": {
+      "type": "string",
+      "enum": [
+       "cert_serial",
+       "cert_fingerprint",
+       "mac",
+       "ip",
+       "user"
+      ]
+     },
+     "reasons": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
      }
     }
    }

@@ -124,6 +124,10 @@
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "baselines"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                             <span>PCR Baselines</span>
                         </a>
+                        <a href="/admin/access-proxy" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "access_proxy"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "access_proxy"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.6-4.0A11.95 11.95 0 0112 2.9 11.95 11.95 0 013.4 8c-.3 1.2-.4 2.4-.4 3.6 0 5.2 3.4 9.6 9 11 5.6-1.4 9-5.8 9-11 0-1.2-.1-2.4-.4-3.6z"/></svg>
+                            <span>Access Proxy</span>
+                        </a>
                         <a href="/admin/vulnerabilities" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "vulnerabilities"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "vulnerabilities"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.5 0l-7.1 12.25A2 2 0 005 19z"/></svg>
                             <span>Vulnerabilities</span>
@@ -226,6 +230,8 @@
                 {{template "alerts_content" .}}
             {{else if eq .ActiveNav "baselines"}}
                 {{template "baselines_content" .}}
+            {{else if eq .ActiveNav "access_proxy"}}
+                {{template "access_proxy_content" .}}
             {{else if eq .ActiveNav "groups"}}
                 {{template "groups_content" .}}
             {{else if eq .ActiveNav "scripts"}}
