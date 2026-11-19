@@ -351,6 +351,208 @@
     }
    }
   },
+  "/devices/{id}/quarantine": {
+   "post": {
+    "operationId": "quarantineDevice",
+    "summary": "Quarantine a device",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Quarantine recorded",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "status",
+            "device_id"
+           ],
+           "properties": {
+            "status": {
+             "type": "string"
+            },
+            "device_id": {
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "reason"
+        ],
+        "properties": {
+         "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Creates an audited quarantine record. The device's access posture becomes QUARANTINED and only policies marked allowed_in_quarantine are delivered. Idempotent: an already quarantined device returns status already_quarantined. A device outside the credential's tag scope is reported as not found."
+   }
+  },
+  "/devices/{id}/release": {
+   "post": {
+    "operationId": "releaseDevice",
+    "summary": "Release a device from quarantine",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Release processed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "status",
+            "device_id"
+           ],
+           "properties": {
+            "status": {
+             "type": "string"
+            },
+            "device_id": {
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "reason"
+        ],
+        "properties": {
+         "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Ends the active quarantine (audited). The posture is re-evaluated; the device is not COMPLIANT until every enabled access check passes. Returns status not_quarantined when there was nothing to release."
+   }
+  },
   "/devices/{id}/lock": {
    "post": {
     "operationId": "lockDevice",

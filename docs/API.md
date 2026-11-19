@@ -24,6 +24,7 @@ credential's tag scope. Out-of-scope objects are reported as `404`, not `403`.
 |---|---|---|
 | `GET /devices`, `GET /devices/{id}` | `devices:read` | Auditor |
 | `POST /devices/{id}/sync`, `/lock`, `/reboot` | `devices:actions` | Operator |
+| `POST /devices/{id}/quarantine`, `/release` | `devices:actions` | Security Admin |
 | `GET /groups`, `/groups/{id}`, `/groups/{id}/members` | `groups:read` | Auditor |
 | `GET /policies`, `/policies/{id}` | `policies:read` | Auditor |
 | `GET /campaigns`, `/campaigns/{id}` | `campaigns:read` | Security Admin |
@@ -103,3 +104,11 @@ curl -s -H "Authorization: Bearer $TOKEN" "$API/audit/events?actor=sa:ci-patchin
 
 Device actions are queued: `sync`, `lock` and `reboot` return `202` once the request is accepted, not when the
 device has acted.
+
+### Quarantine and release
+
+`POST /devices/{id}/quarantine` and `POST /devices/{id}/release` take `{"reason": "..."}` (required, at most
+500 characters) and return `200` with `{"data": {"status": ..., "device_id": ...}}`. `status` is `quarantined` or
+`already_quarantined` for quarantine, and `released` or `not_quarantined` for release. Both are idempotent,
+audited (`DEVICE_QUARANTINE`, `DEVICE_RELEASE`), need a Security Admin role cap on top of the scope, and follow
+the tag scope: a device outside the credential's tags returns the same `404` as an unknown device.

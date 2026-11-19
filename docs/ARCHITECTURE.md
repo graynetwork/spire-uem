@@ -617,6 +617,44 @@ acceptance.
   records what it is told and never treats a bare success claim as authoritative, but it cannot
   independently verify that an upgrade occurred beyond the reported package versions.
 
+## 10c. Device access posture and quarantine (internal/posture)
+
+`device_posture` (migration 65) holds one verdict per device. `internal/posture` is its only writer:
+`Evaluate` is a pure function of device facts, the access rule set and the clock (unit-tested without a
+database), and `Service` loads facts, stores the verdict and emits `posture_changed`.
+
+- **Rule set** (`access_rule_set`, `access_rule_set_history`, migration 66): one fleet-wide, versioned row.
+  Edits are optimistic (`expected_version`; a stale editor gets 409), recorded in history and audited
+  (`ACCESS_RULESET_UPDATE`). `device_posture.rule_set_version` records which version decided. Trust reuses
+  `crypto.EvaluateTrust` with the inputs of `gatePolicySecrets`; risk acceptances reuse
+  `campaign.MatchingRiskAcceptance`; `group_rule` reuses the group-rule compiler for a single device. Only the
+  facts an enabled check needs are loaded.
+- **Fail closed.** A fact that cannot be loaded, an undecodable rule set, or any evaluation error stores
+  `UNKNOWN` with the error class, never `COMPLIANT`. Every verdict has `valid_until` (default 15 minutes); past
+  it, `EffectiveState` is `UNKNOWN`. Creating a quarantine also expires the stored verdict in the same
+  transaction, so a COMPLIANT verdict cannot outlive a quarantine if the immediate re-evaluation fails.
+- **Triggers.** Check-in (asynchronous, best effort), a sweep every `SPIRE_POSTURE_INTERVAL` (default 5m), a
+  quarantine or release (hook installed with `Repository.SetPostureHook`), and the whole fleet after a
+  rule-set edit. HA: the sweep is claimed in `posture_sweep_claim`, and event emission rides on
+  `UpsertDevicePosture`'s row lock, so two evaluators produce one `posture_changed` per real transition. A
+  device's first verdict is not a transition and emits nothing.
+- **Quarantine** (`device_quarantines`, migration 67): a record with reason, actor, source (`manual` or
+  `workflow`) and release data; at most one active record per device. Quarantined posture overrides every
+  check. At check-in a quarantined device (or one whose quarantine lookup failed) gets `QuarantineWithheld`
+  on every policy not marked `policies.allowed_in_quarantine` (migration 68). The policy is flagged, not
+  removed from the list, because the agent's orphan cleanup deletes the configuration of any policy that is
+  absent. The agent skips flagged policies without enforcing, removing or reporting them. Script policy
+  payloads of flagged policies are blanked, and sealed network secrets are withheld for every policy,
+  allowed or not, whatever the attestation mode. Queued commands, script and sensor directives and campaign
+  directives are NOT restricted (see limitations).
+- **Authorization.** Quarantine and release: SECURITY_ADMIN/SUPER_ADMIN, tag scope enforced
+  (`DeviceScopeMiddleware` plus an explicit check; the API reports out-of-scope as 404), reason required,
+  audited. Rule-set edit: unscoped SECURITY_ADMIN/SUPER_ADMIN only.
+- **Known limits.** Rule-set overrides per tag are not implemented (fleet-wide only). The agent reports
+  disk encryption through inventory; a device on an old agent fails `disk_encrypted`. Posture facts are what
+  the device reported; a root user on the endpoint controls them. Verdicts are only as fresh as the last
+  check-in or sweep (up to 5 minutes). Quarantine does not yet restrict queued commands or scripts.
+
 ## 11. Known security gaps
 
 - The enrollment-token per-IP failure rate limiter is an in-memory sliding counter, adequate for a single control-plane process. In a multi-instance deployment it is per-process, so N instances allow roughly N× the failures before throttling; move it to shared state if that matters (same caveat as the admin PAT limiter). The max-uses consume is NOT affected — it is an atomic DB update and holds across instances.
@@ -698,7 +736,7 @@ Why this and not the alternatives:
 ### Event kinds and workflows
 
 Policy, campaign and destructive device events (`policy_*`, `campaign_*`, `device_revoked`,
-`device_marked_lost`, `device_wiped`) are webhook-only. They are not in `workflows.AllEventKinds`:
+`device_marked_lost`, `device_wiped`, `device_quarantined`, `device_released`) are webhook-only. They are not in `workflows.AllEventKinds`:
 workflow trigger validation rejects them, `EmitEvent` does not write them to `workflow_events`, and
 `Engine.ProcessEvent` ignores any such event that reaches it. Reason: a workflow reacting to an
 admin's own action or to the campaign it started invites loops, and device-less events have nothing

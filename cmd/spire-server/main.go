@@ -23,6 +23,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
+	"github.com/spire-uem/spire-uem/internal/posture"
 	"github.com/spire-uem/spire-uem/internal/groupsync"
 	"github.com/spire-uem/spire-uem/internal/web"
 	"github.com/spire-uem/spire-uem/internal/webhooks"
@@ -161,6 +162,13 @@ func main() {
 	})
 	go wfEngine.RunWorkers(ctx)
 
+	// Access posture: the only writer of device_posture. Evaluated at every check-in, on a
+	// quarantine/release, after a rule-set edit and by this periodic sweep (default every 5
+	// minutes, SPIRE_POSTURE_INTERVAL). The sweep is claim-in-DB so both instances may run it.
+	postureSvc := posture.New(repo, posture.Config{Interval: postureInterval()})
+	repo.SetPostureHook(postureSvc.Hook())
+	go postureSvc.Run(ctx)
+
 	r := chi.NewRouter()
 	r.Use(web.TrustedProxyRealIPMiddleware)
 	r.Use(middleware.Logger)
@@ -186,6 +194,7 @@ func main() {
 	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
 	webHandler.SetAlerting(alertStore, alertMgr)
 	webHandler.SetWorkflowEngine(wfEngine)
+	webHandler.SetPosture(postureSvc)
 	webHandler.SetDeviceMTLSMode(mtlsMode)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 
@@ -258,4 +267,15 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// postureInterval reads SPIRE_POSTURE_INTERVAL (a Go duration, at least 30s); default 5m.
+func postureInterval() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("SPIRE_POSTURE_INTERVAL")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 30*time.Second {
+			return d
+		}
+		log.Printf("[spire-server] ignoring invalid SPIRE_POSTURE_INTERVAL %q (need a duration of at least 30s)", v)
+	}
+	return 5 * time.Minute
 }

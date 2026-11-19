@@ -79,6 +79,8 @@ const (
 	EventDeviceRevoked        EventKind = "device_revoked"          // fields: hostname
 	EventDeviceMarkedLost     EventKind = "device_marked_lost"      // fields: marked_by
 	EventDeviceWiped          EventKind = "device_wiped"            // fields: request_id, status
+	EventDeviceQuarantined    EventKind = "device_quarantined"      // fields: reason, actor, source
+	EventDeviceReleased       EventKind = "device_released"         // fields: actor, reason
 )
 
 // WebhookOnlyKinds lists the kinds above.
@@ -87,6 +89,7 @@ var WebhookOnlyKinds = []EventKind{
 	EventCampaignStarted, EventCampaignStagePromoted, EventCampaignHalted,
 	EventCampaignCompleted, EventCampaignCancelled,
 	EventDeviceRevoked, EventDeviceMarkedLost, EventDeviceWiped,
+	EventDeviceQuarantined, EventDeviceReleased,
 }
 
 // WebhookKind reports whether k may be delivered through an event webhook: every workflow

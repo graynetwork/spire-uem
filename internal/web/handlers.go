@@ -55,6 +55,8 @@ type Handler struct {
 	wfEngine *workflows.Engine
 	// deviceMTLSMode is shown read-only on the Settings page (off | optional | required).
 	deviceMTLSMode string
+	// posture re-evaluates the fleet's access posture after a rule-set edit.
+	posture FleetPostureEvaluator
 }
 
 // SetWorkflowEngine wires the workflow engine used by the workflow admin + approval handlers.
@@ -977,6 +979,17 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 		devices = kept
 	}
 
+	h.annotatePosture(r.Context(), devices)
+	if pf := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("posture"))); pf != "" {
+		kept := devices[:0]
+		for _, d := range devices {
+			if d.PostureState == pf {
+				kept = append(kept, d)
+			}
+		}
+		devices = kept
+	}
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(devices)
@@ -1202,6 +1215,7 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"DeviceCert":         deviceCert,
 		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
 		"Inventory":          deviceInventory,
+		"Posture":            h.loadPostureView(r.Context(), dev.ID),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -2178,6 +2192,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		patchWindowID  *string
 		requiresReboot bool
 		assignmentType types.ApplicationAssignmentType
+		quarOK         bool
 	)
 
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
@@ -2192,6 +2207,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 			TargetGroupIDs []string                        `json:"target_group_ids"`
 			PatchWindowID  string                          `json:"patch_window_id"`
 			RequiresReboot bool                            `json:"requires_reboot"`
+			QuarantineOK   bool                            `json:"allowed_in_quarantine"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
@@ -2209,6 +2225,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 			patchWindowID = &pw
 		}
 		requiresReboot = body.RequiresReboot
+		quarOK = body.QuarantineOK
 	} else {
 		if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
 			_ = r.ParseMultipartForm(25 << 20)
@@ -2228,6 +2245,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		rebStr := strings.ToLower(strings.TrimSpace(r.FormValue("requires_reboot")))
 		requiresReboot = rebStr == "true" || rebStr == "1" || rebStr == "on"
+		quarOK = pFormBool(r.FormValue("allowed_in_quarantine"))
 
 		rawField := strings.TrimSpace(r.FormValue("payload"))
 		if rawField != "" {
@@ -2309,6 +2327,14 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pol.TargetGroupIDs = targetGroupIDs
+	}
+
+	if quarOK {
+		if _, err := h.repo.SetPolicyAllowedInQuarantine(r.Context(), pol.ID, true); err != nil {
+			log.Printf("[web] set policy allowed_in_quarantine error: %v", err)
+		} else {
+			pol.AllowedInQuarantine = true
+		}
 	}
 
 	h.dispatchPolicyCheckin(r.Context(), pol)
