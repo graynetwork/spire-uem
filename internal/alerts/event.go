@@ -66,6 +66,9 @@ const (
 	// EventAgentUpdateFailed fires when an agent reports a FAILED self-update (including a
 	// signature/verification failure) or a ROLLED_BACK outcome.
 	EventAgentUpdateFailed EventKind = "agent_update_failed"
+	// EventWebhookDisabled fires when an event webhook subscription is auto-disabled after
+	// a long streak of dead deliveries.
+	EventWebhookDisabled EventKind = "webhook_disabled"
 	EventTest              EventKind = "test"
 )
 
@@ -81,6 +84,7 @@ var AllEventKinds = []EventKind{
 	EventLoginFailureBurst,
 	EventPatchFailed,
 	EventAgentUpdateFailed,
+	EventWebhookDisabled,
 }
 
 // Label returns a human-readable name for an event kind.
@@ -104,6 +108,8 @@ func (k EventKind) Label() string {
 		return "Patch run failed"
 	case EventAgentUpdateFailed:
 		return "Agent self-update failed / rolled back"
+	case EventWebhookDisabled:
+		return "Event webhook auto-disabled"
 	case EventTest:
 		return "Test alert"
 	default:

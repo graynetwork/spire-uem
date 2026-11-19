@@ -42,12 +42,18 @@ func (r *Repository) ListCampaignWork(ctx context.Context, campaignID string, sc
 
 // CampaignReport builds the per-campaign report: device counts by (stage,state), failure
 // classes, and completion timing.
-func (r *Repository) CampaignReport(ctx context.Context, campaignID string) (*campaign.CampaignReport, error) {
+//
+// The counts are limited to devices inside scope, so a tag-scoped admin never sees how many
+// devices outside their tags a campaign touched.
+func (r *Repository) CampaignReport(ctx context.Context, campaignID string, scope DeviceScope) (*campaign.CampaignReport, error) {
 	rep := &campaign.CampaignReport{CampaignID: campaignID}
+	scoped, tags := scope.sqlArgs()
 
 	rows, err := r.pool.Query(ctx, `
-		SELECT stage, state, COUNT(*) FROM campaign_device_work
-		WHERE campaign_id=$1 GROUP BY stage, state ORDER BY stage, state`, campaignID)
+		SELECT w.stage, w.state, COUNT(*) FROM campaign_device_work w
+		JOIN devices d ON d.id = w.device_id
+		WHERE w.campaign_id=$1 AND (NOT $2::bool OR d.tags && $3::text[])
+		GROUP BY w.stage, w.state ORDER BY w.stage, w.state`, campaignID, scoped, tags)
 	if err != nil {
 		return nil, fmt.Errorf("campaign report stage states: %w", err)
 	}
@@ -65,8 +71,10 @@ func (r *Repository) CampaignReport(ctx context.Context, campaignID string) (*ca
 	}
 
 	frows, err := r.pool.Query(ctx, `
-		SELECT failure_class, COUNT(*) FROM campaign_device_work
-		WHERE campaign_id=$1 AND failure_class <> '' GROUP BY failure_class ORDER BY COUNT(*) DESC`, campaignID)
+		SELECT w.failure_class, COUNT(*) FROM campaign_device_work w
+		JOIN devices d ON d.id = w.device_id
+		WHERE w.campaign_id=$1 AND w.failure_class <> '' AND (NOT $2::bool OR d.tags && $3::text[])
+		GROUP BY w.failure_class ORDER BY COUNT(*) DESC`, campaignID, scoped, tags)
 	if err != nil {
 		return nil, fmt.Errorf("campaign report failure classes: %w", err)
 	}

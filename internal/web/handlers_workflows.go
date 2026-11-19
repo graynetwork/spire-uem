@@ -58,9 +58,14 @@ func (h *Handler) validateWorkflow(r *http.Request, w *workflows.Workflow) error
 	var known func(workflows.ActionType) bool
 	if h.wfEngine != nil {
 		reg := h.wfEngine.Registry()
-		known = func(t workflows.ActionType) bool { return reg.Known(t) }
+		// require_approval is handled inline by the engine (it pauses the run), so it has no
+		// registered executor; without this carve-out the API rejected every approval step.
+		known = func(t workflows.ActionType) bool { return t == workflows.ActionRequireApproval || reg.Known(t) }
 	}
-	return workflows.ValidateDefinition(w, ruleValidator, known)
+	if err := workflows.ValidateDefinition(w, ruleValidator, known); err != nil {
+		return err
+	}
+	return h.checkWorkflowScriptSecrets(r.Context(), w)
 }
 
 // CreateWorkflow handles POST /admin/workflows. SECURITY_ADMIN+.
@@ -156,14 +161,25 @@ func (h *Handler) ListWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeWFError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	wfs = h.redactWorkflows(r.Context(), wfs)
+	if wantsHTML(r) {
+		h.renderWorkflowsList(w, r, wfs)
+		return
+	}
 	writeJSONWF(w, http.StatusOK, map[string]any{"workflows": wfs})
 }
 
 // ListWorkflowRuns handles GET /admin/workflows/runs (AUDITOR+). Optional ?workflow_id=.
 func (h *Handler) ListWorkflowRuns(w http.ResponseWriter, r *http.Request) {
-	runs, err := h.repo.ListWorkflowRuns(r.Context(), r.URL.Query().Get("workflow_id"), 100)
+	// Scoped like ListWorkflows: a tag-scoped admin sees only runs of in-scope workflows on
+	// in-scope devices.
+	runs, err := h.repo.ListWorkflowRunsScoped(r.Context(), h.deviceScope(r), r.URL.Query().Get("workflow_id"), 100)
 	if err != nil {
 		writeWFError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if wantsHTML(r) {
+		h.renderWorkflowRuns(w, r, runs)
 		return
 	}
 	writeJSONWF(w, http.StatusOK, map[string]any{"runs": runs})
@@ -174,6 +190,11 @@ func (h *Handler) ListPendingApprovals(w http.ResponseWriter, r *http.Request) {
 	aps, err := h.repo.ListPendingApprovals(r.Context(), h.deviceScope(r))
 	if err != nil {
 		writeWFError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	aps = h.redactApprovals(r.Context(), aps)
+	if wantsHTML(r) {
+		h.renderWorkflowApprovals(w, r, aps)
 		return
 	}
 	writeJSONWF(w, http.StatusOK, map[string]any{"approvals": aps})

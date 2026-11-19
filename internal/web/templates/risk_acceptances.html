@@ -1,0 +1,121 @@
+{{define "risk_content"}}
+<div class="space-y-6">
+    <div class="flex items-start justify-between">
+        <div>
+            <h1 class="text-lg font-semibold text-white">Risk Acceptances</h1>
+            <p class="text-[11px] text-slate-500 mt-0.5 max-w-3xl">Accept a CVE and/or package for all devices, a group or a tag set. Campaigns skip accepted findings. <strong>Accepted findings are not hidden:</strong> they stay listed on the <a href="/admin/vulnerabilities" class="text-blue-400 hover:underline">Vulnerabilities</a> page with an "accepted" badge, the reason and the expiry, and they become open again the moment the acceptance expires. Every acceptance needs a reason and an expiry of at most {{.MaxDays}} days.{{if .Scoped}} You only see and manage acceptances within your assigned tags.{{end}}</p>
+        </div>
+        <a href="/admin/campaigns" class="text-xs text-blue-400 hover:underline whitespace-nowrap">&larr; Campaigns</a>
+    </div>
+
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md overflow-x-auto">
+        <div class="px-3 py-2 border-b border-[#1a2234] text-[11px] text-slate-400">{{.ActiveCount}} active, {{len .Rows}} total (expired entries stay listed for the record)</div>
+        <table class="w-full text-xs">
+            <thead>
+                <tr class="text-left text-slate-500 border-b border-[#1a2234]">
+                    <th class="px-3 py-2">Finding</th>
+                    <th class="px-3 py-2">Scope</th>
+                    <th class="px-3 py-2">Reason</th>
+                    <th class="px-3 py-2">Accepted by</th>
+                    <th class="px-3 py-2">Expires</th>
+                    <th class="px-3 py-2">Status</th>
+                    <th class="px-3 py-2"></th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Rows}}
+                <tr class="border-b border-[#131a28] align-top {{if not .Active}}text-slate-500{{end}}">
+                    <td class="px-3 py-2 {{if .Active}}text-white{{else}}line-through{{end}}">
+                        {{if .R.CVEID}}<div><code>{{.R.CVEID}}</code></div>{{end}}
+                        {{if .R.Package}}<div><code>{{.R.Package}}</code></div>{{end}}
+                    </td>
+                    <td class="px-3 py-2 {{if .Active}}text-slate-300{{end}}">{{.ScopeText}}</td>
+                    <td class="px-3 py-2 max-w-sm break-words {{if .Active}}text-slate-300{{end}}">{{.R.Reason}}</td>
+                    <td class="px-3 py-2 {{if .Active}}text-slate-300{{end}}">{{.R.CreatedBy}}<div class="text-[10px] text-slate-500">{{.R.CreatedAt.UTC.Format "2006-01-02"}}</div></td>
+                    <td class="px-3 py-2 whitespace-nowrap {{if .Active}}text-slate-300{{end}}">{{.R.ExpiresAt.UTC.Format "2006-01-02 15:04"}} UTC</td>
+                    <td class="px-3 py-2">{{if .Active}}<span class="px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">active</span>{{else}}<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">expired</span>{{end}}</td>
+                    <td class="px-3 py-2 text-right whitespace-nowrap">
+                        <form method="POST" action="/admin/risk-acceptances/{{.R.ID}}/delete" class="inline" onsubmit="return confirm('Delete this risk acceptance? The finding becomes open again.');">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="text-rose-400 hover:underline">delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {{else}}
+                <tr><td colspan="7" class="px-3 py-4 text-center text-slate-500">No risk acceptances. Every finding is currently open.</td></tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4">
+        <h2 class="text-sm font-semibold text-white mb-2">Accept a risk</h2>
+        {{with index .Errors "_"}}<div role="alert" class="mb-3 rounded border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-300">{{.}}</div>{{end}}
+        {{if .Errors}}<div role="alert" class="mb-3 rounded border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-300">The risk acceptance was not saved. Fix the highlighted fields and submit again.</div>{{end}}
+        <form method="POST" action="/admin/risk-acceptances" class="space-y-3" id="risk-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1" for="r-cve">CVE id (optional if a package is given)</label>
+                    <input id="r-cve" name="cve_id" value="{{.Form.CVEID}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "cve_id"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs font-mono text-white" placeholder="CVE-2024-12345">
+                    {{with index .Errors "cve_id"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1" for="r-pkg">Package (optional if a CVE is given)</label>
+                    <input id="r-pkg" name="package" value="{{.Form.Package}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "package"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs font-mono text-white" placeholder="vim">
+                    {{with index .Errors "package"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1" for="r-kind">Applies to</label>
+                    <select id="r-kind" name="scope_kind" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "scope_kind"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                        {{if not .Scoped}}<option value="all" {{if eq .Form.ScopeKind "all"}}selected{{end}}>all devices</option>{{end}}
+                        <option value="group" {{if eq .Form.ScopeKind "group"}}selected{{end}}>a device group</option>
+                        <option value="tags" {{if eq .Form.ScopeKind "tags"}}selected{{end}}>devices with tags</option>
+                    </select>
+                    {{with index .Errors "scope_kind"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                </div>
+                <div data-kind="group">
+                    <label class="block text-[11px] text-slate-400 mb-1" for="r-group">Group</label>
+                    <select id="r-group" name="group_id" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "group_id"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                        <option value="">Choose a group...</option>
+                        {{$gid := .Form.GroupID}}
+                        {{range .Groups}}<option value="{{.ID}}" {{if eq .ID $gid}}selected{{end}}>{{.Name}}</option>{{end}}
+                    </select>
+                    {{with index .Errors "group_id"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                </div>
+                <div data-kind="tags">
+                    <label class="block text-[11px] text-slate-400 mb-1" for="r-tags">Tags (comma separated)</label>
+                    <input id="r-tags" name="tags" value="{{.Form.Tags}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "tags"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                    {{with index .Errors "tags"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1" for="r-days">Expires in (days, 1-{{.MaxDays}})</label>
+                    <input id="r-days" type="number" required min="1" max="{{.MaxDays}}" name="expiry_days" value="{{.Form.ExpiryDays}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "expiry_days"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                    {{with index .Errors "expiry_days"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                </div>
+            </div>
+            <div>
+                <label class="block text-[11px] text-slate-400 mb-1" for="r-reason">Reason</label>
+                <textarea id="r-reason" name="reason" required rows="2" maxlength="1000" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "reason"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white" placeholder="Why is this risk acceptable, and what compensates for it?">{{.Form.Reason}}</textarea>
+                {{with index .Errors "reason"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+            </div>
+            <button type="submit" class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white">Accept risk</button>
+        </form>
+    </div>
+</div>
+<script>
+(function () {
+    var sel = document.getElementById('r-kind');
+    if (!sel) { return; }
+    function sync() {
+        document.querySelectorAll('#risk-form [data-kind]').forEach(function (el) {
+            el.style.display = el.getAttribute('data-kind') === sel.value ? '' : 'none';
+        });
+    }
+    sel.addEventListener('change', sync);
+    sync();
+})();
+</script>
+{{end}}

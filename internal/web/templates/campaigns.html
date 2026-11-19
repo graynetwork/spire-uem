@@ -1,0 +1,333 @@
+{{define "campaign_state_badge"}}{{if eq . "RUNNING"}}<span class="px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">{{.}}</span>{{else if eq . "DRAFT"}}<span class="px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-300">{{.}}</span>{{else if eq . "PAUSED"}}<span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300">{{.}}</span>{{else if eq . "HALTED"}}<span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300">{{.}}</span>{{else if eq . "COMPLETED"}}<span class="px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300">{{.}}</span>{{else}}<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">{{.}}</span>{{end}}{{end}}
+
+{{define "work_state_badge"}}{{if eq . "SUCCEEDED"}}<span class="px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">{{.}}</span>{{else if eq . "FAILED"}}<span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300">{{.}}</span>{{else if eq . "INTERRUPTED"}}<span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300">{{.}}</span>{{else if eq . "UNSUPPORTED"}}<span class="px-1.5 py-0.5 rounded bg-rose-900/40 text-rose-300">{{.}}</span>{{else if eq . "DISPATCHED"}}<span class="px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300">{{.}}</span>{{else if eq . "PENDING"}}<span class="px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-300">{{.}}</span>{{else}}<span class="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500">{{.}}</span>{{end}}{{end}}
+
+{{define "campaigns_content"}}
+{{if eq .View "detail"}}{{template "campaign_detail" .}}{{else}}{{template "campaign_list" .}}{{end}}
+{{end}}
+
+{{define "campaign_list"}}
+<div class="space-y-6">
+    <div class="flex items-start justify-between">
+        <div>
+            <h1 class="text-lg font-semibold text-white">Patch Campaigns</h1>
+            <p class="text-[11px] text-slate-500 mt-0.5 max-w-3xl">A campaign rolls package upgrades out to a target set of devices in ordered stages and halts automatically when too many devices fail. Create one, review it, then start it from its page.{{if .Scoped}} You only see campaigns and devices within your assigned tags.{{end}}</p>
+        </div>
+        <a href="/admin/risk-acceptances" class="text-xs text-blue-400 hover:underline whitespace-nowrap">Risk acceptances &rarr;</a>
+    </div>
+
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md overflow-x-auto">
+        <table class="w-full text-xs">
+            <thead>
+                <tr class="text-left text-slate-500 border-b border-[#1a2234]">
+                    <th class="px-3 py-2">Name</th>
+                    <th class="px-3 py-2">Target</th>
+                    <th class="px-3 py-2">State</th>
+                    <th class="px-3 py-2">Stage</th>
+                    <th class="px-3 py-2">Progress (devices)</th>
+                    <th class="px-3 py-2">Created</th>
+                    <th class="px-3 py-2">Started</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Rows}}
+                <tr class="border-b border-[#131a28] align-top">
+                    <td class="px-3 py-2"><a href="/admin/campaigns/{{.C.ID}}" class="text-blue-400 hover:underline font-medium">{{.C.Name}}</a>
+                        {{if .C.Description}}<div class="text-[10px] text-slate-500">{{.C.Description}}</div>{{end}}</td>
+                    <td class="px-3 py-2 text-slate-300 max-w-xs break-words">{{.Target}}</td>
+                    <td class="px-3 py-2">{{template "campaign_state_badge" .C.State}}</td>
+                    <td class="px-3 py-2 text-slate-300 whitespace-nowrap">{{.Stage}}</td>
+                    <td class="px-3 py-2 text-slate-300 whitespace-nowrap">
+                        <span title="pending">{{.Progress.Pending}} pending</span> &middot;
+                        <span title="succeeded" class="text-emerald-400">{{.Progress.Succeeded}} ok</span> &middot;
+                        <span title="failed, interrupted or unsupported" class="{{if .Progress.Failed}}text-rose-400{{end}}">{{.Progress.Failed}} failed</span> &middot;
+                        <span title="deferred by the user">{{.Progress.Deferred}} deferred</span>
+                        {{if .Progress.Dispatched}}&middot; <span class="text-blue-300">{{.Progress.Dispatched}} running</span>{{end}}
+                    </td>
+                    <td class="px-3 py-2 text-slate-400 whitespace-nowrap">{{.C.CreatedAt.UTC.Format "2006-01-02 15:04"}}</td>
+                    <td class="px-3 py-2 text-slate-400 whitespace-nowrap">{{if .Progress.StartedAt}}{{.Progress.StartedAt.UTC.Format "2006-01-02 15:04"}}{{else}}<span class="text-slate-600">not started</span>{{end}}</td>
+                </tr>
+                {{else}}
+                <tr><td colspan="7" class="px-3 py-4 text-center text-slate-500">No campaigns yet. Create one below.</td></tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Create campaign -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4" id="new-campaign">
+        <h2 class="text-sm font-semibold text-white mb-1">New campaign</h2>
+        <p class="text-[11px] text-slate-500 mb-3">Times are UTC. A new campaign starts as a draft; nothing is sent to devices until you start it.</p>
+        {{with index .Errors "_"}}<div role="alert" class="mb-3 rounded border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-300">{{.}}</div>{{end}}
+        {{if .Errors}}<div role="alert" class="mb-3 rounded border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-300">The campaign was not created. Fix the highlighted fields and submit again.</div>{{end}}
+        <form method="POST" action="/admin/campaigns" class="space-y-4" id="campaign-form">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1" for="c-name">Name</label>
+                    <input id="c-name" name="name" required maxlength="128" value="{{.Form.Name}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "name"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white" placeholder="e.g. curl security update">
+                    {{with index .Errors "name"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-400 mb-1" for="c-desc">Description</label>
+                    <input id="c-desc" name="description" maxlength="512" value="{{.Form.Description}}" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                </div>
+            </div>
+
+            <fieldset class="border border-[#1a2234] rounded p-3 space-y-3">
+                <legend class="px-1 text-[11px] text-slate-400">Target</legend>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-kind">Select devices by</label>
+                        <select id="c-kind" name="target_kind" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "target_kind"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                            <option value="packages" {{if eq .Form.TargetKind "packages"}}selected{{end}}>Package list</option>
+                            <option value="cve" {{if eq .Form.TargetKind "cve"}}selected{{end}}>CVE list</option>
+                            <option value="group" {{if eq .Form.TargetKind "group"}}selected{{end}}>Device group</option>
+                        </select>
+                        {{with index .Errors "target_kind"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                    </div>
+                    <div class="md:col-span-3" data-kind="packages">
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-packages">Packages (comma, space or newline separated)</label>
+                        <textarea id="c-packages" name="packages" rows="2" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "packages"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs font-mono text-white" placeholder="curl libcurl4">{{.Form.Packages}}</textarea>
+                        {{with index .Errors "packages"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                        <p class="text-[10px] text-slate-500 mt-1">Every device with one of these installed is upgraded to the latest available. A source name such as <code>vim</code> expands to its installed binaries.</p>
+                    </div>
+                    <div class="md:col-span-3" data-kind="cve">
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-cves">CVE ids (comma, space or newline separated)</label>
+                        <textarea id="c-cves" name="cve_ids" rows="2" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "cve_ids"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs font-mono text-white" placeholder="CVE-2024-12345">{{.Form.CVEIDs}}</textarea>
+                        {{with index .Errors "cve_ids"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                        <p class="text-[10px] text-slate-500 mt-1">Devices with the CVE open and a fix available. A CVE with no fix yields no work.</p>
+                    </div>
+                    <div class="md:col-span-3" data-kind="group">
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-group">Group</label>
+                        <select id="c-group" name="group_id" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "group_id"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                            <option value="">Choose a group...</option>
+                            {{$gid := .Form.GroupID}}
+                            {{range .Groups}}<option value="{{.ID}}" {{if eq .ID $gid}}selected{{end}}>{{.Name}}</option>{{end}}
+                        </select>
+                        {{with index .Errors "group_id"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                    </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-tags">Only devices with tags (optional)</label>
+                        <input id="c-tags" name="target_tags" value="{{.Form.TargetTags}}" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white" placeholder="eng, linux">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-ring">Only patch ring (optional)</label>
+                        <select id="c-ring" name="target_ring" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                            <option value="">Any ring</option>
+                            {{$ring := .Form.TargetRing}}
+                            {{range $r := $.Rings}}<option value="{{$r}}" {{if eq $r $ring}}selected{{end}}>{{$r}}</option>{{end}}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-excl">Exclude packages (optional)</label>
+                        <input id="c-excl" name="package_exclusions" value="{{.Form.PackageExclusions}}" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs font-mono text-white" placeholder="linux-image-generic">
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset class="border border-[#1a2234] rounded p-3">
+                <legend class="px-1 text-[11px] text-slate-400">Stages</legend>
+                <p class="text-[10px] text-slate-500 mb-2">A stage named CANARY, PILOT or PRODUCTION only reaches devices in that patch ring. A stage passes when its success threshold holds for the soak time; the whole campaign halts if failures exceed the halt percentage or count (0 disables a trigger).</p>
+                {{with index .Errors "stages"}}<p class="text-[11px] text-rose-400 mb-2">{{.}}</p>{{end}}
+                <table class="w-full text-xs">
+                    <thead><tr class="text-left text-slate-500">
+                        <th class="py-1 pr-2">Use</th><th class="py-1 pr-2">Stage</th><th class="py-1 pr-2">Min devices</th><th class="py-1 pr-2">Success %</th><th class="py-1 pr-2">Soak (min)</th><th class="py-1 pr-2">Halt at fail %</th><th class="py-1 pr-2">Halt at fail count</th><th class="py-1">Promotion</th>
+                    </tr></thead>
+                    <tbody>
+                    {{range .Form.Stages}}
+                    <tr>
+                        <td class="py-1 pr-2"><input type="checkbox" name="stage_{{.Index}}_enabled" value="1" {{if .Enabled}}checked{{end}} aria-label="Use stage {{.Name}}"></td>
+                        <td class="py-1 pr-2"><input type="hidden" name="stage_{{.Index}}_name" value="{{.Name}}"><span class="text-white font-medium">{{.Name}}</span></td>
+                        <td class="py-1 pr-2"><input type="number" min="0" name="stage_{{.Index}}_min_devices" value="{{.MinDevices}}" class="w-20 rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white"></td>
+                        <td class="py-1 pr-2"><input type="number" min="0" max="100" name="stage_{{.Index}}_success_pct" value="{{.SuccessPct}}" class="w-20 rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white"></td>
+                        <td class="py-1 pr-2"><input type="number" min="0" name="stage_{{.Index}}_soak_minutes" value="{{.SoakMin}}" class="w-24 rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white"></td>
+                        <td class="py-1 pr-2"><input type="number" min="0" max="100" name="stage_{{.Index}}_halt_pct" value="{{.HaltPct}}" class="w-20 rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white"></td>
+                        <td class="py-1 pr-2"><input type="number" min="0" name="stage_{{.Index}}_halt_count" value="{{.HaltCount}}" class="w-20 rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white"></td>
+                        <td class="py-1">
+                            <select name="stage_{{.Index}}_promotion" class="rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                                <option value="auto" {{if eq .Promotion "auto"}}selected{{end}}>automatic</option>
+                                <option value="manual" {{if eq .Promotion "manual"}}selected{{end}}>manual</option>
+                            </select>
+                        </td>
+                    </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+            </fieldset>
+
+            <fieldset class="border border-[#1a2234] rounded p-3">
+                <legend class="px-1 text-[11px] text-slate-400">Schedule and reboots</legend>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-reboot">Reboot policy</label>
+                        <select id="c-reboot" name="reboot_policy" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                            <option value="never" {{if eq .Form.RebootPolicy "never"}}selected{{end}}>never reboot</option>
+                            <option value="notify" {{if eq .Form.RebootPolicy "notify"}}selected{{end}}>notify the user</option>
+                            <option value="force" {{if eq .Form.RebootPolicy "force"}}selected{{end}}>force at the deadline</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-defer">Deferral limit per device</label>
+                        <input id="c-defer" type="number" min="0" name="max_deferrals" value="{{.Form.MaxDeferrals}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "max_deferrals"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                        {{with index .Errors "max_deferrals"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-deadline">Deadline, UTC (optional; installs cannot be deferred after it)</label>
+                        <input id="c-deadline" type="datetime-local" name="deadline_at" value="{{.Form.DeadlineAt}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "deadline_at"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                        {{with index .Errors "deadline_at"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                    </div>
+                    <div class="md:col-span-2">
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-bcron">Blackout window, 5-field cron in UTC (optional)</label>
+                        <input id="c-bcron" name="blackout_cron" value="{{.Form.BlackoutCron}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "blackout_cron"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs font-mono text-white" placeholder="0 8 * * 1-5">
+                        {{with index .Errors "blackout_cron"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                        <p class="text-[10px] text-slate-500 mt-1">Nothing is sent to devices while a blackout is open. Example: <code>0 8 * * 1-5</code> with 480 minutes blocks weekdays 08:00-16:00.</p>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] text-slate-400 mb-1" for="c-bdur">Blackout length (minutes)</label>
+                        <input id="c-bdur" type="number" min="0" name="blackout_duration_minutes" value="{{.Form.BlackoutDuration}}" class="w-full rounded bg-[#0a0e17] border {{if index .Errors "blackout_duration_minutes"}}border-rose-600{{else}}border-[#1a2234]{{end}} px-2 py-1 text-xs text-white">
+                        {{with index .Errors "blackout_duration_minutes"}}<p class="text-[11px] text-rose-400 mt-1">{{.}}</p>{{end}}
+                    </div>
+                    <div class="flex items-end">
+                        <label class="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" name="respect_maintenance_window" value="1" {{if .Form.RespectMaintenanceWindow}}checked{{end}}> Only inside each device's maintenance window</label>
+                    </div>
+                </div>
+            </fieldset>
+
+            <div class="flex items-center gap-2">
+                <button type="submit" class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white">Create campaign (draft)</button>
+            </div>
+        </form>
+    </div>
+</div>
+<script>
+(function () {
+    var sel = document.getElementById('c-kind');
+    if (!sel) { return; }
+    function sync() {
+        document.querySelectorAll('#campaign-form [data-kind]').forEach(function (el) {
+            el.style.display = el.getAttribute('data-kind') === sel.value ? '' : 'none';
+        });
+    }
+    sel.addEventListener('change', sync);
+    sync();
+})();
+</script>
+{{end}}
+
+{{define "campaign_detail"}}
+{{$c := .Campaign}}
+<div class="space-y-6">
+    <div class="flex items-start justify-between gap-4">
+        <div>
+            <a href="/admin/campaigns" class="text-[11px] text-blue-400 hover:underline">&larr; All campaigns</a>
+            <h1 class="text-lg font-semibold text-white mt-1">{{$c.Name}} {{template "campaign_state_badge" $c.State}}</h1>
+            {{if $c.Description}}<p class="text-xs text-slate-400 mt-0.5">{{$c.Description}}</p>{{end}}
+            <p class="text-[11px] text-slate-500 mt-1">{{.Target}} &middot; created {{$c.CreatedAt.UTC.Format "2006-01-02 15:04"}} UTC by {{$c.CreatedBy}}{{if .Progress.StartedAt}} &middot; started {{.Progress.StartedAt.UTC.Format "2006-01-02 15:04"}} UTC{{end}}</p>
+        </div>
+        <div class="flex items-center gap-2 flex-wrap justify-end">
+            {{range .Actions}}
+            <form method="POST" action="/admin/campaigns/{{$c.ID}}/{{.}}" {{if eq . "cancel"}}onsubmit="return confirm('Cancel this campaign? Cancelling is final.');"{{end}}>
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <button type="submit" class="px-3 py-1.5 rounded text-xs font-medium text-white {{if eq . "cancel"}}bg-rose-700 hover:bg-rose-600{{else if eq . "pause"}}bg-amber-700 hover:bg-amber-600{{else}}bg-blue-600 hover:bg-blue-500{{end}}">{{if eq . "start"}}Start{{else if eq . "pause"}}Pause{{else if eq . "resume"}}Resume{{else}}Cancel{{end}}</button>
+            </form>
+            {{end}}
+            <a href="/admin/campaigns/{{$c.ID}}/export?format=csv" class="px-3 py-1.5 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600 text-white">Export CSV</a>
+            <a href="/admin/campaigns/{{$c.ID}}/export?format=json" class="px-3 py-1.5 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600 text-white">Export JSON</a>
+        </div>
+    </div>
+
+    {{if .Flash}}<div role="alert" class="rounded border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-300">{{.Flash}}</div>{{end}}
+    {{if and (eq $c.State "HALTED") $c.HaltedReason}}<div role="alert" class="rounded border border-rose-800 bg-rose-950/40 px-3 py-2 text-xs text-rose-300"><strong>Halted:</strong> {{$c.HaltedReason}} <span class="text-rose-400/70">Fix the cause, then Resume: failed devices in the current stage are queued again.</span></div>{{end}}
+
+    <!-- Stage timeline -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4">
+        <h2 class="text-sm font-semibold text-white mb-3">Stages</h2>
+        <ol class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {{range $i, $s := .Stages}}
+            <li class="rounded border p-3 {{if eq $s.Status "active"}}border-blue-600 bg-blue-950/20{{else if eq $s.Status "halted"}}border-rose-700 bg-rose-950/20{{else if eq $s.Status "done"}}border-emerald-800 bg-emerald-950/10{{else}}border-[#1a2234]{{end}}">
+                <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold text-white">{{add1 $i}}. {{$s.Stage.Name}}</span>
+                    <span class="text-[10px] uppercase tracking-wide {{if eq $s.Status "done"}}text-emerald-400{{else if eq $s.Status "active"}}text-blue-300{{else if eq $s.Status "halted"}}text-rose-400{{else}}text-slate-500{{end}}">{{if eq $s.Status "next"}}ready{{else}}{{$s.Status}}{{end}}</span>
+                </div>
+                <div class="mt-2 text-[11px] text-slate-300 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span>{{$s.Counts.Total}} device(s)</span>
+                    <span>{{$s.Counts.Pending}} pending</span>
+                    {{if $s.Counts.Dispatched}}<span class="text-blue-300">{{$s.Counts.Dispatched}} running</span>{{end}}
+                    <span class="text-emerald-400">{{$s.Counts.Succeeded}} ok</span>
+                    <span class="{{if $s.Counts.Failed}}text-rose-400{{end}}">{{$s.Counts.Failed}} failed</span>
+                </div>
+                <div class="mt-2 text-[10px] text-slate-500">pass at {{$s.Stage.SuccessThresholdPct}}% after {{$s.Stage.MinDevices}}+ results, soak {{$s.Stage.SoakMinutes}} min; halt at {{$s.Stage.FailureHaltPct}}%{{if $s.Stage.FailureHaltCount}} or {{$s.Stage.FailureHaltCount}} failures{{end}}; promotion {{$s.Stage.Promotion}}</div>
+                {{if and (eq $s.Status "halted") $c.HaltedReason}}<div class="mt-2 text-[11px] text-rose-300">{{$c.HaltedReason}}</div>{{end}}
+            </li>
+            {{end}}
+        </ol>
+        <div class="mt-3 text-[11px] text-slate-500">
+            Reboot: {{$c.RebootPolicy}} &middot; deferral limit {{$c.MaxDeferrals}}{{if $c.DeadlineAt}} &middot; deadline {{$c.DeadlineAt.UTC.Format "2006-01-02 15:04"}} UTC{{end}}{{if $c.BlackoutCron}} &middot; blackout <code>{{$c.BlackoutCron}}</code> for {{$c.BlackoutDurationMinutes}} min{{end}}{{if $c.RespectMaintenanceWindow}} &middot; maintenance windows respected{{end}}{{if $c.PackageExclusions}} &middot; excluded: {{joinTags $c.PackageExclusions}}{{end}}
+        </div>
+        {{if .FailureClasses}}<div class="mt-2 text-[11px] text-slate-400">Failure classes: {{range .FailureClasses}}<span class="mr-2"><code>{{.Class}}</code> &times;{{.Count}}</span>{{end}}</div>{{end}}
+    </div>
+
+    <!-- Per-device results -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md">
+        <div class="px-3 py-2 border-b border-[#1a2234] flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-white">Devices ({{.WorkTotal}})</h2>
+            {{if .Truncated}}<span class="text-[11px] text-amber-300">Showing the first {{len .Work}}. Use the export for every row.</span>{{end}}
+        </div>
+        <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+            <thead>
+                <tr class="text-left text-slate-500 border-b border-[#1a2234]">
+                    <th class="px-3 py-2">Device</th>
+                    <th class="px-3 py-2">Stage</th>
+                    <th class="px-3 py-2">Status</th>
+                    <th class="px-3 py-2">Failure class</th>
+                    <th class="px-3 py-2">Packages (before &rarr; after)</th>
+                    <th class="px-3 py-2">Deferrals</th>
+                    <th class="px-3 py-2">Updated</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Work}}
+                <tr class="border-b border-[#131a28] align-top">
+                    <td class="px-3 py-2 text-white">{{.Row.Hostname}}{{if .Row.RebootRequired}} <span class="px-1 rounded bg-amber-900/40 text-amber-300 text-[10px]">reboot needed</span>{{end}}</td>
+                    <td class="px-3 py-2 text-slate-300">{{add1 .Row.Stage}}</td>
+                    <td class="px-3 py-2">{{template "work_state_badge" .Row.State}}</td>
+                    <td class="px-3 py-2 text-slate-300">{{if .Row.FailureClass}}<code>{{.Row.FailureClass}}</code>{{else}}<span class="text-slate-600">-</span>{{end}}</td>
+                    <td class="px-3 py-2 text-slate-300">
+                        {{if .Packages}}
+                            {{range .Packages}}
+                            <details class="mb-1">
+                                <summary class="cursor-pointer"><code>{{.Package}}</code> <span class="text-slate-500">{{.State}}</span>
+                                    {{if or .FromVersion .ToVersion}}<span class="font-mono text-[11px]">{{if .FromVersion}}{{.FromVersion}}{{else}}?{{end}} &rarr; {{if .ToVersion}}{{.ToVersion}}{{else}}?{{end}}</span>{{end}}</summary>
+                                {{if .Output}}<pre class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-[#0a0e17] border border-[#1a2234] p-2 text-[10px] text-slate-300" title="Output reported by the device (untrusted)">{{.Output}}</pre>{{else}}<div class="text-[10px] text-slate-600 mt-1">No output reported.</div>{{end}}
+                            </details>
+                            {{end}}
+                        {{else}}
+                            {{range .Row.Work}}<div><code>{{.Package}}</code> <span class="text-slate-500">planned: {{.Target}}</span></div>{{else}}<span class="text-slate-600">no work</span>{{end}}
+                        {{end}}
+                    </td>
+                    <td class="px-3 py-2 text-slate-400">{{.Row.DeferralsUsed}}</td>
+                    <td class="px-3 py-2 text-slate-400 whitespace-nowrap">{{.Row.UpdatedAt.UTC.Format "2006-01-02 15:04"}}</td>
+                </tr>
+                {{else}}
+                <tr><td colspan="7" class="px-3 py-4 text-center text-slate-500">No device work yet. Work is created at each device's next check-in once the campaign is running.</td></tr>
+                {{end}}
+            </tbody>
+        </table>
+        </div>
+    </div>
+
+    <!-- Events -->
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4">
+        <h2 class="text-sm font-semibold text-white mb-2">History</h2>
+        <ul class="text-[11px] text-slate-300 space-y-1">
+            {{range .Events}}<li><span class="text-slate-500">{{.CreatedAt.UTC.Format "2006-01-02 15:04:05"}}</span> <strong>{{.Kind}}</strong>{{if .Actor}} by {{.Actor}}{{end}}{{if .Detail}} &mdash; {{.Detail}}{{end}}</li>
+            {{else}}<li class="text-slate-500">No events yet.</li>{{end}}
+        </ul>
+    </div>
+</div>
+{{end}}

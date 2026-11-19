@@ -131,6 +131,12 @@ type WorkflowRunView struct {
 	CreatedAt       time.Time
 	FinishedAt      *time.Time
 	Actions         []WorkflowRunActionView
+
+	// UI-only context, never part of the JSON API output. DeviceHostname and EventFields are
+	// device-originated text and must be rendered escaped.
+	DeviceHostname string          `json:"-"`
+	EventID        *int64          `json:"-"`
+	EventFields    json.RawMessage `json:"-"`
 }
 
 // WorkflowRunActionView is one action-result row.
@@ -142,35 +148,10 @@ type WorkflowRunActionView struct {
 	Detail     string
 }
 
-// ListWorkflowRuns returns recent runs, newest first, optionally filtered by workflow id.
+// ListWorkflowRuns returns recent runs, newest first, optionally filtered by workflow id. It is
+// unscoped: web handlers must use ListWorkflowRunsScoped.
 func (r *Repository) ListWorkflowRuns(ctx context.Context, workflowID string, limit int) ([]WorkflowRunView, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	var rows pgx.Rows
-	var err error
-	base := `SELECT id, workflow_name, workflow_version, COALESCE(device_id::text,''), trigger,
-	                condition_result, branch, status, dry_run, detail, created_at, finished_at
-	         FROM workflow_runs `
-	if strings.TrimSpace(workflowID) != "" {
-		rows, err = r.pool.Query(ctx, base+`WHERE workflow_id=$1 ORDER BY created_at DESC LIMIT $2`, workflowID, limit)
-	} else {
-		rows, err = r.pool.Query(ctx, base+`ORDER BY created_at DESC LIMIT $1`, limit)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list workflow runs: %w", err)
-	}
-	defer rows.Close()
-	var out []WorkflowRunView
-	for rows.Next() {
-		var v WorkflowRunView
-		if err := rows.Scan(&v.ID, &v.WorkflowName, &v.WorkflowVersion, &v.DeviceID, &v.Trigger,
-			&v.ConditionResult, &v.Branch, &v.Status, &v.DryRun, &v.Detail, &v.CreatedAt, &v.FinishedAt); err != nil {
-			return nil, fmt.Errorf("scan run: %w", err)
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
+	return r.ListWorkflowRunsScoped(ctx, Unscoped, workflowID, limit)
 }
 
 // GetWorkflowRun returns one run with its action results.

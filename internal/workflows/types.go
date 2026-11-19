@@ -47,8 +47,54 @@ var AllEventKinds = []EventKind{
 	EventActiveSessionChange, EventPrimaryAddrChange,
 }
 
+// Valid reports whether k is an event a WORKFLOW may trigger on. Webhook-only kinds (below)
+// are deliberately not valid workflow triggers.
 func (k EventKind) Valid() bool {
 	for _, x := range AllEventKinds {
+		if x == k {
+			return true
+		}
+	}
+	return false
+}
+
+// Webhook-only event kinds. They describe administrative changes (policy edits, campaign
+// lifecycle, destructive device actions) that outbound event webhooks report to SIEM and
+// automation consumers. They are NOT workflow triggers: a workflow reacting to an admin's
+// own action, or to a campaign it started, invites loops and surprise automation, and the
+// workflow builder has no device context for the device-less ones. EmitEvent therefore
+// never writes them to workflow_events, trigger validation rejects them, and the engine
+// ignores any that appear there anyway.
+const (
+	EventPolicyCreated        EventKind = "policy_created"          // fields: policy_id, name, policy_type
+	EventPolicyUpdated        EventKind = "policy_updated"          // fields: policy_id, name, change
+	EventPolicyToggled        EventKind = "policy_toggled"          // fields: policy_id, name, is_active
+	EventPolicyDeleted        EventKind = "policy_deleted"          // fields: policy_id, name
+	EventCampaignStarted      EventKind = "campaign_started"        // fields: campaign_id, name, actor
+	EventCampaignStagePromoted EventKind = "campaign_stage_promoted" // fields: campaign_id, name, detail, stage
+	EventCampaignHalted       EventKind = "campaign_halted"         // fields: campaign_id, name, reason, stage
+	EventCampaignCompleted    EventKind = "campaign_completed"      // fields: campaign_id, name
+	EventCampaignCancelled    EventKind = "campaign_cancelled"      // fields: campaign_id, name, actor
+	EventDeviceRevoked        EventKind = "device_revoked"          // fields: hostname
+	EventDeviceMarkedLost     EventKind = "device_marked_lost"      // fields: marked_by
+	EventDeviceWiped          EventKind = "device_wiped"            // fields: request_id, status
+)
+
+// WebhookOnlyKinds lists the kinds above.
+var WebhookOnlyKinds = []EventKind{
+	EventPolicyCreated, EventPolicyUpdated, EventPolicyToggled, EventPolicyDeleted,
+	EventCampaignStarted, EventCampaignStagePromoted, EventCampaignHalted,
+	EventCampaignCompleted, EventCampaignCancelled,
+	EventDeviceRevoked, EventDeviceMarkedLost, EventDeviceWiped,
+}
+
+// WebhookKind reports whether k may be delivered through an event webhook: every workflow
+// kind plus the webhook-only kinds.
+func (k EventKind) WebhookKind() bool {
+	if k.Valid() {
+		return true
+	}
+	for _, x := range WebhookOnlyKinds {
 		if x == k {
 			return true
 		}
