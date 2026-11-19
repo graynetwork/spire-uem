@@ -38,48 +38,67 @@ func (h *Handler) auditCampaign(r *http.Request, action, target string, details 
 
 // campaignCreateInput is the JSON body for creating a campaign.
 type campaignCreateInput struct {
-	Name                     string            `json:"name"`
-	Description              string            `json:"description"`
-	TargetKind               string            `json:"target_kind"`
-	GroupID                  string            `json:"group_id"`
-	CVEIDs                   []string          `json:"cve_ids"`
-	Packages                 []string          `json:"packages"`
-	TargetTags               []string          `json:"target_tags"`
-	TargetRing               string            `json:"target_ring"`
-	Stages                   []campaign.Stage  `json:"stages"`
-	RebootPolicy             string            `json:"reboot_policy"`
-	MaxDeferrals             int               `json:"max_deferrals"`
-	DeadlineAt               *time.Time        `json:"deadline_at"`
-	BlackoutCron             string            `json:"blackout_cron"`
-	BlackoutDurationMinutes  int               `json:"blackout_duration_minutes"`
-	RespectMaintenanceWindow bool              `json:"respect_maintenance_window"`
-	PackageExclusions        []string          `json:"package_exclusions"`
+	Name                     string           `json:"name"`
+	Description              string           `json:"description"`
+	TargetKind               string           `json:"target_kind"`
+	GroupID                  string           `json:"group_id"`
+	CVEIDs                   []string         `json:"cve_ids"`
+	Packages                 []string         `json:"packages"`
+	TargetTags               []string         `json:"target_tags"`
+	TargetRing               string           `json:"target_ring"`
+	Stages                   []campaign.Stage `json:"stages"`
+	RebootPolicy             string           `json:"reboot_policy"`
+	MaxDeferrals             int              `json:"max_deferrals"`
+	DeadlineAt               *time.Time       `json:"deadline_at"`
+	BlackoutCron             string           `json:"blackout_cron"`
+	BlackoutDurationMinutes  int              `json:"blackout_duration_minutes"`
+	RespectMaintenanceWindow bool             `json:"respect_maintenance_window"`
+	PackageExclusions        []string         `json:"package_exclusions"`
 }
 
-// CreateCampaign handles POST /admin/campaigns. SECURITY_ADMIN+ (enforced by the router). A
-// tag-scoped admin's campaign is stamped with their scope; packages/versions are validated.
-func (h *Handler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
-	var in campaignCreateInput
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
+// campaignFieldError is a validation failure that names the offending input, so the HTML
+// form can show it next to that field. The JSON API only uses Msg and Status.
+type campaignFieldError struct {
+	Field  string
+	Msg    string
+	Status int
+}
+
+// buildCampaign validates a create request and returns the campaign to store. It is the single
+// validation path for both the JSON API and the HTML form.
+func (h *Handler) buildCampaign(r *http.Request, in campaignCreateInput) (*campaign.Campaign, *campaignFieldError) {
+	bad := func(field, msg string) (*campaign.Campaign, *campaignFieldError) {
+		return nil, &campaignFieldError{Field: field, Msg: msg, Status: http.StatusBadRequest}
 	}
 	if strings.TrimSpace(in.Name) == "" {
-		http.Error(w, "name is required", http.StatusBadRequest)
-		return
+		return bad("name", "name is required")
 	}
 	kind := campaign.TargetKind(strings.ToLower(strings.TrimSpace(in.TargetKind)))
 	switch kind {
 	case campaign.TargetGroup, campaign.TargetCVE, campaign.TargetPackages:
 	default:
-		http.Error(w, "target_kind must be group, cve, or packages", http.StatusBadRequest)
-		return
+		return bad("target_kind", "target_kind must be group, cve, or packages")
+	}
+	// A group target must exist, and a tag-scoped admin may only use a group they could edit,
+	// the same rule policy targeting applies (policy_scope.go). Dispatch also intersects the
+	// target with the creator's tags, but refusing here keeps the stored definition honest.
+	if kind == campaign.TargetGroup {
+		gid := strings.TrimSpace(in.GroupID)
+		if gid == "" {
+			return bad("group_id", "group_id is required for a group target")
+		}
+		g, err := h.repo.GetGroupByID(r.Context(), gid)
+		if err != nil || g == nil {
+			return bad("group_id", "unknown target group")
+		}
+		if !GroupEditAllowed(AdminUserObjFromContext(r.Context()), g) {
+			return nil, &campaignFieldError{Field: "group_id", Msg: fmt.Sprintf("group %q is outside your tag scope", g.Name), Status: http.StatusForbidden}
+		}
 	}
 	// Validate explicit package names up front so an invalid spec never reaches a device.
 	for _, p := range in.Packages {
 		if !campaign.ValidPackageName(strings.TrimSpace(p)) {
-			http.Error(w, "invalid package name: "+p, http.StatusBadRequest)
-			return
+			return bad("packages", "invalid package name: "+p)
 		}
 	}
 	stages := in.Stages
@@ -87,8 +106,12 @@ func (h *Handler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 		stages = campaign.DefaultStages()
 	}
 	if err := validateStages(stages); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return bad("stages", err.Error())
+	}
+	// A malformed blackout expression is treated by the dispatcher as "always blacked out",
+	// which would silently stop the campaign, so refuse it up front.
+	if c := strings.TrimSpace(in.BlackoutCron); c != "" && len(strings.Fields(c)) != 5 {
+		return bad("blackout_cron", "blackout_cron must be a 5-field cron expression (min hour day month weekday)")
 	}
 	rp := campaign.RebootPolicy(strings.ToLower(strings.TrimSpace(in.RebootPolicy)))
 	switch rp {
@@ -100,7 +123,7 @@ func (h *Handler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 	if maxDef < 0 {
 		maxDef = 0
 	}
-	c := &campaign.Campaign{
+	return &campaign.Campaign{
 		Name:                     strings.TrimSpace(in.Name),
 		Description:              strings.TrimSpace(in.Description),
 		TargetKind:               kind,
@@ -119,13 +142,34 @@ func (h *Handler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 		PackageExclusions:        in.PackageExclusions,
 		CreatorScopedTags:        h.creatorScopedTags(r),
 		CreatedBy:                AdminUserFromContext(r.Context()),
+	}, nil
+}
+
+// CreateCampaign handles POST /admin/campaigns. SECURITY_ADMIN+ (enforced by the router). A
+// tag-scoped admin's campaign is stamped with their scope; packages/versions are validated.
+// A browser form post (application/x-www-form-urlencoded) is handled by createCampaignForm;
+// everything else is the JSON API.
+func (h *Handler) CreateCampaign(w http.ResponseWriter, r *http.Request) {
+	if isFormPost(r) {
+		h.createCampaignForm(w, r)
+		return
+	}
+	var in campaignCreateInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	c, ferr := h.buildCampaign(r, in)
+	if ferr != nil {
+		http.Error(w, ferr.Msg, ferr.Status)
+		return
 	}
 	created, err := h.repo.CreateCampaign(r.Context(), c)
 	if err != nil {
 		http.Error(w, "failed to create campaign", http.StatusInternalServerError)
 		return
 	}
-	h.auditCampaign(r, "CAMPAIGN_CREATE", created.ID, map[string]any{"name": created.Name, "target_kind": string(kind)})
+	h.auditCampaign(r, "CAMPAIGN_CREATE", created.ID, map[string]any{"name": created.Name, "target_kind": string(created.TargetKind)})
 	writeCampaignJSON(w, http.StatusCreated, created)
 }
 
@@ -150,6 +194,10 @@ func validateStages(stages []campaign.Stage) error {
 
 // ListCampaigns handles GET /admin/campaigns (JSON), scoped to the admin's tags.
 func (h *Handler) ListCampaigns(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		h.renderCampaignListForm(w, r, http.StatusOK, nil, nil)
+		return
+	}
 	list, err := h.repo.ListCampaigns(r.Context(), h.deviceScope(r))
 	if err != nil {
 		http.Error(w, "failed to list campaigns", http.StatusInternalServerError)
@@ -174,55 +222,30 @@ func (h *Handler) getScopedCampaign(w http.ResponseWriter, r *http.Request, id s
 
 // GetCampaign handles GET /admin/campaigns/{id} (JSON) with its work rows and report.
 func (h *Handler) GetCampaign(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		h.renderCampaignDetail(w, r, http.StatusOK, "")
+		return
+	}
 	c, ok := h.getScopedCampaign(w, r, chi.URLParam(r, "id"))
 	if !ok {
 		return
 	}
 	work, _ := h.repo.ListCampaignWork(r.Context(), c.ID, h.deviceScope(r))
-	report, _ := h.repo.CampaignReport(r.Context(), c.ID)
+	report, _ := h.repo.CampaignReport(r.Context(), c.ID, h.deviceScope(r))
 	events, _ := h.repo.ListCampaignEvents(r.Context(), c.ID, 100)
 	writeCampaignJSON(w, http.StatusOK, map[string]any{
 		"campaign": c, "work": work, "report": report, "events": events,
 	})
 }
 
-// campaignControl handles pause/resume/cancel/promote via a shared path.
-func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action string) {
-	c, ok := h.getScopedCampaign(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
+// applyCampaignControl runs one lifecycle action against an already-loaded, in-scope campaign.
+// It returns the new state, or an HTTP status and message when the action is refused. The state
+// machine lives in campaign.ControlTransition, shared with the admin page.
+func (h *Handler) applyCampaignControl(r *http.Request, c *campaign.Campaign, action string) (campaign.CampaignState, int, string) {
 	actor := AdminUserFromContext(r.Context())
-	var newState campaign.CampaignState
-	switch action {
-	case "start":
-		if c.State != campaign.StateDraft && c.State != campaign.StatePaused {
-			http.Error(w, "campaign cannot be started from "+string(c.State), http.StatusBadRequest)
-			return
-		}
-		newState = campaign.StateRunning
-	case "pause":
-		if c.State != campaign.StateRunning {
-			http.Error(w, "only a running campaign can be paused", http.StatusBadRequest)
-			return
-		}
-		newState = campaign.StatePaused
-	case "resume":
-		// Resume clears a halt as well as a pause. It never revives a finished campaign.
-		if c.State != campaign.StatePaused && c.State != campaign.StateHalted {
-			http.Error(w, "campaign cannot be resumed from "+string(c.State), http.StatusBadRequest)
-			return
-		}
-		newState = campaign.StateRunning
-	case "cancel":
-		if c.State == campaign.StateCompleted || c.State == campaign.StateCancelled {
-			http.Error(w, "campaign is already "+string(c.State), http.StatusBadRequest)
-			return
-		}
-		newState = campaign.StateCancelled
-	default:
-		http.Error(w, "unknown action", http.StatusBadRequest)
-		return
+	newState, refusal := campaign.ControlTransition(action, c.State)
+	if refusal != "" {
+		return "", http.StatusBadRequest, refusal
 	}
 	detail := ""
 	if action == "resume" && c.State == campaign.StateHalted {
@@ -234,25 +257,64 @@ func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action
 		// RUNNING with the stale failures still counted.
 		n, err := h.repo.RetryFailedCampaignWork(r.Context(), c.ID, c.CurrentStage)
 		if err != nil {
-			http.Error(w, "failed to re-queue failed devices; campaign left halted", http.StatusInternalServerError)
-			return
+			return "", http.StatusInternalServerError, "failed to re-queue failed devices; campaign left halted"
 		}
 		detail = fmt.Sprintf("re-queued %d failed or interrupted device(s)", n)
 	}
 	if err := h.repo.SetCampaignState(r.Context(), c.ID, newState); err != nil {
-		http.Error(w, "failed to update campaign", http.StatusInternalServerError)
-		return
+		return "", http.StatusInternalServerError, "failed to update campaign"
 	}
 	_ = h.repo.RecordCampaignEvent(r.Context(), c.ID, action, actor, detail, c.CurrentStage)
 	h.auditCampaign(r, "CAMPAIGN_"+strings.ToUpper(action), c.ID, map[string]any{"from": string(c.State), "to": string(newState)})
+	return newState, http.StatusOK, ""
+}
+
+// controlCampaign handles start/pause/resume/cancel via a shared path. A browser form post
+// (Accept: text/html) is answered with a redirect back to the campaign page, or with that page
+// carrying the refusal; API clients get JSON / plain-text errors exactly as before.
+func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action string) {
+	if wantsHTML(r) {
+		c, err := h.repo.GetCampaign(r.Context(), chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "failed to load campaign", http.StatusInternalServerError)
+			return
+		}
+		if c == nil || !db.CampaignVisibleToScope(c, h.deviceScope(r)) {
+			http.Error(w, "campaign not found", http.StatusNotFound)
+			return
+		}
+		if _, code, msg := h.applyCampaignControl(r, c, action); msg != "" {
+			h.renderCampaignDetail(w, r, code, msg)
+			return
+		}
+		http.Redirect(w, r, "/admin/campaigns/"+c.ID, http.StatusSeeOther)
+		return
+	}
+	c, ok := h.getScopedCampaign(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	newState, code, msg := h.applyCampaignControl(r, c, action)
+	if msg != "" {
+		http.Error(w, msg, code)
+		return
+	}
 	writeCampaignJSON(w, http.StatusOK, map[string]any{"id": c.ID, "state": string(newState)})
 }
 
 // StartCampaign, PauseCampaign, ResumeCampaign, CancelCampaign are the control endpoints.
-func (h *Handler) StartCampaign(w http.ResponseWriter, r *http.Request)  { h.controlCampaign(w, r, "start") }
-func (h *Handler) PauseCampaign(w http.ResponseWriter, r *http.Request)  { h.controlCampaign(w, r, "pause") }
-func (h *Handler) ResumeCampaign(w http.ResponseWriter, r *http.Request) { h.controlCampaign(w, r, "resume") }
-func (h *Handler) CancelCampaign(w http.ResponseWriter, r *http.Request) { h.controlCampaign(w, r, "cancel") }
+func (h *Handler) StartCampaign(w http.ResponseWriter, r *http.Request) {
+	h.controlCampaign(w, r, "start")
+}
+func (h *Handler) PauseCampaign(w http.ResponseWriter, r *http.Request) {
+	h.controlCampaign(w, r, "pause")
+}
+func (h *Handler) ResumeCampaign(w http.ResponseWriter, r *http.Request) {
+	h.controlCampaign(w, r, "resume")
+}
+func (h *Handler) CancelCampaign(w http.ResponseWriter, r *http.Request) {
+	h.controlCampaign(w, r, "cancel")
+}
 
 // ExportCampaign handles GET /admin/campaigns/{id}/export?format=csv|json, scoped.
 func (h *Handler) ExportCampaign(w http.ResponseWriter, r *http.Request) {

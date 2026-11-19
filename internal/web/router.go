@@ -249,7 +249,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Delete("/sensors/{id}", h.DeleteSensor)
 			r.Post("/sensors/{id}/delete", h.DeleteSensor)
 
-			// Patch campaigns (SECURITY_ADMIN+, tag-scope aware). JSON API.
+			// Patch campaigns (SECURITY_ADMIN+, tag-scope aware). JSON API; the GET routes and the
+			// control/create POSTs also serve the admin pages when the client sends Accept: text/html.
 			r.Get("/campaigns", h.ListCampaigns)
 			r.Post("/campaigns", h.CreateCampaign)
 			r.Get("/campaigns/{id}", h.GetCampaign)
