@@ -139,6 +139,10 @@
                         <a href="/admin/webhooks" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "webhooks"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "webhooks"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                             <span>Webhooks</span>
+                        <a href="/admin/radius" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "radius"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "radius"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
+                            <span>RADIUS / NAC</span>
+                        </a>
                         <a href="/admin/service-accounts" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "service_accounts"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "service_accounts"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
                             <span>API Access</span>
@@ -238,6 +242,8 @@
                 {{template "workflows_content" .}}
             {{else if eq .ActiveNav "webhooks"}}
                 {{template "webhooks_content" .}}
+            {{else if eq .ActiveNav "radius"}}
+                {{template "radius_content" .}}
             {{else if eq .ActiveNav "service_accounts"}}
                 {{template "service_accounts_content" .}}
             {{end}}

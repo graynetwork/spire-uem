@@ -551,6 +551,10 @@ func (h *Handler) registerAdminAPIv1(r chi.Router) {
 			}
 
 			r.With(requireAPI(types.ScopeAuditRead, types.RoleAuditor)).Get("/audit/events", h.apiListAudit)
+
+			// RADIUS / NAC: FreeRADIUS rlm_rest decision endpoint (posture:read). Not wrapped in
+			// the idempotency middleware on purpose: an access decision must never be replayed.
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Post("/access/radius/authorize", h.apiRadiusAuthorize)
 		})
 	})
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/groupsync"
 	"github.com/spire-uem/spire-uem/internal/web"
+	"github.com/spire-uem/spire-uem/internal/radius"
 	"github.com/spire-uem/spire-uem/internal/webhooks"
 	"github.com/spire-uem/spire-uem/internal/workflows"
 )
@@ -154,6 +155,9 @@ func main() {
 		})
 	}
 	go whWorker.Run(ctx)
+	// RADIUS / NAC: push Disconnect-Requests when a connected device's posture changes. Safe on
+	// every instance: one advisory lock serialises the scan and a unique key dedupes deliveries.
+	go radius.NewLoop(repo.RadiusStore(), radius.NewSender()).Run(ctx)
 	// Forward offline-device detections from the alerts ticker into the workflow event log.
 	alertMgr.SetOfflineHook(func(c context.Context, deviceID, hostname string, minutes int) {
 		repo.EmitEvent(c, workflows.EventDeviceOffline, deviceID,

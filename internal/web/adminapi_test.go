@@ -1343,7 +1343,7 @@ func TestAPIv1_OpenAPISpecServedWithoutAuthAndMatchesRoutes(t *testing.T) {
 					t.Errorf("%s %s lacks a %s response", m, p, code)
 				}
 			}
-			if m == "post" && !strings.Contains(fmt.Sprint(o["parameters"]), "IdempotencyKey") {
+			if m == "post" && o["x-no-idempotency"] != true && !strings.Contains(fmt.Sprint(o["parameters"]), "IdempotencyKey") {
 				t.Errorf("POST %s does not document Idempotency-Key", p)
 			}
 		}
