@@ -100,6 +100,27 @@ type ScriptParam struct {
 	Default  string          `json:"default,omitempty"`
 	Secret   bool            `json:"secret"`
 	Help     string          `json:"help,omitempty"`
+	// DefaultSet is set only on API responses, where a secret parameter's Default is
+	// redacted: it tells the reader a default exists without revealing it. Never stored.
+	DefaultSet bool `json:"default_set,omitempty"`
+}
+
+// RedactSecretDefaults returns a copy of params with every secret parameter's default
+// removed (DefaultSet marks that one exists). Use it on anything sent to an API client.
+func RedactSecretDefaults(params []ScriptParam) []ScriptParam {
+	if params == nil {
+		return nil
+	}
+	out := make([]ScriptParam, len(params))
+	for i, p := range params {
+		p.DefaultSet = false
+		if p.Secret && p.Default != "" {
+			p.Default = ""
+			p.DefaultSet = true
+		}
+		out[i] = p
+	}
+	return out
 }
 
 // Validate checks the parameter declaration itself (not a supplied value).

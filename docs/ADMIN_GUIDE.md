@@ -277,8 +277,29 @@ without writing a blank credential or disturbing a working profile. The dashboar
 
 ## Reusable scripts, custom sensors, and script-based policies
 
-These features are managed through the admin JSON API (routes under `/admin`); there is no
-dedicated HTML page yet. Role requirements and tag scoping are enforced by the server.
+These features have an admin page (**Scripts** in the sidebar, with a **Sensors** tab) built on
+the same routes as the JSON API (under `/admin`). Role requirements and tag scoping are enforced
+by the server; the page only hides controls your role cannot use.
+
+**The Scripts page.** `GET /admin/scripts`, `/admin/scripts/{id}` and `/admin/sensors` return the
+HTML page when the request's `Accept` header contains `text/html` (every browser) and the same
+JSON as before for any other client (curl, tokens, scripts). The list shows name, interpreter,
+run-as, current version and last update. A script's page shows its metadata, every version with
+its content and SHA-256, its parameters (a secret parameter shows only that it is secret and
+whether a default is set, never the value), and recent runs with status, exit code and output.
+Device output is untrusted text and is always shown escaped.
+
+- `AUDITOR`: read-only; no buttons or forms are shown.
+- `OPERATOR`: also gets the **Run script** panel: pick a version, a target (devices, tags, a
+  ring, or a device group) and parameter values. A tag-scoped operator sees and can target only
+  devices in scope. Secret parameter values are typed into a password field and stored sealed.
+- `SECURITY_ADMIN`+: create scripts, edit metadata, add a version (always a new immutable
+  version), set the current version, delete (with a confirmation), and create, edit,
+  enable/disable and delete sensors. The Sensors tab shows each sensor's script, return type,
+  interval and targeting, and links to a device's readings (`/admin/devices/{id}/sensors/{name}`).
+
+The page's forms and buttons call the routes listed below, so everything it does is also
+available through the API.
 
 ### Scripts
 
@@ -286,6 +307,10 @@ A script has a fixed interpreter (`bash` or `python3` only), a run-as identity (
 `active_user`), a timeout (default 300 s, max 3600 s), an output cap (default 64 KiB, max
 1 MiB), and a parameter schema. Parameter names must match `^[A-Z][A-Z0-9_]{0,31}$`; a
 parameter may be `string`, `integer` or `boolean`, required, defaulted, and marked `secret`.
+API responses never include a secret parameter's default: it is removed and
+`"default_set": true` marks that one exists. Runs still receive it, sealed like any secret
+value. The default is stored in the version's parameter schema, so for a value that should
+live only in sealed storage, leave the default empty and supply it with each run.
 
 - `GET /admin/scripts`, `GET /admin/scripts/{id}` — list / inspect (any role that can read).
 - `POST /admin/scripts` — create (SECURITY_ADMIN+). Body: `name`, `interpreter`, `run_as`,
@@ -302,8 +327,8 @@ the agent verifies before running.
 
 ### Running a script
 
-`POST /admin/scripts/{id}/run` (OPERATOR+). Body selects a target — `device_ids`, `tags`, or
-`ring` — with `params` and an optional `version_id` (defaults to the current version). A
+`POST /admin/scripts/{id}/run` (OPERATOR+). Body selects a target — `device_ids`, `tags`,
+`ring`, or `group_id` — with `params` and an optional `version_id` (defaults to the current version). A
 tag-scoped operator's target is intersected with their allowed tags, and only APPROVED devices
 run. The run is reported per device with status, exit code, capped stdout/stderr and duration;
 `GET /admin/devices/{id}/script-runs` shows recent runs for a device. Secret parameter values

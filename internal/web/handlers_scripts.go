@@ -38,6 +38,43 @@ func jsonErr(w http.ResponseWriter, status int, msg string) {
 	writeJSONResp(w, status, map[string]string{"error": msg})
 }
 
+// redactScript and redactVersions strip secret parameter defaults from API responses. The
+// list/detail reads are AUDITOR+, and a secret default is as sensitive as a secret run value.
+func redactScript(s *types.Script) *types.Script {
+	if s == nil || s.CurrentVersion == nil {
+		return s
+	}
+	cp := *s
+	v := *s.CurrentVersion
+	v.Params = types.RedactSecretDefaults(v.Params)
+	cp.CurrentVersion = &v
+	return &cp
+}
+
+func redactVersion(v *types.ScriptVersion) *types.ScriptVersion {
+	if v == nil {
+		return nil
+	}
+	cp := *v
+	cp.Params = types.RedactSecretDefaults(v.Params)
+	return &cp
+}
+
+func redactVersions(vs []types.ScriptVersion) []types.ScriptVersion {
+	out := make([]types.ScriptVersion, len(vs))
+	for i := range vs {
+		out[i] = *redactVersion(&vs[i])
+	}
+	return out
+}
+
+// clearDefaultSet drops the response-only flag if a client echoes it back in a request.
+func clearDefaultSet(params []types.ScriptParam) {
+	for i := range params {
+		params[i].DefaultSet = false
+	}
+}
+
 // scriptCreateRequest is the body for creating or updating a script (+ its first/next version).
 type scriptCreateRequest struct {
 	Name           string               `json:"name"`
@@ -52,16 +89,28 @@ type scriptCreateRequest struct {
 
 // ListScripts GET /admin/scripts — all scripts with current versions.
 func (h *Handler) ListScripts(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		h.renderScriptsListPage(w, r)
+		return
+	}
 	scripts, err := h.repo.ListScripts(r.Context())
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to list scripts")
 		return
 	}
-	writeJSONResp(w, http.StatusOK, map[string]any{"scripts": scripts})
+	out := make([]*types.Script, len(scripts))
+	for i, sc := range scripts {
+		out[i] = redactScript(sc)
+	}
+	writeJSONResp(w, http.StatusOK, map[string]any{"scripts": out})
 }
 
 // GetScript GET /admin/scripts/{id} — one script + version history.
 func (h *Handler) GetScript(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		h.renderScriptDetailPage(w, r)
+		return
+	}
 	id := chi.URLParam(r, "id")
 	s, err := h.repo.GetScript(r.Context(), id)
 	if err != nil || s == nil {
@@ -69,7 +118,7 @@ func (h *Handler) GetScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	versions, _ := h.repo.ListScriptVersions(r.Context(), id)
-	writeJSONResp(w, http.StatusOK, map[string]any{"script": s, "versions": versions})
+	writeJSONResp(w, http.StatusOK, map[string]any{"script": redactScript(s), "versions": redactVersions(versions)})
 }
 
 // CreateScript POST /admin/scripts — SECURITY_ADMIN+.
@@ -84,6 +133,7 @@ func (h *Handler) CreateScript(w http.ResponseWriter, r *http.Request) {
 		Interpreter: req.Interpreter, RunAs: req.RunAs,
 		TimeoutSeconds: req.TimeoutSeconds, MaxOutputBytes: req.MaxOutputBytes,
 	}
+	clearDefaultSet(req.Params)
 	actor := AdminUserFromContext(r.Context())
 	created, err := h.repo.CreateScript(r.Context(), s, req.Content, req.Params, actor)
 	if err != nil {
@@ -91,7 +141,7 @@ func (h *Handler) CreateScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "SCRIPT_CREATE", created.ID, map[string]any{"name": created.Name, "interpreter": string(created.Interpreter), "run_as": string(created.RunAs)})
-	writeJSONResp(w, http.StatusCreated, map[string]any{"script": created})
+	writeJSONResp(w, http.StatusCreated, map[string]any{"script": redactScript(created)})
 }
 
 // UpdateScriptMeta POST /admin/scripts/{id} — change metadata only. SECURITY_ADMIN+.
@@ -118,7 +168,7 @@ func (h *Handler) UpdateScriptMeta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "SCRIPT_UPDATE", id, map[string]any{"name": existing.Name})
-	writeJSONResp(w, http.StatusOK, map[string]any{"script": existing})
+	writeJSONResp(w, http.StatusOK, map[string]any{"script": redactScript(existing)})
 }
 
 // AddScriptVersion POST /admin/scripts/{id}/versions — immutable new version. SECURITY_ADMIN+.
@@ -129,6 +179,7 @@ func (h *Handler) AddScriptVersion(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	clearDefaultSet(req.Params)
 	actor := AdminUserFromContext(r.Context())
 	v, err := h.repo.AddScriptVersion(r.Context(), id, req.Content, req.Params, actor)
 	if err != nil {
@@ -136,7 +187,7 @@ func (h *Handler) AddScriptVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "SCRIPT_VERSION_ADD", id, map[string]any{"version": v.Version, "sha256": v.SHA256})
-	writeJSONResp(w, http.StatusCreated, map[string]any{"version": v})
+	writeJSONResp(w, http.StatusCreated, map[string]any{"version": redactVersion(v)})
 }
 
 // SetCurrentScriptVersion POST /admin/scripts/{id}/versions/{versionID}/current — SECURITY_ADMIN+.
@@ -168,6 +219,7 @@ type runScriptRequest struct {
 	DeviceIDs []string          `json:"device_ids,omitempty"`
 	Tags      []string          `json:"tags,omitempty"`
 	Ring      string            `json:"ring,omitempty"`
+	GroupID   string            `json:"group_id,omitempty"`
 	Params    map[string]string `json:"params,omitempty"`
 }
 
@@ -237,7 +289,7 @@ func (h *Handler) RunScript(w http.ResponseWriter, r *http.Request) {
 
 // buildScriptTarget constructs a db.ScriptTarget from the request + scope.
 func buildScriptTarget(req runScriptRequest, allowed []string, scoped bool) db.ScriptTarget {
-	t := db.ScriptTarget{DeviceIDs: req.DeviceIDs, Tags: req.Tags}
+	t := db.ScriptTarget{DeviceIDs: req.DeviceIDs, Tags: req.Tags, GroupID: strings.TrimSpace(req.GroupID)}
 	if ring := strings.TrimSpace(req.Ring); ring != "" {
 		dr := types.DeploymentRing(strings.ToUpper(ring))
 		t.Ring = &dr
