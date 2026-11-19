@@ -335,11 +335,14 @@ func (s *RadiusStore) EnqueueChanges(ctx context.Context, now time.Time) (int, e
 	total := 0
 	maxSeen := cursor
 	for {
-		rows, err := s.repo.ListPostureChangedSince(ctx, since, 500)
+		rows, err := s.postureChangesSince(ctx, since, 500)
 		if err != nil {
 			return total, err
 		}
 		for _, p := range rows {
+			if !p.State.Valid() {
+				continue
+			}
 			n, err := s.enqueueForPosture(ctx, tx, p)
 			if err != nil {
 				return total, err
@@ -358,6 +361,29 @@ func (s *RadiusStore) EnqueueChanges(ctx context.Context, now time.Time) (int, e
 		return total, err
 	}
 	return total, tx.Commit(ctx)
+}
+
+// postureChangesSince is ListPostureChangedSince reduced to the three columns this loop
+// needs. It deliberately does not decode the reasons/checks JSON: one unreadable verdict row
+// must not stall disconnects for every other device (a poison row).
+func (s *RadiusStore) postureChangesSince(ctx context.Context, since time.Time, limit int) ([]types.DevicePosture, error) {
+	rows, err := s.repo.pool.Query(ctx, `SELECT device_id, state, state_changed_at FROM device_posture
+		WHERE state_changed_at > $1 ORDER BY state_changed_at, device_id LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list posture changes: %w", err)
+	}
+	defer rows.Close()
+	var out []types.DevicePosture
+	for rows.Next() {
+		var p types.DevicePosture
+		var st string
+		if err := rows.Scan(&p.DeviceID, &st, &p.StateChangedAt); err != nil {
+			return nil, err
+		}
+		p.State = types.PostureState(st)
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // enqueueForPosture queues a Disconnect for every live session of the device whose admitted
