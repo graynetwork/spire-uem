@@ -1,0 +1,471 @@
+{{define "scripts_content"}}
+{{$inp := "w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white"}}
+{{$lbl := "block text-[11px] text-slate-400 mb-1"}}
+{{$card := "bg-[#0f1420] border border-[#1a2234] rounded-md"}}
+{{$btn := "px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white"}}
+{{$btn2 := "px-2 py-1 rounded text-[11px] font-medium bg-slate-700 hover:bg-slate-600 text-white"}}
+{{$btnd := "px-2 py-1 rounded text-[11px] font-medium bg-rose-700 hover:bg-rose-600 text-white"}}
+<div class="space-y-6" id="scripts-root">
+    <div class="flex items-start justify-between">
+        <div>
+            <h1 class="text-lg font-semibold text-white">Scripts &amp; Sensors</h1>
+            <p class="text-[11px] text-slate-500 mt-0.5">Reusable scripts run on devices as an immutable, hash-pinned version. Sensors run a script version on a schedule and store the result as a device attribute. Editing content always creates a new version.</p>
+        </div>
+    </div>
+
+    <div class="flex gap-1 border-b border-[#1a2234]">
+        <a href="/admin/scripts" class="px-3 py-1.5 text-xs font-medium {{if ne .View "sensors"}}text-white border-b-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200{{end}}">Scripts</a>
+        <a href="/admin/sensors" class="px-3 py-1.5 text-xs font-medium {{if eq .View "sensors"}}text-white border-b-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200{{end}}">Sensors</a>
+    </div>
+
+    <div id="scripts-msg" class="hidden text-xs rounded px-3 py-2" role="status"></div>
+
+    {{if not .CanEdit}}
+    <div class="text-[11px] text-slate-400 bg-[#0f1420] border border-[#1a2234] rounded px-3 py-2" id="scripts-readonly-note">{{if .CanRun}}You can view scripts and run them on devices in your scope. Creating or editing scripts and sensors needs the Security Admin role.{{else}}Read-only view. Your role cannot create, change or run scripts.{{end}}</div>
+    {{end}}
+
+    {{if eq .View "list"}}
+    <div class="{{$card}}">
+        <table class="w-full text-xs">
+            <thead><tr class="text-left text-[11px] text-slate-500 border-b border-[#1a2234]">
+                <th class="px-3 py-2">Name</th><th class="px-3 py-2">Interpreter</th><th class="px-3 py-2">Run as</th><th class="px-3 py-2">Current version</th><th class="px-3 py-2">Updated</th>
+            </tr></thead>
+            <tbody>
+            {{range .Scripts}}
+            <tr class="border-b border-[#141b2a] hover:bg-[#121a2b]">
+                <td class="px-3 py-2"><a class="text-blue-400 hover:underline" href="/admin/scripts/{{.ID}}">{{.Name}}</a>{{if .Description}}<div class="text-[10px] text-slate-500">{{.Description}}</div>{{end}}</td>
+                <td class="px-3 py-2 font-mono text-slate-300">{{.Interpreter}}</td>
+                <td class="px-3 py-2 font-mono text-slate-300">{{.RunAs}}</td>
+                <td class="px-3 py-2 text-slate-300">{{if .CurrentVersion}}v{{.CurrentVersion.Version}} <span class="font-mono text-[10px] text-slate-500">{{printf "%.12s" .CurrentVersion.SHA256}}</span>{{else}}<span class="text-slate-500">none</span>{{end}}</td>
+                <td class="px-3 py-2 text-slate-400">{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
+            </tr>
+            {{else}}
+            <tr><td colspan="5" class="px-3 py-6 text-center text-slate-500">No scripts yet.</td></tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    {{if .CanEdit}}
+    <div class="{{$card}} p-4">
+        <h2 class="text-sm font-semibold text-white mb-2">New script</h2>
+        <form id="script-create-form" class="space-y-3" onsubmit="return createScript(event)">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <div><label class="{{$lbl}}">Name</label><input name="name" required maxlength="128" class="{{$inp}}" placeholder="e.g. Rotate logs"></div>
+                <div><label class="{{$lbl}}">Interpreter</label>
+                    <select name="interpreter" class="{{$inp}}"><option value="bash">bash</option><option value="python3">python3</option></select></div>
+                <div><label class="{{$lbl}}">Run as</label>
+                    <select name="run_as" class="{{$inp}}"><option value="root">root</option><option value="active_user">active_user</option></select></div>
+                <div><label class="{{$lbl}}">Description</label><input name="description" maxlength="2048" class="{{$inp}}"></div>
+                <div><label class="{{$lbl}}">Timeout (seconds, default 300)</label><input name="timeout_seconds" type="number" min="1" max="3600" class="{{$inp}}"></div>
+                <div><label class="{{$lbl}}">Max output bytes (default 65536)</label><input name="max_output_bytes" type="number" min="1" max="1048576" class="{{$inp}}"></div>
+            </div>
+            <div><label class="{{$lbl}}">Script content</label>
+                <textarea name="content" rows="10" required spellcheck="false" class="{{$inp}} font-mono" placeholder="#!/bin/bash&#10;echo hello"></textarea></div>
+            <div>
+                <div class="flex items-center justify-between mb-1"><label class="{{$lbl}} mb-0">Parameters (passed as SPIRE_PARAM_&lt;NAME&gt; environment variables)</label>
+                    <button type="button" class="{{$btn2}}" onclick="addParamRow('create-params')">Add parameter</button></div>
+                <div id="create-params" class="space-y-1"></div>
+                <p class="text-[10px] text-slate-500 mt-1">A secret parameter takes no default here; its value is entered when the script is run, stored sealed, and never shown again.</p>
+            </div>
+            <button type="submit" class="{{$btn}}">Create script</button>
+        </form>
+    </div>
+    {{end}}
+    {{end}}
+
+    {{if eq .View "detail"}}
+    {{$s := .Script}}
+    <div class="flex items-center justify-between">
+        <div>
+            <a href="/admin/scripts" class="text-[11px] text-slate-500 hover:text-slate-300">&larr; All scripts</a>
+            <h2 class="text-base font-semibold text-white mt-1" id="script-name">{{$s.Name}}</h2>
+            {{if $s.Description}}<p class="text-[11px] text-slate-400">{{$s.Description}}</p>{{end}}
+            <p class="text-[11px] text-slate-500 mt-1">Interpreter <span class="font-mono text-slate-300">{{$s.Interpreter}}</span> &middot; run as <span class="font-mono text-slate-300">{{$s.RunAs}}</span> &middot; timeout {{$s.TimeoutSeconds}}s &middot; output cap {{$s.MaxOutputBytes}} B &middot; created by {{$s.CreatedBy}}</p>
+        </div>
+        {{if .CanEdit}}
+        <button class="{{$btnd}}" id="script-delete-btn" onclick="deleteScript({{$s.ID}}, {{$s.Name}})">Delete script</button>
+        {{end}}
+    </div>
+
+    {{if .CanRun}}
+    <div class="{{$card}} p-4" id="run-panel">
+        <h3 class="text-sm font-semibold text-white mb-2">Run script</h3>
+        {{if not $s.CurrentVersion}}
+        <p class="text-[11px] text-slate-500">This script has no current version to run.</p>
+        {{else}}
+        <form id="run-form" class="space-y-3" onsubmit="return runScript(event)">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div><label class="{{$lbl}}">Version</label>
+                    <select name="version_id" id="run-version" class="{{$inp}}" onchange="showRunParams()">
+                        {{range .Versions}}<option value="{{.ID}}" {{if .IsCurrent}}selected{{end}}>v{{.Version}}{{if .IsCurrent}} (current){{end}}</option>{{end}}
+                    </select></div>
+                <div><label class="{{$lbl}}">Target</label>
+                    <div class="flex flex-wrap gap-3 text-xs text-slate-300 py-1">
+                        <label><input type="radio" name="mode" value="devices" checked onchange="showRunMode()"> Devices</label>
+                        <label><input type="radio" name="mode" value="tags" onchange="showRunMode()"> Tags</label>
+                        <label><input type="radio" name="mode" value="ring" onchange="showRunMode()"> Ring</label>
+                        <label><input type="radio" name="mode" value="group" onchange="showRunMode()"> Group</label>
+                    </div></div>
+            </div>
+            <div id="mode-devices">
+                <label class="{{$lbl}}">Devices ({{len .Devices}} approved device(s) in your scope)</label>
+                <div class="max-h-40 overflow-auto border border-[#1a2234] rounded p-2 grid grid-cols-1 md:grid-cols-3 gap-1" id="run-device-list">
+                    {{range .Devices}}<label class="text-xs text-slate-300"><input type="checkbox" class="run-device" value="{{.ID}}"> {{.Hostname}}{{if .Tags}} <span class="text-[10px] text-slate-500">{{range $i, $t := .Tags}}{{if $i}}, {{end}}{{$t}}{{end}}</span>{{end}}</label>
+                    {{else}}<span class="text-[11px] text-slate-500">No devices available.</span>{{end}}
+                </div>
+            </div>
+            <div id="mode-tags" class="hidden"><label class="{{$lbl}}">Tags (comma-separated; devices carrying any of them)</label><input id="run-tags" class="{{$inp}}" placeholder="eng, lab"></div>
+            <div id="mode-ring" class="hidden"><label class="{{$lbl}}">Deployment ring</label>
+                <select id="run-ring" class="{{$inp}}">{{range .Rings}}<option value="{{.}}">{{.}}</option>{{end}}</select></div>
+            <div id="mode-group" class="hidden"><label class="{{$lbl}}">Device group</label>
+                <select id="run-group" class="{{$inp}}">{{range .Groups}}<option value="{{.ID}}">{{.Name}} ({{.MemberCount}})</option>{{else}}<option value="">No groups</option>{{end}}</select></div>
+            {{range .Versions}}
+            <div class="run-params {{if not .IsCurrent}}hidden{{end}}" data-version="{{.ID}}">
+                {{if .ParamView}}<div class="{{$lbl}}">Parameters</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {{range .ParamView}}
+                    <div><label class="{{$lbl}}"><span class="font-mono">{{.Name}}</span> <span class="text-slate-600">{{.Type}}{{if .Required}}, required{{end}}{{if .Secret}}, secret{{end}}</span></label>
+                        <input class="run-param {{$inp}}" data-name="{{.Name}}" {{if .Secret}}type="password" autocomplete="off" placeholder="{{if .HasDefault}}default is set{{else}}enter value{{end}}"{{else}}type="text" value="{{.Default}}"{{end}}>
+                        {{if .Help}}<div class="text-[10px] text-slate-500">{{.Help}}</div>{{end}}</div>
+                    {{end}}
+                </div>{{end}}
+            </div>
+            {{end}}
+            <div class="flex items-center gap-3"><button type="submit" class="{{$btn}}">Run</button><span id="run-result" class="text-[11px] text-slate-400"></span></div>
+        </form>
+        {{end}}
+    </div>
+    {{end}}
+
+    {{if .CanEdit}}
+    <div class="{{$card}} p-4">
+        <h3 class="text-sm font-semibold text-white mb-2">Edit metadata</h3>
+        <form id="meta-form" class="grid grid-cols-1 md:grid-cols-4 gap-3" onsubmit="return saveMeta(event, {{$s.ID}})">
+            <div><label class="{{$lbl}}">Name</label><input name="name" required value="{{$s.Name}}" class="{{$inp}}"></div>
+            <div><label class="{{$lbl}}">Interpreter</label><select name="interpreter" class="{{$inp}}"><option value="bash" {{if eq (printf "%s" $s.Interpreter) "bash"}}selected{{end}}>bash</option><option value="python3" {{if eq (printf "%s" $s.Interpreter) "python3"}}selected{{end}}>python3</option></select></div>
+            <div><label class="{{$lbl}}">Run as</label><select name="run_as" class="{{$inp}}"><option value="root" {{if eq (printf "%s" $s.RunAs) "root"}}selected{{end}}>root</option><option value="active_user" {{if eq (printf "%s" $s.RunAs) "active_user"}}selected{{end}}>active_user</option></select></div>
+            <div><label class="{{$lbl}}">Description</label><input name="description" value="{{$s.Description}}" class="{{$inp}}"></div>
+            <div><label class="{{$lbl}}">Timeout (s)</label><input name="timeout_seconds" type="number" value="{{$s.TimeoutSeconds}}" class="{{$inp}}"></div>
+            <div><label class="{{$lbl}}">Max output bytes</label><input name="max_output_bytes" type="number" value="{{$s.MaxOutputBytes}}" class="{{$inp}}"></div>
+            <div class="flex items-end"><button type="submit" class="{{$btn}}">Save metadata</button></div>
+        </form>
+    </div>
+
+    <div class="{{$card}} p-4">
+        <h3 class="text-sm font-semibold text-white mb-2">Add a version</h3>
+        <form id="version-form" class="space-y-3" onsubmit="return addVersion(event, {{$s.ID}})">
+            <textarea name="content" rows="10" required spellcheck="false" class="{{$inp}} font-mono">{{if $s.CurrentVersion}}{{$s.CurrentVersion.Content}}{{end}}</textarea>
+            <div>
+                <div class="flex items-center justify-between mb-1"><label class="{{$lbl}} mb-0">Parameters</label>
+                    <button type="button" class="{{$btn2}}" onclick="addParamRow('version-params')">Add parameter</button></div>
+                <div id="version-params" class="space-y-1"></div>
+                <p class="text-[10px] text-slate-500 mt-1">Existing secret defaults are never shown here and are not carried into the new version.</p>
+            </div>
+            <button type="submit" class="{{$btn}}">Add version</button>
+        </form>
+    </div>
+    {{end}}
+
+    <div class="{{$card}} p-4">
+        <h3 class="text-sm font-semibold text-white mb-2">Version history</h3>
+        <div class="space-y-2">
+        {{range .Versions}}
+        <details class="border border-[#1a2234] rounded" {{if .IsCurrent}}open{{end}}>
+            <summary class="px-3 py-2 text-xs text-slate-200 cursor-pointer flex items-center justify-between">
+                <span>v{{.Version}}{{if .IsCurrent}} <span class="ml-1 px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 text-[10px]">current</span>{{end}} <span class="text-slate-500 text-[10px] ml-2">{{.CreatedBy}} &middot; {{.CreatedAt.Format "2006-01-02 15:04"}}</span></span>
+                <span class="font-mono text-[10px] text-slate-500">sha256 {{printf "%.16s" .SHA256}}</span>
+            </summary>
+            <div class="px-3 pb-3 space-y-2">
+                <div class="text-[10px] text-slate-500">SHA-256 <span class="font-mono text-slate-300 break-all">{{.SHA256}}</span></div>
+                {{if .ParamView}}
+                <table class="text-[11px] w-full"><thead><tr class="text-left text-slate-500"><th class="py-1">Parameter</th><th>Type</th><th>Required</th><th>Secret</th><th>Default</th></tr></thead><tbody>
+                {{range .ParamView}}<tr class="text-slate-300"><td class="py-0.5 font-mono">{{.Name}}</td><td>{{.Type}}</td><td>{{if .Required}}yes{{else}}no{{end}}</td><td>{{if .Secret}}yes{{else}}no{{end}}</td><td>{{if .Secret}}{{if .HasDefault}}<span class="text-slate-500">set (hidden)</span>{{else}}<span class="text-slate-500">not set</span>{{end}}{{else}}<span class="font-mono">{{.Default}}</span>{{end}}</td></tr>{{end}}
+                </tbody></table>{{end}}
+                <pre class="bg-[#0a0e17] border border-[#1a2234] rounded p-2 text-[11px] font-mono text-slate-200 overflow-auto max-h-80 whitespace-pre-wrap">{{.Content}}</pre>
+                {{if and $.CanEdit (not .IsCurrent)}}<button class="{{$btn2}}" onclick="setCurrent({{$s.ID}}, {{.ID}})">Set as current version</button>{{end}}
+            </div>
+        </details>
+        {{end}}
+        </div>
+    </div>
+
+    <div class="{{$card}} p-4" id="runs-panel">
+        <h3 class="text-sm font-semibold text-white mb-2">Recent runs</h3>
+        <p class="text-[10px] text-slate-500 mb-2">Output is supplied by the device and is untrusted; it is shown as plain text. Per device history: <span class="font-mono">/admin/devices/&lt;id&gt;/script-runs</span> (JSON).</p>
+        <table class="w-full text-xs">
+            <thead><tr class="text-left text-[11px] text-slate-500 border-b border-[#1a2234]"><th class="py-1 pr-2">Queued</th><th class="pr-2">Device</th><th class="pr-2">Version</th><th class="pr-2">Status</th><th class="pr-2">Exit</th><th class="pr-2">Duration</th><th class="pr-2">By</th><th>Output</th></tr></thead>
+            <tbody>
+            {{range .Runs}}
+            <tr class="border-b border-[#141b2a] align-top">
+                <td class="py-1 pr-2 text-slate-400">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+                <td class="pr-2 text-slate-300"><a class="text-blue-400 hover:underline" href="/admin/devices/{{.DeviceID}}">{{.Hostname}}</a></td>
+                <td class="pr-2 text-slate-300">v{{.Version}}</td>
+                <td class="pr-2"><span class="run-status text-slate-200">{{.Status}}</span></td>
+                <td class="pr-2 font-mono text-slate-300">{{if .ExitCode}}{{.ExitCode}}{{else}}-{{end}}</td>
+                <td class="pr-2 text-slate-400">{{.DurationMS}} ms</td>
+                <td class="pr-2 text-slate-400">{{.RequestedBy}}</td>
+                <td>{{if or .Stdout .Stderr}}<details><summary class="cursor-pointer text-blue-400">view</summary>
+                    {{if .Stdout}}<div class="text-[10px] text-slate-500 mt-1">stdout</div><pre class="run-stdout bg-[#0a0e17] border border-[#1a2234] rounded p-2 text-[11px] font-mono text-slate-200 overflow-auto max-h-60 whitespace-pre-wrap">{{.Stdout}}</pre>{{end}}
+                    {{if .Stderr}}<div class="text-[10px] text-slate-500 mt-1">stderr</div><pre class="run-stderr bg-[#0a0e17] border border-[#1a2234] rounded p-2 text-[11px] font-mono text-rose-200 overflow-auto max-h-60 whitespace-pre-wrap">{{.Stderr}}</pre>{{end}}
+                    </details>{{else}}<span class="text-slate-600">-</span>{{end}}</td>
+            </tr>
+            {{else}}<tr><td colspan="8" class="py-4 text-center text-slate-500">No runs yet.</td></tr>{{end}}
+            </tbody>
+        </table>
+    </div>
+    {{end}}
+
+    {{if eq .View "sensors"}}
+    <div class="{{$card}}">
+        <table class="w-full text-xs">
+            <thead><tr class="text-left text-[11px] text-slate-500 border-b border-[#1a2234]"><th class="px-3 py-2">Name</th><th class="px-3 py-2">Script</th><th class="px-3 py-2">Type</th><th class="px-3 py-2">Interval</th><th class="px-3 py-2">Targeting</th><th class="px-3 py-2">State</th><th class="px-3 py-2"></th></tr></thead>
+            <tbody>
+            {{range .Sensors}}
+            <tr class="border-b border-[#141b2a] align-top">
+                <td class="px-3 py-2"><span class="font-mono text-slate-100">{{.Name}}</span>{{if .Description}}<div class="text-[10px] text-slate-500">{{.Description}}</div>{{end}}<div class="text-[10px] text-slate-600">attribute sensor.{{.Name}}</div></td>
+                <td class="px-3 py-2 text-slate-300"><a class="text-blue-400 hover:underline" href="/admin/scripts/{{.ScriptID}}">{{index $.ScriptNames .ScriptID}}</a></td>
+                <td class="px-3 py-2 text-slate-300">{{.ReturnType}}</td>
+                <td class="px-3 py-2 text-slate-300">every {{.IntervalSeconds}}s</td>
+                <td class="px-3 py-2 text-slate-300">{{if .TargetTags}}tags: {{range $i, $t := .TargetTags}}{{if $i}}, {{end}}{{$t}}{{end}}{{else}}all devices{{end}}{{if .Ring}} &middot; ring {{.Ring}}{{end}}</td>
+                <td class="px-3 py-2">{{if .Enabled}}<span class="text-emerald-300">enabled</span>{{else}}<span class="text-slate-500">disabled</span>{{end}}</td>
+                <td class="px-3 py-2 text-right whitespace-nowrap">
+                    {{if $.CanEdit}}
+                    <button class="{{$btn2}}" onclick="toggleSensor({{.ID}}, {{.Enabled}})">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+                    <button class="{{$btn2}}" onclick="document.getElementById('sensor-edit-{{.ID}}').classList.toggle('hidden')">Edit</button>
+                    <button class="{{$btnd}}" onclick="deleteSensor({{.ID}}, {{.Name}})">Delete</button>
+                    {{end}}
+                </td>
+            </tr>
+            {{if $.CanEdit}}
+            <tr id="sensor-edit-{{.ID}}" class="hidden border-b border-[#141b2a]"><td colspan="7" class="px-3 py-3">
+                <form class="grid grid-cols-1 md:grid-cols-4 gap-3" onsubmit="return saveSensor(event, {{.ID}})" data-enabled="{{.Enabled}}">
+                    <div class="md:col-span-2"><label class="{{$lbl}}">Description</label><input name="description" value="{{.Description}}" class="{{$inp}}"></div>
+                    <div><label class="{{$lbl}}">Script version</label><select name="script_version_id" class="{{$inp}}"><option value="{{.ScriptVersionID}}" selected>keep current binding</option>{{range $.ScriptOptions}}<option value="{{.VersionID}}">{{.Label}}</option>{{end}}</select></div>
+                    <div><label class="{{$lbl}}">Return type</label><select name="return_type" class="{{$inp}}">{{$rt := .ReturnType}}{{range $.ReturnTypes}}<option value="{{.}}" {{if eq . $rt}}selected{{end}}>{{.}}</option>{{end}}</select></div>
+                    <div><label class="{{$lbl}}">Interval (s, min 900)</label><input name="interval_seconds" type="number" min="900" value="{{.IntervalSeconds}}" class="{{$inp}}"></div>
+                    <div><label class="{{$lbl}}">Target tags (comma-separated)</label><input name="target_tags" value="{{range $i, $t := .TargetTags}}{{if $i}},{{end}}{{$t}}{{end}}" class="{{$inp}}"></div>
+                    <div><label class="{{$lbl}}">Ring (optional)</label><select name="ring" class="{{$inp}}"><option value="">any</option>{{$tr := .Ring}}{{range $.Rings}}<option value="{{.}}" {{if eq (printf "%s" .) $tr}}selected{{end}}>{{.}}</option>{{end}}</select></div>
+                    <div class="flex items-end"><button type="submit" class="{{$btn}}">Save sensor</button></div>
+                </form>
+            </td></tr>
+            {{end}}
+            {{else}}
+            <tr><td colspan="7" class="px-3 py-6 text-center text-slate-500">No sensors yet.</td></tr>
+            {{end}}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="{{$card}} p-4">
+        <h3 class="text-sm font-semibold text-white mb-2">Latest values on a device</h3>
+        <div class="flex flex-wrap gap-2 items-end">
+            <div><label class="{{$lbl}}">Device</label><select id="reading-device" class="{{$inp}}">{{range .Devices}}<option value="{{.ID}}">{{.Hostname}}</option>{{end}}</select></div>
+            <div><label class="{{$lbl}}">Sensor</label><select id="reading-sensor" class="{{$inp}}">{{range .Sensors}}<option value="{{.Name}}">{{.Name}}</option>{{end}}</select></div>
+            <a id="reading-link" href="#" class="{{$btn2}}" onclick="return openReadings()">Open readings (JSON)</a>
+        </div>
+        <p class="text-[10px] text-slate-500 mt-1">Opens <span class="font-mono">/admin/devices/&lt;id&gt;/sensors/&lt;name&gt;</span>, limited to devices in your scope.</p>
+    </div>
+
+    {{if .CanEdit}}
+    <div class="{{$card}} p-4">
+        <h3 class="text-sm font-semibold text-white mb-2">New sensor</h3>
+        <form id="sensor-create-form" class="grid grid-cols-1 md:grid-cols-4 gap-3" onsubmit="return createSensor(event)">
+            <div><label class="{{$lbl}}">Name (a-z, 0-9, _)</label><input name="name" required pattern="[a-z][a-z0-9_]{0,47}" class="{{$inp}}" placeholder="disk_free_gb"></div>
+            <div><label class="{{$lbl}}">Script (current version)</label><select name="script_version_id" required class="{{$inp}}">{{range .ScriptOptions}}<option value="{{.VersionID}}">{{.Label}}</option>{{else}}<option value="">Create a script first</option>{{end}}</select></div>
+            <div><label class="{{$lbl}}">Return type</label><select name="return_type" class="{{$inp}}">{{range .ReturnTypes}}<option value="{{.}}">{{.}}</option>{{end}}</select></div>
+            <div><label class="{{$lbl}}">Interval (s, min 900)</label><input name="interval_seconds" type="number" min="900" value="3600" class="{{$inp}}"></div>
+            <div class="md:col-span-2"><label class="{{$lbl}}">Description</label><input name="description" class="{{$inp}}"></div>
+            <div><label class="{{$lbl}}">Target tags (comma-separated, blank = all)</label><input name="target_tags" class="{{$inp}}"></div>
+            <div><label class="{{$lbl}}">Ring (optional)</label><select name="ring" class="{{$inp}}"><option value="">any</option>{{range .Rings}}<option value="{{.}}">{{.}}</option>{{end}}</select></div>
+            <div class="flex items-end"><button type="submit" class="{{$btn}}">Create sensor</button></div>
+        </form>
+    </div>
+    {{end}}
+    {{end}}
+</div>
+
+<script>
+(function () {
+    var csrf = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+    function msg(text, isErr) {
+        var el = document.getElementById('scripts-msg');
+        if (!el) return;
+        el.textContent = text;
+        el.className = 'text-xs rounded px-3 py-2 ' + (isErr ? 'bg-rose-950/50 text-rose-300 border border-rose-900' : 'bg-emerald-950/40 text-emerald-300 border border-emerald-900');
+    }
+    function api(method, url, body) {
+        var opts = {method: method, headers: {'X-CSRF-Token': csrf, 'Accept': 'application/json'}, credentials: 'same-origin'};
+        if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+        return fetch(url, opts).then(function (r) {
+            return r.text().then(function (t) {
+                var j = null; try { j = JSON.parse(t); } catch (e) {}
+                if (!r.ok) { throw new Error((j && j.error) || (t || r.statusText).slice(0, 200)); }
+                return j || {};
+            });
+        });
+    }
+    function fail(e) { msg(String(e.message || e), true); }
+    function csv(s) { return (s || '').split(',').map(function (x) { return x.trim(); }).filter(Boolean); }
+    function intOrUndef(v) { var n = parseInt(v, 10); return isNaN(n) ? undefined : n; }
+
+    // ---- parameter rows (DOM APIs only) ----
+    function el(tag, cls, attrs) {
+        var e = document.createElement(tag); if (cls) e.className = cls;
+        Object.keys(attrs || {}).forEach(function (k) { e.setAttribute(k, attrs[k]); });
+        return e;
+    }
+    var fieldCls = 'rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white';
+    window.addParamRow = function (containerId, p) {
+        p = p || {};
+        var c = document.getElementById(containerId);
+        var row = el('div', 'param-row flex flex-wrap gap-2 items-center');
+        var name = el('input', fieldCls + ' p-name font-mono', {placeholder: 'NAME', maxlength: '32'}); name.value = p.name || '';
+        var type = el('select', fieldCls + ' p-type');
+        ['string', 'integer', 'boolean'].forEach(function (t) { var o = el('option', '', {value: t}); o.textContent = t; if (p.type === t) o.selected = true; type.appendChild(o); });
+        var def = el('input', fieldCls + ' p-default', {placeholder: 'default'}); def.value = p.secret ? '' : (p.default || '');
+        var help = el('input', fieldCls + ' p-help', {placeholder: 'help text'}); help.value = p.help || '';
+        var req = el('label', 'text-[11px] text-slate-300'); var reqc = el('input', 'p-required', {type: 'checkbox'}); reqc.checked = !!p.required; req.appendChild(reqc); req.appendChild(document.createTextNode(' required'));
+        var sec = el('label', 'text-[11px] text-slate-300'); var secc = el('input', 'p-secret', {type: 'checkbox'}); secc.checked = !!p.secret; sec.appendChild(secc); sec.appendChild(document.createTextNode(' secret'));
+        function syncSecret() { def.disabled = secc.checked; if (secc.checked) def.value = ''; }
+        secc.addEventListener('change', syncSecret); syncSecret();
+        var rm = el('button', 'px-2 py-1 rounded text-[11px] bg-slate-700 text-white', {type: 'button'}); rm.textContent = 'Remove';
+        rm.addEventListener('click', function () { c.removeChild(row); });
+        [name, type, def, help, req, sec, rm].forEach(function (x) { row.appendChild(x); });
+        c.appendChild(row);
+    };
+    function collectParams(containerId) {
+        var out = [];
+        document.querySelectorAll('#' + containerId + ' .param-row').forEach(function (row) {
+            var n = row.querySelector('.p-name').value.trim(); if (!n) return;
+            var secret = row.querySelector('.p-secret').checked;
+            var p = {name: n, type: row.querySelector('.p-type').value, required: row.querySelector('.p-required').checked, secret: secret};
+            var d = row.querySelector('.p-default').value;
+            if (!secret && d !== '') p.default = d;
+            var h = row.querySelector('.p-help').value.trim(); if (h) p.help = h;
+            out.push(p);
+        });
+        return out;
+    }
+
+    // ---- scripts ----
+    window.createScript = function (ev) {
+        ev.preventDefault(); var f = ev.target;
+        api('POST', '/admin/scripts', {
+            name: f.name.value, description: f.description.value, interpreter: f.interpreter.value, run_as: f.run_as.value,
+            timeout_seconds: intOrUndef(f.timeout_seconds.value), max_output_bytes: intOrUndef(f.max_output_bytes.value),
+            content: f.content.value, params: collectParams('create-params')
+        }).then(function (j) { window.location.href = '/admin/scripts/' + j.script.id; }).catch(fail);
+        return false;
+    };
+    window.saveMeta = function (ev, id) {
+        ev.preventDefault(); var f = ev.target;
+        api('POST', '/admin/scripts/' + encodeURIComponent(id), {
+            name: f.name.value, description: f.description.value, interpreter: f.interpreter.value, run_as: f.run_as.value,
+            timeout_seconds: intOrUndef(f.timeout_seconds.value), max_output_bytes: intOrUndef(f.max_output_bytes.value)
+        }).then(function () { window.location.reload(); }).catch(fail);
+        return false;
+    };
+    window.addVersion = function (ev, id) {
+        ev.preventDefault(); var f = ev.target;
+        api('POST', '/admin/scripts/' + encodeURIComponent(id) + '/versions', {content: f.content.value, params: collectParams('version-params')})
+            .then(function () { window.location.reload(); }).catch(fail);
+        return false;
+    };
+    window.setCurrent = function (id, vid) {
+        api('POST', '/admin/scripts/' + encodeURIComponent(id) + '/versions/' + encodeURIComponent(vid) + '/current', {})
+            .then(function () { window.location.reload(); }).catch(fail);
+    };
+    window.deleteScript = function (id, name) {
+        if (!window.confirm('Delete script "' + name + '" and all of its versions? Sensors and policies that use it will stop working. This cannot be undone.')) return;
+        api('DELETE', '/admin/scripts/' + encodeURIComponent(id)).then(function () { window.location.href = '/admin/scripts'; }).catch(fail);
+    };
+
+    // ---- run dialog ----
+    window.showRunMode = function () {
+        var m = document.querySelector('#run-form input[name=mode]:checked').value;
+        ['devices', 'tags', 'ring', 'group'].forEach(function (k) {
+            document.getElementById('mode-' + k).classList.toggle('hidden', k !== m);
+        });
+    };
+    window.showRunParams = function () {
+        var v = document.getElementById('run-version').value;
+        document.querySelectorAll('.run-params').forEach(function (d) { d.classList.toggle('hidden', d.getAttribute('data-version') !== v); });
+    };
+    window.runScript = function (ev, id) {
+        ev.preventDefault();
+        var path = window.location.pathname.replace(/\/+$/, '');
+        var mode = document.querySelector('#run-form input[name=mode]:checked').value;
+        var version = document.getElementById('run-version').value;
+        var body = {version_id: version, params: {}};
+        if (mode === 'devices') {
+            body.device_ids = Array.prototype.map.call(document.querySelectorAll('.run-device:checked'), function (c) { return c.value; });
+            if (!body.device_ids.length) { document.getElementById('run-result').textContent = 'Pick at least one device.'; return false; }
+        } else if (mode === 'tags') {
+            body.tags = csv(document.getElementById('run-tags').value);
+        } else if (mode === 'ring') {
+            body.ring = document.getElementById('run-ring').value;
+        } else {
+            body.group_id = document.getElementById('run-group').value;
+        }
+        document.querySelectorAll('.run-params[data-version="' + version + '"] .run-param').forEach(function (i) {
+            if (i.value !== '') body.params[i.getAttribute('data-name')] = i.value;
+        });
+        var out = document.getElementById('run-result');
+        out.textContent = 'Queueing...';
+        api('POST', path + '/run', body).then(function (j) {
+            out.textContent = 'Queued ' + j.queued + ' run(s). Reloading...';
+            setTimeout(function () { window.location.reload(); }, 800);
+        }).catch(function (e) { out.textContent = String(e.message || e); });
+        return false;
+    };
+
+    // ---- sensors ----
+    function sensorBody(f, extra) {
+        var b = {description: f.description.value, script_version_id: f.script_version_id.value, return_type: f.return_type.value,
+            interval_seconds: intOrUndef(f.interval_seconds.value) || 0, target_tags: csv(f.target_tags.value), ring: f.ring.value};
+        Object.keys(extra || {}).forEach(function (k) { b[k] = extra[k]; });
+        return b;
+    }
+    window.createSensor = function (ev) {
+        ev.preventDefault(); var f = ev.target;
+        var b = sensorBody(f); b.name = f.name.value; b.enabled = true;
+        api('POST', '/admin/sensors', b).then(function () { window.location.reload(); }).catch(fail);
+        return false;
+    };
+    window.saveSensor = function (ev, id) {
+        ev.preventDefault(); var f = ev.target;
+        api('POST', '/admin/sensors/' + encodeURIComponent(id), sensorBody(f, {enabled: f.getAttribute('data-enabled') === 'true'}))
+            .then(function () { window.location.reload(); }).catch(fail);
+        return false;
+    };
+    window.toggleSensor = function (id, enabled) {
+        // The update endpoint replaces the whole sensor, so the toggle resends the row's values.
+        var row = document.getElementById('sensor-edit-' + id);
+        var f = row.querySelector('form');
+        api('POST', '/admin/sensors/' + encodeURIComponent(id), sensorBody(f, {enabled: !enabled}))
+            .then(function () { window.location.reload(); }).catch(fail);
+    };
+    window.deleteSensor = function (id, name) {
+        if (!window.confirm('Delete sensor "' + name + '"? Devices drop its sensor.' + name + ' attribute at their next check-in.')) return;
+        api('DELETE', '/admin/sensors/' + encodeURIComponent(id)).then(function () { window.location.reload(); }).catch(fail);
+    };
+    window.openReadings = function () {
+        var d = document.getElementById('reading-device').value, s = document.getElementById('reading-sensor').value;
+        if (!d || !s) return false;
+        window.open('/admin/devices/' + encodeURIComponent(d) + '/sensors/' + encodeURIComponent(s), '_blank', 'noopener');
+        return false;
+    };
+
+    // Prefill the add-version parameter rows from the current version (secret defaults are blank).
+    {{if eq .View "detail"}}
+    var cur = {{if .CurrentParams}}{{.CurrentParams}}{{else}}[]{{end}};
+    if (document.getElementById('version-params')) {
+        (cur || []).forEach(function (p) {
+            window.addParamRow('version-params', {name: p.Name, type: p.Type, required: p.Required, secret: p.Secret, default: p.Default, help: p.Help});
+        });
+    }
+    {{end}}
+})();
+</script>
+{{end}}

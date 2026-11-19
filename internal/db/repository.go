@@ -175,7 +175,11 @@ func (r *Repository) RevokeDevice(ctx context.Context, id string) (*types.Device
 	if _, err := r.RevokeDeviceCertificates(ctx, id); err != nil {
 		return nil, err
 	}
-	return r.UpdateDeviceStatus(ctx, id, types.StatusRevoked, nil)
+	d, err := r.UpdateDeviceStatus(ctx, id, types.StatusRevoked, nil)
+	if err == nil && d != nil {
+		r.EmitEvent(ctx, workflows.EventDeviceRevoked, d.ID, map[string]any{"hostname": d.Hostname}, false)
+	}
+	return d, err
 }
 
 // Pool returns the underlying pgxpool.Pool.
@@ -1234,6 +1238,7 @@ func (r *Repository) CreatePolicyWithAssignment(
 	if err != nil {
 		return nil, fmt.Errorf("create policy: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyCreated, p, map[string]any{"policy_type": string(p.PolicyType)})
 	return p, nil
 }
 
@@ -1275,6 +1280,7 @@ func (r *Repository) TogglePolicyActive(ctx context.Context, policyID string) (*
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit toggle policy tx: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyToggled, p, map[string]any{"is_active": p.IsActive})
 	return p, nil
 }
 
@@ -1957,6 +1963,7 @@ func (r *Repository) TogglePolicySelfService(ctx context.Context, policyID strin
 	if err != nil {
 		return nil, fmt.Errorf("toggle policy self-service: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyUpdated, p, map[string]any{"change": "self_service"})
 	return p, nil
 }
 
@@ -1980,6 +1987,7 @@ func (r *Repository) SetPolicySelfService(ctx context.Context, policyID string, 
 	if err != nil {
 		return nil, fmt.Errorf("set policy self-service: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyUpdated, p, map[string]any{"change": "self_service"})
 	return p, nil
 }
 
@@ -2989,6 +2997,7 @@ func (r *Repository) UpdateApplicationPolicy(
 		_, _ = r.StagePolicyForTargetedDevices(ctx, updated)
 	}
 
+	r.emitPolicyEvent(ctx, workflows.EventPolicyUpdated, updated, map[string]any{"change": "definition"})
 	return updated, nil
 }
 
@@ -3026,6 +3035,7 @@ func (r *Repository) RevokeApplicationPolicy(ctx context.Context, policyID strin
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit revoke application policy tx: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyToggled, pol, map[string]any{"is_active": false, "via": "revoke"})
 	return pol, nil
 }
 

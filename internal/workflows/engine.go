@@ -126,6 +126,10 @@ func (e *Engine) ProcessEvent(ctx context.Context, ev Event) error {
 		// This event was produced by a workflow action: never let it re-trigger a workflow.
 		return nil
 	}
+	if !ev.Kind.Valid() {
+		// Not a workflow trigger kind (e.g. a webhook-only kind): never evaluate workflows.
+		return nil
+	}
 	if ev.DeviceID == "" {
 		// Device-less events (none currently) have nothing to evaluate against.
 		return nil

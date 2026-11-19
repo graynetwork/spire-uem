@@ -290,3 +290,44 @@ func capString(s string, n int) string {
 	}
 	return s[:n]
 }
+
+// ScriptRunWithHost is a script run plus the hostname of the device it ran on, for the
+// script detail page.
+type ScriptRunWithHost struct {
+	types.ScriptRun
+	Hostname string `json:"hostname"`
+}
+
+// ListScriptRunsForScript returns recent runs of one script across devices, newest first,
+// restricted to devices inside the admin's tag scope (an unscoped DeviceScope sees all).
+func (r *Repository) ListScriptRunsForScript(ctx context.Context, scriptID string, limit int, scope DeviceScope) ([]ScriptRunWithHost, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	scoped, tags := scope.sqlArgs()
+	rows, err := r.pool.Query(ctx, `
+		SELECT sr.id, sr.device_id, sr.script_id, sr.script_version_id, sr.version, sr.trigger, sr.status,
+		       sr.exit_code, sr.stdout, sr.stderr, sr.duration_ms, sr.params, sr.requested_by,
+		       sr.created_at, sr.reported_at, d.hostname
+		FROM script_runs sr JOIN devices d ON d.id = sr.device_id
+		WHERE sr.script_id=$1 AND (NOT $2::bool OR d.tags && $3::text[])
+		ORDER BY sr.created_at DESC LIMIT $4`, scriptID, scoped, tags, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list script runs for script: %w", err)
+	}
+	defer rows.Close()
+	out := make([]ScriptRunWithHost, 0)
+	for rows.Next() {
+		var run ScriptRunWithHost
+		var trigger, status string
+		if err := rows.Scan(&run.ID, &run.DeviceID, &run.ScriptID, &run.ScriptVersionID, &run.Version,
+			&trigger, &status, &run.ExitCode, &run.Stdout, &run.Stderr, &run.DurationMS,
+			&run.ParamsJSON, &run.RequestedBy, &run.CreatedAt, &run.ReportedAt, &run.Hostname); err != nil {
+			return nil, fmt.Errorf("scan script run: %w", err)
+		}
+		run.Trigger = types.ScriptRunTrigger(trigger)
+		run.Status = types.ScriptRunStatus(status)
+		out = append(out, run)
+	}
+	return out, rows.Err()
+}
