@@ -399,6 +399,13 @@ the run with the `scheduled` trigger; on an "agent started" workflow it uses the
 trigger. This is how you run a script on every device in a group each night, or once each time an
 agent restarts.
 
+A `run_script` action can't set a secret script parameter, because workflow definitions are
+stored as plain JSON and auditors can read them. Saving one is refused with a 400. Give the
+parameter a default on the script instead: runs receive it sealed, and responses never show it.
+A parameter counts as secret if any version of the script marks it secret. Values saved before
+this check are hidden in every workflow and approval response, and are dropped if the workflow
+is edited and saved again.
+
 **Safety.** Workflows are deterministic and bounded. A change a workflow makes never triggers
 another workflow (loop suppression). Each workflow is rate-limited per device by a **cooldown**
 (default 1 hour) and the whole fleet is bounded by a **global per-minute action budget**. Turn on
@@ -409,7 +416,20 @@ A device that is revoked between the event and the action is skipped; a run_scri
 script version was deleted fails and is recorded (it never leaves the device in an unknown
 state).
 
-The admin surface is a JSON API: `GET/POST /admin/workflows`, `POST /admin/workflows/{id}`,
+**Workflows page.** *Workflows* in the sidebar opens `/admin/workflows` with three tabs: the
+workflow list (trigger, enabled, dry-run, last run, enable/disable, edit, delete), **Run history**
+(per run: event fields, device, condition result, every action's outcome, a dry-run marker;
+filter by workflow) and **Pending approvals** (what each approval will run, with Approve and
+Reject; `SECURITY_ADMIN`+). The editor builds the trigger (event dropdown with the fields each
+event carries, or a cron schedule over a ring, group or tags), the condition (a row builder over
+the same fields as the Groups page, or raw rule JSON), and ordered then/else action lists with
+the right fields for every action type. Server-side validation errors appear above the Save
+button. `AUDITOR` sees the list and run history only. Event fields and hostnames come from
+devices and are always shown escaped. A tag-scoped admin sees only runs of their own
+workflows on devices in their scope, and only their own approvals.
+
+The same URLs return the page when the request asks for `text/html` and the JSON below otherwise.
+The admin surface is also a JSON API: `GET/POST /admin/workflows`, `POST /admin/workflows/{id}`,
 `POST /admin/workflows/{id}/toggle`, `DELETE /admin/workflows/{id}`, `GET /admin/workflows/runs`,
 `GET /admin/workflows/approvals`, and `POST /admin/workflows/approvals/{id}/approve|reject`.
 
