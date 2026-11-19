@@ -1307,6 +1307,8 @@ Staged package-upgrade rollouts with automatic halting. Schema: migrations 00005
 - Device (bearer): `POST /api/v1/desktop/campaign/defer`, `POST /api/v1/desktop/campaign/report`
 - Spire Hub (local, seat0/root): `POST /v1/campaign/defer` on the agent socket, which forwards
   to the device defer endpoint with the device's own token.
+- Desktop Notifications: Dispatched to the active `seat0` graphical session (`notify-send`, falling back to `gdbus` and `dbus-send` on `/run/user/<uid>/bus`). Notifies the signed-in user when updates are scheduled (with remaining deferrals and grace window), when an update is deferred, and when a system reboot is required or scheduled.
+- Interactive Deferral Panel: Spire Hub (`spire-hub`) features an expandable "Pending Updates & Deferral" section at the top of the Security Compliance view. It details the campaign name, grace countdown, remaining deferral count, and individual package upgrade targets / CVE references. The user can defer with one click, securely dispatched over `/v1/campaign/defer` on the agent UNIX domain socket (enforcing `SO_PEERCRED` verification for active `seat0` console session UID).
 
 **Multi-instance safety.** Promotion and halting run inside a per-campaign Postgres advisory
 lock (keyspace base `0x636d7000`), so two control-plane instances evaluating the same campaign

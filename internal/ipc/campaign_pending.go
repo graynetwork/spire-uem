@@ -1,13 +1,24 @@
 package ipc
 
+// PendingPackageItem describes a single package to be upgraded in the pending campaign.
+type PendingPackageItem struct {
+	Package string `json:"package"`
+	Target  string `json:"target,omitempty"`
+	FromCVE string `json:"from_cve,omitempty"`
+}
+
 // PendingCampaign describes a patch-campaign install announced to the active user. The
 // agent sets it before installing so Spire Hub can offer a Defer button, and clears it once
 // the install starts or is deferred.
 type PendingCampaign struct {
-	CampaignID    string `json:"campaign_id"`
-	Name          string `json:"name,omitempty"`
-	MayDefer      bool   `json:"may_defer"`
-	DeferralsLeft int    `json:"deferrals_left"`
+	CampaignID     string               `json:"campaign_id"`
+	Name           string               `json:"name,omitempty"`
+	Packages       []PendingPackageItem `json:"packages,omitempty"`
+	PackageNames   []string             `json:"package_names,omitempty"`
+	MayDefer       bool                 `json:"may_defer"`
+	DeferralsLeft  int                  `json:"deferrals_left"`
+	DeadlinePassed bool                 `json:"deadline_passed,omitempty"`
+	GraceSeconds   int                  `json:"grace_seconds,omitempty"`
 }
 
 // SetPendingCampaign publishes the pending campaign install on GET /v1/status.

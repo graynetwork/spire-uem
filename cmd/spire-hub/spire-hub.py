@@ -178,6 +178,35 @@ def build_gtk_app():
             """
             self.compliance_page = Adw.PreferencesPage()
 
+            # Group 0: Pending Updates & Campaign Deferral (prominently displayed when updates are pending)
+            self.campaign_group = Adw.PreferencesGroup(
+                title="Pending Updates &amp; Deferral",
+                description="Interactive review and deferral of scheduled system patch campaigns.",
+            )
+            self.compliance_page.add(self.campaign_group)
+            self.campaign_group.set_visible(False)
+
+            self.expander_campaign = Adw.ExpanderRow(
+                title="Updates Scheduled",
+                subtitle="Checking for pending patch campaigns...",
+            )
+            campaign_icon = Gtk.Image.new_from_icon_name("software-update-available-symbolic")
+            campaign_icon.set_pixel_size(32)
+            self.expander_campaign.add_prefix(campaign_icon)
+
+            self.defer_button = Gtk.Button(label="Defer")
+            self.defer_button.add_css_class("pill")
+            self.defer_button.set_valign(Gtk.Align.CENTER)
+            self.defer_button.connect("clicked", self._on_defer_clicked)
+            self.expander_campaign.add_action(self.defer_button)
+
+            self.campaign_group.add(self.expander_campaign)
+            self.campaign_package_rows: list[Gtk.Widget] = []
+
+            # Retain self.row_campaign as alias for backward compatibility
+            self.row_campaign = self.expander_campaign
+            self.pending_campaign_id = ""
+
             # Group 1: System & Security Baseline
             self.baseline_group = Adw.PreferencesGroup(
                 title="System &amp; Security Baseline",
@@ -199,17 +228,6 @@ def build_gtk_app():
             self.sync_button.connect("clicked", self._on_sync_clicked)
             self.row_overall.add_suffix(self.sync_button)
             self.baseline_group.add(self.row_overall)
-
-            # Shown only while a patch-campaign install is announced and may still be deferred.
-            self.row_campaign = Adw.ActionRow(title="Updates scheduled", subtitle="")
-            self.defer_button = Gtk.Button(label="Defer")
-            self.defer_button.add_css_class("pill")
-            self.defer_button.set_valign(Gtk.Align.CENTER)
-            self.defer_button.connect("clicked", self._on_defer_clicked)
-            self.row_campaign.add_suffix(self.defer_button)
-            self.row_campaign.set_visible(False)
-            self.pending_campaign_id = ""
-            self.baseline_group.add(self.row_campaign)
 
             self.row_tpm = Adw.ActionRow(
                 title="TPM 2.0 Attestation &amp; Secure Boot",
@@ -305,17 +323,84 @@ def build_gtk_app():
                     self.overall_tag.set_label("Non-Compliant")
                     self.overall_tag.set_css_classes(["caption", "heading", "error"])
 
-                # Pending patch-campaign install (Defer button), only when deferral is allowed.
+                # Pending patch-campaign install (Defer button and interactive package inspection)
                 pending = status.get("pending_campaign")
-                if pending and pending.get("may_defer"):
+                if pending and isinstance(pending, dict):
                     self.pending_campaign_id = pending.get("campaign_id", "")
                     name = pending.get("name") or "Security updates"
                     left = pending.get("deferrals_left", 0)
-                    self.row_campaign.set_subtitle(f"{name} will be installed soon | Deferrals left: {left}")
-                    self.row_campaign.set_visible(True)
+                    grace = pending.get("grace_seconds", 0)
+                    may_defer = bool(pending.get("may_defer", False))
+                    deadline_passed = bool(pending.get("deadline_passed", False))
+
+                    self.expander_campaign.set_title(name)
+                    if may_defer and left > 0:
+                        sub = f"Installation scheduled | {left} deferral(s) remaining"
+                        if grace > 0:
+                            sub += f" | Grace window: {grace}s"
+                        self.expander_campaign.set_subtitle(sub)
+                        self.defer_button.set_label(f"Defer ({left} left)")
+                        self.defer_button.set_sensitive(True)
+                        self.defer_button.set_visible(True)
+                    else:
+                        sub = "Installation proceeding (Deadline reached)" if deadline_passed else "Installation proceeding (No deferrals remaining)"
+                        self.expander_campaign.set_subtitle(sub)
+                        self.defer_button.set_sensitive(False)
+                        self.defer_button.set_visible(False)
+
+                    # Clear previous package rows
+                    for old_pkg_row in self.campaign_package_rows:
+                        self.expander_campaign.remove(old_pkg_row)
+                    self.campaign_package_rows.clear()
+
+                    packages = pending.get("packages") or []
+                    if packages:
+                        for pkg in packages:
+                            if isinstance(pkg, dict):
+                                pkg_name = pkg.get("package", "Package")
+                                target = pkg.get("target", "")
+                                cve = pkg.get("from_cve", "")
+                            else:
+                                pkg_name = str(pkg)
+                                target = ""
+                                cve = ""
+                            sub_parts = []
+                            if target:
+                                sub_parts.append(f"Target: {target}")
+                            if cve:
+                                sub_parts.append(f"Resolves: {cve}")
+                            p_row = Adw.ActionRow(
+                                title=pkg_name,
+                                subtitle=" | ".join(sub_parts) if sub_parts else "Scheduled update package",
+                            )
+                            p_img = Gtk.Image.new_from_icon_name("package-x-generic-symbolic")
+                            p_img.set_pixel_size(24)
+                            p_row.add_prefix(p_img)
+                            self.expander_campaign.add_row(p_row)
+                            self.campaign_package_rows.append(p_row)
+                    else:
+                        pkg_names = pending.get("package_names") or []
+                        for pname in pkg_names:
+                            p_row = Adw.ActionRow(
+                                title=str(pname),
+                                subtitle="Scheduled update package",
+                            )
+                            p_img = Gtk.Image.new_from_icon_name("package-x-generic-symbolic")
+                            p_img.set_pixel_size(24)
+                            p_row.add_prefix(p_img)
+                            self.expander_campaign.add_row(p_row)
+                            self.campaign_package_rows.append(p_row)
+
+                    self.expander_campaign.set_expanded(True)
+                    self.campaign_group.set_visible(True)
+                    self.expander_campaign.set_visible(True)
                 else:
                     self.pending_campaign_id = ""
-                    self.row_campaign.set_visible(False)
+                    self.campaign_group.set_visible(False)
+                    self.expander_campaign.set_visible(False)
+                    for old_pkg_row in self.campaign_package_rows:
+                        self.expander_campaign.remove(old_pkg_row)
+                    self.campaign_package_rows.clear()
 
                 # 1. TPM 2.0 & Secure Boot
                 att_status = status.get("attestation_status", "UNATTESTED")
@@ -527,14 +612,23 @@ def build_gtk_app():
             threading.Thread(target=worker, daemon=True).start()
 
         def _on_defer_complete(self, btn: Gtk.Button, res: dict | None, error_msg: str | None):
-            btn.set_sensitive(True)
             if error_msg:
+                btn.set_sensitive(True)
+                btn.set_label("Defer")
                 self.show_toast(f"Could not defer: {error_msg}")
             elif res and res.get("deferred"):
-                self.show_toast("Updates deferred")
-                self.row_campaign.set_visible(False)
+                self.show_toast("Updates deferred successfully; installation rescheduled")
+                self.expander_campaign.set_subtitle("Updates deferred. Rescheduling...")
+                btn.set_label("Deferred")
+                btn.set_sensitive(False)
+                self.campaign_group.set_visible(False)
+                self.expander_campaign.set_visible(False)
+                self.refresh_all_async()
             else:
-                self.show_toast("No more deferrals available; updates will install now")
+                btn.set_sensitive(False)
+                btn.set_label("Cannot Defer")
+                msg = (res.get("message") if res else None) or "No more deferrals available; updates will install now"
+                self.show_toast(msg)
             return False
 
         def _on_sync_clicked(self, btn: Gtk.Button):
@@ -634,6 +728,12 @@ def main():
         status = get_status()
         catalog = get_catalog()
         print(json.dumps({"status": status, "catalog": catalog}))
+        return 0
+
+    if len(sys.argv) > 2 and sys.argv[1] == "--defer":
+        cid = sys.argv[2]
+        res = SpireIPCClient().defer_campaign(cid)
+        print(json.dumps(res))
         return 0
 
     app = build_gtk_app()

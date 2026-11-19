@@ -154,14 +154,46 @@ func runCampaignDirective(ctx context.Context, d campaignDeps, dir types.Campaig
 	if name == "" {
 		name = "security updates"
 	}
-	d.Notify(ctx, "SpireUEM: updates scheduled", fmt.Sprintf("%s will be installed on this computer.", name))
+	summary := "SpireUEM: updates scheduled"
+	body := fmt.Sprintf("%s will be installed on this computer.", name)
+	if dir.MayDefer && d.Grace > 0 && dir.DeferralsLeft > 0 {
+		graceSecs := int(d.Grace / time.Second)
+		if graceSecs >= 60 {
+			body = fmt.Sprintf("%s will be installed in %d minute(s). Open Spire Hub to review or defer (%d deferral(s) remaining).", name, graceSecs/60, dir.DeferralsLeft)
+		} else {
+			body = fmt.Sprintf("%s will be installed in %d second(s). Open Spire Hub to review or defer (%d deferral(s) remaining).", name, graceSecs, dir.DeferralsLeft)
+		}
+	} else if dir.DeadlinePassed {
+		body = fmt.Sprintf("%s deadline has passed and will be installed now.", name)
+	}
+	d.Notify(ctx, summary, body)
 	if dir.MayDefer && d.Grace > 0 {
-		d.Pending.SetPendingCampaign(ipc.PendingCampaign{CampaignID: id, Name: dir.Name, MayDefer: true, DeferralsLeft: dir.DeferralsLeft})
+		var pkgItems []ipc.PendingPackageItem
+		var pkgNames []string
+		for _, p := range dir.Packages {
+			pkgItems = append(pkgItems, ipc.PendingPackageItem{
+				Package: p.Package,
+				Target:  p.Target,
+				FromCVE: p.FromCVE,
+			})
+			pkgNames = append(pkgNames, p.Package)
+		}
+		d.Pending.SetPendingCampaign(ipc.PendingCampaign{
+			CampaignID:     id,
+			Name:           dir.Name,
+			Packages:       pkgItems,
+			PackageNames:   pkgNames,
+			MayDefer:       true,
+			DeferralsLeft:  dir.DeferralsLeft,
+			DeadlinePassed: dir.DeadlinePassed,
+			GraceSeconds:   int(d.Grace / time.Second),
+		})
 		d.Sleep(ctx, d.Grace)
 		d.Pending.ClearPendingCampaign(id)
 		if d.Pending.TakeCampaignDeferral(id) {
 			// The SERVER granted the deferral and already returned the work to PENDING.
 			log.Printf("[spired] campaign %s deferred by user; install skipped", id)
+			d.Notify(ctx, "SpireUEM: updates deferred", fmt.Sprintf("%s deferred. Updates will be rescheduled.", name))
 			return
 		}
 	}
@@ -284,19 +316,54 @@ func newCampaignDeps(client *http.Client, serverURL, token string, pending campa
 	}
 }
 
-// notifyActiveUser best-effort shows a notification to the active seat0 user, the same way
-// other agent actions do (notify-send on the user's session bus).
+// notifyActiveUser best-effort shows a desktop notification to the active seat0 user.
+// It tries notify-send first, falling back to gdbus and dbus-send on the user's session bus.
 func notifyActiveUser(ctx context.Context, summary, body string) {
 	username, uid, err := inventory.GetActiveSessionDetails()
 	if err != nil || username == "" || uid == "" {
 		return
 	}
-	if _, err := exec.LookPath("notify-send"); err != nil {
-		return
-	}
 	dbus := fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus", uid)
-	_ = exec.CommandContext(ctx, "runuser", "-u", username, "--",
-		"env", dbus, "notify-send", "-u", "normal", "-a", "SpireUEM", summary, body).Run()
+
+	// 1. Try notify-send
+	if _, err := exec.LookPath("notify-send"); err == nil {
+		cmd := exec.CommandContext(ctx, "runuser", "-u", username, "--",
+			"env", dbus, "notify-send", "-u", "normal", "-a", "SpireUEM", summary, body)
+		if err := cmd.Run(); err == nil {
+			return
+		}
+	}
+
+	// 2. Fallback to gdbus
+	if _, err := exec.LookPath("gdbus"); err == nil {
+		cmd := exec.CommandContext(ctx, "runuser", "-u", username, "--",
+			"env", dbus,
+			"gdbus", "call", "--session",
+			"--dest", "org.freedesktop.Notifications",
+			"--object-path", "/org/freedesktop/Notifications",
+			"--method", "org.freedesktop.Notifications.Notify",
+			"SpireUEM", "0", "dialog-information", summary, body, "[]", "{}", "10000",
+		)
+		if err := cmd.Run(); err == nil {
+			return
+		}
+	}
+
+	// 3. Fallback to dbus-send
+	if _, err := exec.LookPath("dbus-send"); err == nil {
+		cmd := exec.CommandContext(ctx, "runuser", "-u", username, "--",
+			"env", dbus,
+			"dbus-send", "--session",
+			"--dest=org.freedesktop.Notifications",
+			"--type=method_call",
+			"/org/freedesktop/Notifications",
+			"org.freedesktop.Notifications.Notify",
+			"string:SpireUEM", "uint32:0", "string:dialog-information",
+			fmt.Sprintf("string:%s", summary), fmt.Sprintf("string:%s", body),
+			"array:string:", "dict:string:string:", "int32:10000",
+		)
+		_ = cmd.Run()
+	}
 }
 
 // dpkgInstalledVersion returns the installed version of a binary package via dpkg-query, or ""

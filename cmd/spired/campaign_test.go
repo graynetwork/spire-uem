@@ -206,6 +206,21 @@ func TestCampaignDirective_DeferralSkipsInstallAndReportsNothing(t *testing.T) {
 	if len(h.pending.set) != 1 || !h.pending.set[0].MayDefer || h.pending.set[0].DeferralsLeft != 2 {
 		t.Errorf("Hub must be offered the Defer button: %+v", h.pending.set)
 	}
+	if len(h.pending.set[0].Packages) != 1 || h.pending.set[0].Packages[0].Package != "openssl" {
+		t.Errorf("pending packages not set correctly: %+v", h.pending.set[0].Packages)
+	}
+	if h.pending.set[0].GraceSeconds != 60 {
+		t.Errorf("expected grace seconds 60, got %d", h.pending.set[0].GraceSeconds)
+	}
+	deferredNotified := false
+	for _, n := range h.notes {
+		if strings.Contains(strings.ToLower(n), "deferred") {
+			deferredNotified = true
+		}
+	}
+	if !deferredNotified {
+		t.Errorf("user must be notified of deferral: %v", h.notes)
+	}
 	if len(h.slept) != 1 || h.slept[0] != time.Minute {
 		t.Errorf("agent should wait the grace period for a deferral: %v", h.slept)
 	}
