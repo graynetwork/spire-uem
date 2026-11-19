@@ -1,0 +1,1800 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "SpireUEM Admin API",
+  "version": "1.0.0",
+  "description": "Versioned admin API. Authenticate with `Authorization: Bearer spire_sa_...` (service account) or a personal access token. Cookie and Basic auth are not accepted. Every failure uses the Error schema. Every response carries X-Request-Id."
+ },
+ "servers": [
+  {
+   "url": "/api/admin/v1"
+  }
+ ],
+ "tags": [
+  {
+   "name": "meta"
+  },
+  {
+   "name": "devices"
+  },
+  {
+   "name": "groups"
+  },
+  {
+   "name": "policies"
+  },
+  {
+   "name": "campaigns"
+  },
+  {
+   "name": "audit"
+  }
+ ],
+ "paths": {
+  "/openapi.json": {
+   "get": {
+    "operationId": "getOpenAPI",
+    "summary": "This document (no authentication)",
+    "tags": [
+     "meta"
+    ],
+    "security": [],
+    "responses": {
+     "200": {
+      "description": "OpenAPI 3.1 document",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/me": {
+   "get": {
+    "operationId": "getMe",
+    "summary": "Describe the calling credential",
+    "tags": [
+     "meta"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "(none)",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "Principal",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Me"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices": {
+   "get": {
+    "operationId": "listDevices",
+    "summary": "List devices",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "tag",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ring",
+      "in": "query",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "CANARY",
+        "BETA",
+        "PILOT",
+        "PRODUCTION"
+       ]
+      }
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "description": "Approval status",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "PENDING_APPROVAL",
+        "APPROVED",
+        "REJECTED",
+        "REVOKED"
+       ]
+      }
+     },
+     {
+      "name": "hostname_prefix",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of devices",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Device"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices/{id}": {
+   "get": {
+    "operationId": "getDevice",
+    "summary": "Get a device with an inventory summary",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Device",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/DeviceDetail"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices/{id}/sync": {
+   "post": {
+    "operationId": "syncDevice",
+    "summary": "Ask the device to check in now",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "OPERATOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Action accepted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Action"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/devices/{id}/lock": {
+   "post": {
+    "operationId": "lockDevice",
+    "summary": "Lock all graphical sessions",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "OPERATOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Action accepted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Action"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "message": {
+          "type": "string",
+          "maxLength": 500
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/devices/{id}/reboot": {
+   "post": {
+    "operationId": "rebootDevice",
+    "summary": "Queue a reboot",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "OPERATOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Action accepted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Action"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/groups": {
+   "get": {
+    "operationId": "listGroups",
+    "summary": "List device groups",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "groups:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of groups",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Group"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/groups/{id}": {
+   "get": {
+    "operationId": "getGroup",
+    "summary": "Get a group",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "groups:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Group",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Group"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/groups/{id}/members": {
+   "get": {
+    "operationId": "listGroupMembers",
+    "summary": "List group members",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "groups:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of members",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/GroupMember"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/policies": {
+   "get": {
+    "operationId": "listPolicies",
+    "summary": "List policies (secrets replaced by {\"set\":bool})",
+    "tags": [
+     "policies"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "policies:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of policies",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Policy"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/policies/{id}": {
+   "get": {
+    "operationId": "getPolicy",
+    "summary": "Get a policy (secrets replaced by {\"set\":bool})",
+    "tags": [
+     "policies"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "policies:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Policy",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Policy"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/campaigns": {
+   "get": {
+    "operationId": "listCampaigns",
+    "summary": "List patch campaigns",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:read",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "state",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of campaigns",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Campaign"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}": {
+   "get": {
+    "operationId": "getCampaign",
+    "summary": "Get a campaign with report and recent events",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:read",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Campaign",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignDetail"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/start": {
+   "post": {
+    "operationId": "startCampaign",
+    "summary": "Start a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/pause": {
+   "post": {
+    "operationId": "pauseCampaign",
+    "summary": "Pause a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/resume": {
+   "post": {
+    "operationId": "resumeCampaign",
+    "summary": "Resume a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/cancel": {
+   "post": {
+    "operationId": "cancelCampaign",
+    "summary": "Cancel a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/audit/events": {
+   "get": {
+    "operationId": "listAuditEvents",
+    "summary": "List audit events",
+    "tags": [
+     "audit"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "audit:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "action",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "actor",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of audit events",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/AuditEvent"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "bearerAuth": {
+    "type": "http",
+    "scheme": "bearer",
+    "description": "spire_sa_<id>_<secret> or spire_pat_<...>"
+   }
+  },
+  "schemas": {
+   "Error": {
+    "type": "object",
+    "properties": {
+     "error": {
+      "type": "object",
+      "properties": {
+       "code": {
+        "type": "string"
+       },
+       "message": {
+        "type": "string"
+       },
+       "request_id": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "code",
+       "message",
+       "request_id"
+      ]
+     }
+    },
+    "required": [
+     "error"
+    ]
+   },
+   "Me": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "service_account",
+       "pat"
+      ]
+     },
+     "actor": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "allowed_tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "Device": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "hardware_uuid": {
+      "type": "string"
+     },
+     "hostname": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "patch_ring": {
+      "type": "string"
+     },
+     "reboot_required": {
+      "type": "boolean"
+     },
+     "last_checkin_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "ws_connected": {
+      "type": "boolean"
+     },
+     "attestation_status": {
+      "type": "string"
+     },
+     "agent_version": {
+      "type": "string"
+     },
+     "pending_updates_count": {
+      "type": "integer"
+     },
+     "security_updates_count": {
+      "type": "integer"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "DeviceDetail": {
+    "type": "object",
+    "properties": {
+     "device": {
+      "$ref": "#/components/schemas/Device"
+     },
+     "inventory_summary": {
+      "type": "object",
+      "additionalProperties": true
+     }
+    }
+   },
+   "Action": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "device_id": {
+      "type": "string"
+     },
+     "command_id": {
+      "type": "string"
+     },
+     "pushed_live": {
+      "type": "boolean"
+     },
+     "connected": {
+      "type": "boolean"
+     }
+    }
+   },
+   "Group": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string"
+     },
+     "rule": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "member_count": {
+      "type": "integer"
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "GroupMember": {
+    "type": "object",
+    "properties": {
+     "device_id": {
+      "type": "string"
+     },
+     "hostname": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "Policy": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "policy_type": {
+      "type": "string"
+     },
+     "payload": {
+      "description": "Policy payload with every credential replaced by {\"set\": true|false}"
+     },
+     "payload_withheld": {
+      "type": "boolean"
+     },
+     "target_tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "target_group_ids": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "is_active": {
+      "type": "boolean"
+     },
+     "version": {
+      "type": "integer"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "Campaign": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "state": {
+      "type": "string"
+     },
+     "target_kind": {
+      "type": "string"
+     },
+     "current_stage": {
+      "type": "integer"
+     },
+     "created_by": {
+      "type": "string"
+     }
+    }
+   },
+   "CampaignDetail": {
+    "type": "object",
+    "properties": {
+     "campaign": {
+      "$ref": "#/components/schemas/Campaign"
+     },
+     "report": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "events": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     }
+    }
+   },
+   "CampaignState": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "state": {
+      "type": "string"
+     }
+    }
+   },
+   "AuditEvent": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "actor": {
+      "type": "string"
+     },
+     "action": {
+      "type": "string"
+     },
+     "target_id": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "details": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "ip_address": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   }
+  },
+  "parameters": {
+   "Id": {
+    "name": "id",
+    "in": "path",
+    "required": true,
+    "schema": {
+     "type": "string",
+     "format": "uuid"
+    }
+   },
+   "Limit": {
+    "name": "limit",
+    "in": "query",
+    "schema": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 500,
+     "default": 100
+    }
+   },
+   "Cursor": {
+    "name": "cursor",
+    "in": "query",
+    "description": "Opaque cursor from a previous next_cursor, valid only with the same filters",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "IdempotencyKey": {
+    "name": "Idempotency-Key",
+    "in": "header",
+    "description": "1-255 printable ASCII chars. Retried requests with the same key replay the first response for 24h; the same key with a different request is a 422.",
+    "schema": {
+     "type": "string",
+     "maxLength": 255
+    }
+   }
+  },
+  "responses": {
+   "BadRequest": {
+    "description": "Invalid parameter or body",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Unauthorized": {
+    "description": "Missing or invalid credentials",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Forbidden": {
+    "description": "Scope or role cap does not permit this",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "NotFound": {
+    "description": "Not found, or outside the credential's tag scope",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Conflict": {
+    "description": "State conflict, or an identical Idempotency-Key request is still in progress",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "IdempotencyMismatch": {
+    "description": "Idempotency-Key reused with a different request",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "RateLimited": {
+    "description": "Too many failed authentication attempts",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "InternalError": {
+    "description": "Internal error",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   }
+  }
+ }
+}

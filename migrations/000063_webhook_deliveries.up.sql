@@ -1,5 +1,5 @@
 -- =====================================================================
--- SpireUEM — Migration 000065: webhook delivery outbox
+-- SpireUEM — Migration 000063: webhook delivery outbox
 -- =====================================================================
 -- Durable outbox: when an event is emitted, ONE statement inserts one row per matching
 -- subscription (INSERT ... SELECT), so fan-out happens exactly once per event regardless of

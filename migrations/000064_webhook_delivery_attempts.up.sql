@@ -1,5 +1,5 @@
 -- =====================================================================
--- SpireUEM — Migration 000066: webhook delivery attempt log
+-- SpireUEM — Migration 000064: webhook delivery attempt log
 -- =====================================================================
 -- One row per HTTP attempt: status code, error, duration and a truncated response snippet,
 -- for the admin delivery log. Cascades with the delivery. Idempotent.

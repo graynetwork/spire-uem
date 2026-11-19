@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -238,11 +239,12 @@ func (h *Handler) GetCampaign(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// applyCampaignControl runs one lifecycle action against an already-loaded, in-scope campaign.
-// It returns the new state, or an HTTP status and message when the action is refused. The state
-// machine lives in campaign.ControlTransition, shared with the admin page.
-func (h *Handler) applyCampaignControl(r *http.Request, c *campaign.Campaign, action string) (campaign.CampaignState, int, string) {
-	actor := AdminUserFromContext(r.Context())
+// applyCampaignControl is the single path for campaign start/pause/resume/cancel, shared by the
+// /admin routes, the admin page and the versioned admin API. The transitions come from
+// campaign.ControlTransition, which the page also uses to decide which buttons to show. The
+// caller has loaded the campaign, checked the actor may see it, and audits on success. On
+// refusal it returns a non-zero HTTP status and a message; on success the status is 0.
+func (h *Handler) applyCampaignControl(ctx context.Context, c *campaign.Campaign, action, actor string) (campaign.CampaignState, int, string) {
 	newState, refusal := campaign.ControlTransition(action, c.State)
 	if refusal != "" {
 		return "", http.StatusBadRequest, refusal
@@ -255,26 +257,28 @@ func (h *Handler) applyCampaignControl(r *http.Request, c *campaign.Campaign, ac
 		// devices go back to PENDING and receive the work again at their next check-in.
 		// This runs before the state change so the evaluation loop never sees the campaign
 		// RUNNING with the stale failures still counted.
-		n, err := h.repo.RetryFailedCampaignWork(r.Context(), c.ID, c.CurrentStage)
+		n, err := h.repo.RetryFailedCampaignWork(ctx, c.ID, c.CurrentStage)
 		if err != nil {
 			return "", http.StatusInternalServerError, "failed to re-queue failed devices; campaign left halted"
 		}
 		detail = fmt.Sprintf("re-queued %d failed or interrupted device(s)", n)
 	}
-	if err := h.repo.SetCampaignState(r.Context(), c.ID, newState); err != nil {
+	if err := h.repo.SetCampaignState(ctx, c.ID, newState); err != nil {
 		return "", http.StatusInternalServerError, "failed to update campaign"
 	}
-	_ = h.repo.RecordCampaignEvent(r.Context(), c.ID, action, actor, detail, c.CurrentStage)
-	h.auditCampaign(r, "CAMPAIGN_"+strings.ToUpper(action), c.ID, map[string]any{"from": string(c.State), "to": string(newState)})
-	return newState, http.StatusOK, ""
+	_ = h.repo.RecordCampaignEvent(ctx, c.ID, action, actor, detail, c.CurrentStage)
+	return newState, 0, ""
 }
 
-// controlCampaign handles start/pause/resume/cancel via a shared path. A browser form post
+// controlCampaign handles start/pause/resume/cancel for the /admin routes. A browser form post
 // (Accept: text/html) is answered with a redirect back to the campaign page, or with that page
 // carrying the refusal; API clients get JSON / plain-text errors exactly as before.
 func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action string) {
-	if wantsHTML(r) {
-		c, err := h.repo.GetCampaign(r.Context(), chi.URLParam(r, "id"))
+	html := wantsHTML(r)
+	var c *campaign.Campaign
+	if html {
+		var err error
+		c, err = h.repo.GetCampaign(r.Context(), chi.URLParam(r, "id"))
 		if err != nil {
 			http.Error(w, "failed to load campaign", http.StatusInternalServerError)
 			return
@@ -283,20 +287,25 @@ func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action
 			http.Error(w, "campaign not found", http.StatusNotFound)
 			return
 		}
-		if _, code, msg := h.applyCampaignControl(r, c, action); msg != "" {
-			h.renderCampaignDetail(w, r, code, msg)
+	} else {
+		var ok bool
+		if c, ok = h.getScopedCampaign(w, r, chi.URLParam(r, "id")); !ok {
 			return
 		}
+	}
+	from := c.State
+	newState, code, msg := h.applyCampaignControl(r.Context(), c, action, AdminUserFromContext(r.Context()))
+	if code != 0 {
+		if html {
+			h.renderCampaignDetail(w, r, code, msg)
+		} else {
+			http.Error(w, msg, code)
+		}
+		return
+	}
+	h.auditCampaign(r, "CAMPAIGN_"+strings.ToUpper(action), c.ID, map[string]any{"from": string(from), "to": string(newState)})
+	if html {
 		http.Redirect(w, r, "/admin/campaigns/"+c.ID, http.StatusSeeOther)
-		return
-	}
-	c, ok := h.getScopedCampaign(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
-	newState, code, msg := h.applyCampaignControl(r, c, action)
-	if msg != "" {
-		http.Error(w, msg, code)
 		return
 	}
 	writeCampaignJSON(w, http.StatusOK, map[string]any{"id": c.ID, "state": string(newState)})

@@ -554,3 +554,48 @@ events to your SIEM or automation. Payload, event list and verification code are
   `webhook_disabled` alert is raised (enable that kind on an alert channel to be told). Fix the
   receiver, tick Enabled and save.
 - The same functions are available as JSON (any request without `Accept: text/html` gets JSON).
+
+## Admin API and service accounts
+
+The versioned admin API lives at `/api/admin/v1/` (reference: `docs/API.md`; machine-readable spec:
+`GET /api/admin/v1/openapi.json`, no authentication needed). It is for scripts, CI and other systems.
+It accepts **Bearer tokens only**. Your browser session cookie and Basic Auth do not work there, which is
+also why CSRF does not apply to it.
+
+**Service accounts** (menu: *API Access*, Super Administrators only) are non-human identities. Each has:
+
+- a **role cap** (Auditor, Operator, Security Admin or Super Admin). The account can never do more than
+  that role could do in the web UI;
+- a list of **API scopes**: `devices:read`, `devices:actions`, `groups:read`, `groups:write` (reserved, no
+  v1 endpoint uses it yet), `policies:read`, `campaigns:read`, `campaigns:write`, `audit:read`;
+- an optional **tag scope**. With tags set, the account sees and acts on only devices carrying one of
+  those tags (and the groups, policies, campaigns and audit events that follow from them), whatever its
+  role cap. Leave it empty for fleet-wide access;
+- an enabled switch and an optional expiry date.
+
+A request succeeds only when **the scope, the role cap and the tag scope all allow it**. Giving an account
+the `devices:actions` scope does nothing if its cap is Auditor.
+
+**Tokens.** An account can hold several tokens, shaped `spire_sa_<id>_<secret>` (256 bits of randomness).
+The token is shown **once**, when you create or rotate it; only a hash is stored, so a lost token cannot be
+recovered, only replaced. Per token you can:
+
+- **Rotate**: issues a new token and lets the old one keep working for an overlap you choose (default 24
+  hours, up to 168, `0` = the old token stops immediately). Use the overlap to roll the new secret out to
+  every consumer. Rotating never extends a token that was already set to expire sooner.
+- **Revoke**: the token stops working at once.
+- Disable or delete the **account** to stop every one of its tokens at once.
+
+A request with an unknown, revoked, expired or disabled credential gets the same `401` whatever the reason.
+Repeated failed attempts from one IP are throttled with `429` (5 per minute, like personal access tokens).
+
+**Personal access tokens** also work on the API. They get the scopes implied by their effective role (Auditor:
+read scopes; Operator: plus `devices:actions`; Security Admin and above: everything), and the owner's tag
+scope applies.
+
+**Audit.** Every change a service account makes is audited with the actor `sa:<name>` (a personal access
+token's changes are audited as its owner). Creating, editing, deleting accounts and creating, rotating and
+revoking tokens are audited with the administrator who did it. Token secrets are never written to the audit log.
+
+**Retries.** Send an `Idempotency-Key` header on POST requests so a retry cannot repeat an action (a
+second lock or reboot, a second campaign start). See `docs/API.md`.

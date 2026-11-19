@@ -1,5 +1,5 @@
 -- =====================================================================
--- SpireUEM — Migration 000064: outbound event webhook subscriptions
+-- SpireUEM — Migration 000062: outbound event webhook subscriptions
 -- =====================================================================
 -- A subscription says "POST events of these types (for devices with these tags) to this
 -- URL, signed with this secret". SUPER_ADMIN manages them. The signing secret is sealed with

@@ -238,6 +238,21 @@ func main() {
 	// the lock make it safe to run on both instances. Halts raise a patch_failed alert.
 	go campaignsync.New(repo, alertMgr).Run(ctx)
 
+	// Admin API idempotency keys are kept 24h. Expired rows are removed hourly; the DELETE is
+	// idempotent, so both instances may run it.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				repo.PurgeExpiredIdempotencyKeys(ctx)
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	log.Printf("[spire-server] shutting down...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

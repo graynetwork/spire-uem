@@ -65,6 +65,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Post("/api/v1/auth/recovery-key", h.RevealLUKSRawRecoveryKey)
 	})
 
+	// Versioned, Bearer-only admin API (service accounts and personal access tokens).
+	h.registerAdminAPIv1(r)
+
 	r.Route("/admin", func(r chi.Router) {
 		r.Use(SessionAuthMiddlewareWithRepo(h.repo, adminUser, adminPass, h.enforceHTTPS, h.auditor))
 		r.Use(CSRFMiddleware)
@@ -310,6 +313,14 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/webhooks/{id}/rotate", h.RotateWebhookSecret)
 			r.Post("/webhooks/{id}/test", h.TestWebhook)
 			r.Get("/webhooks/{id}/deliveries", h.WebhookDeliveries)
+			// Service accounts for the versioned admin API (/api/admin/v1). SUPER_ADMIN only.
+			r.Get("/service-accounts", h.ServiceAccountsPage)
+			r.Post("/service-accounts", h.CreateServiceAccount)
+			r.Post("/service-accounts/{id}", h.UpdateServiceAccount)
+			r.Post("/service-accounts/{id}/delete", h.DeleteServiceAccount)
+			r.Post("/service-accounts/{id}/tokens", h.AddServiceAccountToken)
+			r.Post("/service-accounts/{id}/tokens/{tid}/rotate", h.RotateServiceAccountToken)
+			r.Post("/service-accounts/{id}/tokens/{tid}/revoke", h.RevokeServiceAccountToken)
 
 			r.Get("/settings/tokens", h.ListTokensFragment)
 			r.Post("/settings/tokens", h.CreateToken)
