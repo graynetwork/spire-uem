@@ -1,0 +1,14 @@
+[Unit]
+Description=SpireUEM agent-update rollback check (reinstall previous package if the new one never confirmed healthy)
+Documentation=https://github.com/spire-uem/spire-uem
+
+[Service]
+Type=oneshot
+# Runs the binary-independent rollback check: it reads the on-disk arm record and health
+# marker and reinstalls the staged previous .deb if the new agent did not confirm healthy
+# before the deadline. It does NOT require the new binary to be healthy.
+# Runs the OLD binary staged before the update, not the newly installed one.
+ExecStart=/var/lib/spire/updates/rollback/spired --rollback-check
+ConditionPathExists=/var/lib/spire/updates/rollback/spired
+# Never let a failed rollback check wedge the boot or the timer.
+SuccessExitStatus=0 1

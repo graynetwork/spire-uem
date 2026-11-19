@@ -25,9 +25,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
+	"github.com/spire-uem/spire-uem/internal/alerts"
 	"github.com/spire-uem/spire-uem/internal/audit"
 	"github.com/spire-uem/spire-uem/internal/auth"
-	"github.com/spire-uem/spire-uem/internal/alerts"
+	spirecrypto "github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/types"
@@ -49,6 +50,24 @@ type Handler struct {
 	enforceHTTPS     bool
 	alertStore       *db.AlertStore
 	alertMgr         *alerts.Manager
+	// deviceMTLSMode is shown read-only on the Settings page (off | optional | required).
+	deviceMTLSMode string
+}
+
+// SetDeviceMTLSMode records the device mutual-TLS mode for the read-only Settings display.
+func (h *Handler) SetDeviceMTLSMode(mode string) {
+	if strings.TrimSpace(mode) == "" {
+		mode = "optional"
+	}
+	h.deviceMTLSMode = mode
+}
+
+// deviceMTLSModeOrDefault returns the configured mTLS mode, defaulting to optional.
+func (h *Handler) deviceMTLSModeOrDefault() string {
+	if strings.TrimSpace(h.deviceMTLSMode) == "" {
+		return "optional"
+	}
+	return h.deviceMTLSMode
 }
 
 // SetAlerting wires the alert store and manager used by the Alerts admin page and
@@ -221,6 +240,7 @@ func (h *Handler) DashboardPage(w http.ResponseWriter, r *http.Request) {
 		metrics.OpenCVEs = total
 		metrics.HighUrgencyCVEs = high
 	}
+	h.fillUntrustedCount(r, metrics)
 
 	data := map[string]any{
 		"Title":           "Operations Dashboard",
@@ -252,6 +272,7 @@ func (h *Handler) DashboardMetricsPartial(w http.ResponseWriter, r *http.Request
 		metrics.OpenCVEs = total
 		metrics.HighUrgencyCVEs = high
 	}
+	h.fillUntrustedCount(r, metrics)
 
 	data := map[string]any{
 		"Metrics": metrics,
@@ -813,20 +834,33 @@ func (h *Handler) ServeBootstrapScript(w http.ResponseWriter, r *http.Request) {
 // ServeDebPackage handles GET/HEAD /dist/{filename}, serving dist/*.deb from the filesystem.
 func (h *Handler) ServeDebPackage(w http.ResponseWriter, r *http.Request) {
 	filename := filepath.Base(chi.URLParam(r, "filename"))
-	if filename == "" || filename == "." || filename == ".." || !strings.HasSuffix(filename, ".deb") {
+	isDeb := strings.HasSuffix(filename, ".deb")
+	// The detached Ed25519 update manifest lives beside the .deb as <deb>.manifest.json and
+	// is served through the same public path so the agent can fetch it with its bearer token.
+	isManifest := strings.HasSuffix(filename, ".deb.manifest.json")
+	if filename == "" || filename == "." || filename == ".." || (!isDeb && !isManifest) {
 		http.Error(w, "Invalid package filename", http.StatusBadRequest)
 		return
 	}
 
-	debPath := filepath.Join("dist", filename)
+	// Serve from SPIRE_DIST_DIR when set (matching the artifact resolver), else dist/.
+	distDir := strings.TrimSpace(os.Getenv("SPIRE_DIST_DIR"))
+	if distDir == "" {
+		distDir = "dist"
+	}
+	debPath := filepath.Join(distDir, filename)
 	info, err := os.Stat(debPath)
 	if err != nil || info.IsDir() {
 		http.Error(w, "Package not found", http.StatusNotFound)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/vnd.debian.binary-package")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	if isManifest {
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "application/vnd.debian.binary-package")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	}
 	http.ServeFile(w, r, debPath)
 }
 
@@ -980,6 +1014,23 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		log.Printf("[web] get tpm attestation %s error: %v", id, err)
 	}
 
+	// Attestation trust panel: latest result, active exception, matching baseline, enforcement
+	// mode, and a bounded history. Computed with the same decision table used at check-in.
+	attExc, _ := h.repo.GetActiveBaselineException(r.Context(), dev.ID)
+	attLatest, _ := h.repo.GetLatestAttestationResult(r.Context(), dev.ID)
+	attHistory, _ := h.repo.ListAttestationResults(r.Context(), dev.ID, 20)
+	attMaxAge, _ := h.repo.AttestationMaxAge(r.Context())
+	attMode, _ := h.repo.AttestationEnforcementMode(r.Context())
+	attTrust := spirecrypto.EvaluateTrust(attLatest, attExc, attMaxAge, time.Now().UTC())
+	var matchingBaseline *types.TPMBaseline
+	var mismatchedPCRs []string
+	if attLatest != nil {
+		mismatchedPCRs = attLatest.MismatchedPCRs
+		if attLatest.BaselineID != nil && *attLatest.BaselineID != "" {
+			matchingBaseline, _ = h.repo.GetBaseline(r.Context(), *attLatest.BaselineID)
+		}
+	}
+
 	luksEscrows, err := h.repo.ListDeviceLUKSEscrows(r.Context(), dev.ID)
 	if err != nil {
 		log.Printf("[web] list luks escrows %s error: %v", id, err)
@@ -1020,6 +1071,9 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 	if isLost, seenIP, activeUser, err := h.repo.GetDeviceLostFacts(r.Context(), dev.ID); err == nil {
 		dev.IsLost, dev.LastSeenIP, dev.LastActiveUser = isLost, seenIP, activeUser
 	}
+
+	// Device client certificate (mTLS): the most recent leaf, for the cert-status panel.
+	deviceCert, _ := h.repo.GetLatestDeviceCertificate(r.Context(), dev.ID)
 
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
@@ -1067,6 +1121,16 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"PolicyDetails":      policies,
 		"Commands":           commands,
 		"TPMAttestation":     tpmAttestation,
+		"AttestationTrusted":    attTrust.Trusted,
+		"AttestationReason":     attTrust.Reason,
+		"AttestationHasException": attExc != nil,
+		"AttestationException":  attExc,
+		"AttestationLatest":     attLatest,
+		"AttestationHistory":    attHistory,
+		"AttestationMode":       string(attMode),
+		"MatchingBaseline":      matchingBaseline,
+		"MismatchedPCRs":        mismatchedPCRs,
+		"MaxExceptionDays":      types.MaxExceptionDays,
 		"LUKSEscrows":        luksEscrows,
 		"LUKSAuditLogs":      luksAuditLogs,
 		"RevealedKey":        revealed,
@@ -1084,6 +1148,8 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"OpenWipe":           openWipe,
 		"LUKSRotations":      luksRotations,
 		"AdminRole":          string(AdminRoleFromContext(r.Context())),
+		"DeviceCert":         deviceCert,
+		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -3554,6 +3620,7 @@ func (h *Handler) SettingsPage(w http.ResponseWriter, r *http.Request) {
 		"FlashMessage":    r.URL.Query().Get("msg"),
 		"TotalHostsCount": summary.TotalDevices,
 		"CVEFeedState":    cveFeedState,
+		"DeviceMTLSMode":  h.deviceMTLSModeOrDefault(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -4540,7 +4607,6 @@ var requestHostPattern = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:
 func validRequestHost(host string) bool {
 	return requestHostPattern.MatchString(host)
 }
-
 
 // rolloutVersionRe accepts the version strings the agent build stamps: 1.2.3, optional
 // leading v, optional -prerelease.

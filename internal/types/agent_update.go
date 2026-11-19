@@ -10,6 +10,9 @@ const (
 	AgentUpdateFailed = "FAILED"
 	// AgentUpdatePending means an update was dispatched and the agent has not yet reported back.
 	AgentUpdatePending = "PENDING"
+	// AgentUpdateRolledBack means a new agent was installed but failed to confirm healthy,
+	// so an independent trigger reinstalled the previous package. Reported once.
+	AgentUpdateRolledBack = "ROLLED_BACK"
 )
 
 // AgentUpdateAction is the directive the server gives the agent on check-in.
@@ -28,6 +31,11 @@ type AgentArtifact struct {
 	URL     string `json:"url"`
 	SHA256  string `json:"sha256"`
 	Size    int64  `json:"size"`
+	// ManifestURL is the server path to the detached Ed25519-signed manifest
+	// (<deb>.manifest.json) that lives beside the .deb. The server never holds the signing
+	// key; it only serves the manifest file release engineering published. Empty when no
+	// manifest is published for this artifact (unsigned legacy artifact).
+	ManifestURL string `json:"manifest_url,omitempty"`
 }
 
 // AgentUpdateDirective is embedded in CheckinResponse to drive the agent's self-update.

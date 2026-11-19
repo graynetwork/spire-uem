@@ -55,6 +55,10 @@ type DashboardMetrics struct {
 	AttestedHosts   int `json:"attested_hosts"`
 	UnattestedHosts int `json:"unattested_hosts"`
 	FailedHosts     int `json:"failed_hosts"`
+	// UntrustedHosts is the count of APPROVED, in-scope devices NOT currently trusted under
+	// the attestation trust decision table (mismatch, failed, policy violation, stale, no
+	// TPM, or never attested — minus any device with an unexpired exception).
+	UntrustedHosts int `json:"untrusted_hosts"`
 
 	// 2x2 Compliance Matrix
 	CompliantHosts  int `json:"compliant_hosts"`

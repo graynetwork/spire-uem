@@ -154,6 +154,10 @@
                 <span>Hardware Attested</span>
                 <span class="text-emerald-400 font-mono font-medium">{{.Metrics.AttestedHosts}} / {{.Metrics.TotalHosts}}</span>
             </div>
+            <div class="flex items-center justify-between text-[11px] text-slate-400">
+                <span>Attestation Untrusted</span>
+                <span class="{{if gt .Metrics.UntrustedHosts 0}}text-rose-400{{else}}text-emerald-400{{end}} font-mono font-medium">{{.Metrics.UntrustedHosts}}</span>
+            </div>
         </div>
 
         <!-- 2. Active Benchmark Scans Card -->
