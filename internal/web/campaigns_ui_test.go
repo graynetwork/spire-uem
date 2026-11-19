@@ -642,3 +642,73 @@ func TestRiskUI_ScopedAdmin(t *testing.T) {
 		t.Errorf("own acceptance not deleted")
 	}
 }
+
+// TestCampaignJSON_ScopedReportAndGroupTarget covers two scoping gaps in the JSON API: the
+// detail report counted devices outside the admin's tags, and a scoped admin could create a
+// campaign against a fleet-wide group.
+func TestCampaignJSON_ScopedReportAndGroupTarget(t *testing.T) {
+	e := newUIEnv(t)
+	ctx := context.Background()
+	teamA := "team-a-" + e.sfx
+	teamB := "team-b-" + e.sfx
+	scoped := e.user("rep-scoped", types.RoleSecurityAdmin, teamA)
+
+	c := e.campaign("report-"+e.sfx, nil, []string{teamA, teamB})
+	e.failedWork(c, e.device("rep-in", teamA), "in scope")
+	e.failedWork(c, e.device("rep-out1", teamB), "out of scope")
+	e.failedWork(c, e.device("rep-out2", teamB), "out of scope")
+
+	rec := e.do(scoped, http.MethodGet, "/admin/campaigns/"+c.ID, "application/json", nil, false)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail: %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Report campaign.CampaignReport `json:"report"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	total := 0
+	for _, s := range body.Report.StageStates {
+		total += s.Count
+	}
+	failed := 0
+	for _, f := range body.Report.FailureClasses {
+		failed += f.Count
+	}
+	if total != 1 || failed != 1 {
+		t.Errorf("scoped report counts devices outside scope: stage total %d, failures %d (want 1, 1)", total, failed)
+	}
+
+	// A fleet-wide group (created by an unscoped admin) is refused for a scoped admin.
+	fleet, err := e.repo.CreateGroup(ctx, db.CreateGroupInput{Name: "fleet-" + e.sfx, Kind: types.GroupKindTarget, CreatedBy: "seed"})
+	if err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	post := func(u *uiUser, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/admin/campaigns", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", u.csrf)
+		req.AddCookie(u.cookie)
+		rec := httptest.NewRecorder()
+		e.router.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post(scoped, `{"name":"g-`+e.sfx+`","target_kind":"group","group_id":"`+fleet.ID+`"}`); rec.Code != http.StatusForbidden {
+		t.Errorf("scoped admin targeting a fleet-wide group: got %d, want 403 (%s)", rec.Code, rec.Body.String())
+	}
+	if rec := post(scoped, `{"name":"g2-`+e.sfx+`","target_kind":"group","group_id":"00000000-0000-0000-0000-000000000001"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown group: got %d, want 400", rec.Code)
+	}
+	own, err := e.repo.CreateGroup(ctx, db.CreateGroupInput{Name: "own-" + e.sfx, Kind: types.GroupKindTarget, CreatedBy: scoped.name, CreatorScopedTags: []string{teamA}})
+	if err != nil {
+		t.Fatalf("create own group: %v", err)
+	}
+	if rec := post(scoped, `{"name":"g3-`+e.sfx+`","target_kind":"group","group_id":"`+own.ID+`"}`); rec.Code != http.StatusCreated {
+		t.Errorf("scoped admin targeting their own group: got %d, want 201 (%s)", rec.Code, rec.Body.String())
+	}
+	super := e.user("rep-super", types.RoleSuperAdmin)
+	if rec := post(super, `{"name":"g4-`+e.sfx+`","target_kind":"group","group_id":"`+fleet.ID+`"}`); rec.Code != http.StatusCreated {
+		t.Errorf("super admin targeting a fleet group: got %d, want 201", rec.Code)
+	}
+}

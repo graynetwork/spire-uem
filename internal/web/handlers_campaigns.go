@@ -79,6 +79,22 @@ func (h *Handler) buildCampaign(r *http.Request, in campaignCreateInput) (*campa
 	default:
 		return bad("target_kind", "target_kind must be group, cve, or packages")
 	}
+	// A group target must exist, and a tag-scoped admin may only use a group they could edit,
+	// the same rule policy targeting applies (policy_scope.go). Dispatch also intersects the
+	// target with the creator's tags, but refusing here keeps the stored definition honest.
+	if kind == campaign.TargetGroup {
+		gid := strings.TrimSpace(in.GroupID)
+		if gid == "" {
+			return bad("group_id", "group_id is required for a group target")
+		}
+		g, err := h.repo.GetGroupByID(r.Context(), gid)
+		if err != nil || g == nil {
+			return bad("group_id", "unknown target group")
+		}
+		if !GroupEditAllowed(AdminUserObjFromContext(r.Context()), g) {
+			return nil, &campaignFieldError{Field: "group_id", Msg: fmt.Sprintf("group %q is outside your tag scope", g.Name), Status: http.StatusForbidden}
+		}
+	}
 	// Validate explicit package names up front so an invalid spec never reaches a device.
 	for _, p := range in.Packages {
 		if !campaign.ValidPackageName(strings.TrimSpace(p)) {
@@ -215,7 +231,7 @@ func (h *Handler) GetCampaign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	work, _ := h.repo.ListCampaignWork(r.Context(), c.ID, h.deviceScope(r))
-	report, _ := h.repo.CampaignReport(r.Context(), c.ID)
+	report, _ := h.repo.CampaignReport(r.Context(), c.ID, h.deviceScope(r))
 	events, _ := h.repo.ListCampaignEvents(r.Context(), c.ID, 100)
 	writeCampaignJSON(w, http.StatusOK, map[string]any{
 		"campaign": c, "work": work, "report": report, "events": events,
