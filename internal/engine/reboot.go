@@ -79,6 +79,23 @@ func NotifyDesktopRebootPending(ctx context.Context, message string) error {
 			"--method", "org.freedesktop.Notifications.Notify",
 			"SpireUEM", "0", "dialog-warning", summary, message, "[]", "{}", "10000",
 		)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+
+	if _, err := exec.LookPath("dbus-send"); err == nil {
+		cmd := exec.CommandContext(ctx, "runuser", "-u", username, "--",
+			"env", dbusAddr,
+			"dbus-send", "--session",
+			"--dest=org.freedesktop.Notifications",
+			"--type=method_call",
+			"/org/freedesktop/Notifications",
+			"org.freedesktop.Notifications.Notify",
+			"string:SpireUEM", "uint32:0", "string:dialog-warning",
+			fmt.Sprintf("string:%s", summary), fmt.Sprintf("string:%s", message),
+			"array:string:", "dict:string:string:", "int32:10000",
+		)
 		_ = cmd.Run()
 	}
 
