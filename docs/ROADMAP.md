@@ -2,6 +2,7 @@
 
 **Assessed:** 17 November 2026
 **Compared with:** Microsoft Intune, Omnissa Workspace ONE UEM, Ivanti Neurons for UEM, IBM MaaS360, and Jamf Pro
+**Status updated:** 19 November 2026. Phase 1 merged in PR #6 and Phase 2 in PR #8; see [Recommended order](#recommended-order). Items below carry a **Status** line where work has landed, and anything not listed there is still open.
 
 No objective "top five" ranking exists. These five were chosen for enterprise market presence or category importance. Jamf Pro is included as the leading Apple-focused MDM.
 
@@ -22,13 +23,13 @@ SpireUEM's largest gaps are not more Linux policy types. They are device trust, 
 | Capability | SpireUEM | Intune | Workspace ONE | Ivanti | MaaS360 | Jamf Pro |
 |---|---|---|---|---|---|---|
 | Full Linux configuration | **Strong, Debian-specific** | Compliance only | Moderate | Inventory/patch only | None | None |
-| Dynamic device groups | Tags and rings only | Yes | Yes | Yes | Yes | Yes |
+| Dynamic device groups | Rule-based groups (Phase 2) | Yes | Yes | Yes | Yes | Yes |
 | Declarative policies | **Strong** | Strong outside Linux | Strong | Strong outside Linux | Strong outside Linux | Strong for Apple |
-| Custom scripts and sensors | Ad-hoc commands only | Compliance scripts | Strong | Automation scripts | Windows/macOS scripts | Strong for macOS |
+| Custom scripts and sensors | Versioned scripts and sensors (Phase 2) | Compliance scripts | Strong | Automation scripts | Windows/macOS scripts | Strong for macOS |
 | Application catalog | Basic Debian/Flatpak | Strong | Strong | Strong outside Linux | Strong outside Linux | Strong for Apple |
-| Patch campaigns | Basic windows and immediate patch | Strong outside Linux | Limited on Linux | Strong Linux patching | Strong outside Linux | Strong for Apple |
+| Patch campaigns | Staged campaigns with auto-halt (Phase 2) | Strong outside Linux | Limited on Linux | Strong Linux patching | Strong outside Linux | Strong for Apple |
 | Compliance access gating | Reporting only | Entra Conditional Access | Access/Entra | Access/Sentry | Entra/IBM Verify | Entra/Google integrations |
-| Certificate lifecycle | Trusted-CA deployment only | SCEP/PKCS/Cloud PKI | CA and credential profiles | Built-in/external CA | CA connector | SCEP/AD CS |
+| Certificate lifecycle | Built-in device CA and mTLS (Phase 1); no SCEP/EST | SCEP/PKCS/Cloud PKI | CA and credential profiles | Built-in/external CA | CA connector | SCEP/AD CS |
 | Remote administration | Shell, PTY, RDP, lock/wipe | Remote Help | Workspace ONE Assist | Remote Control | Remote Support/TeamViewer | Remote Assist |
 | Administrator delegation | Fixed roles plus tags | Custom roles/scopes | Roles and organization groups | Roles and spaces | Custom roles/groups | Roles and sites |
 | Analytics | Operational dashboard | Advanced Analytics | Intelligence | DEX/Edge Intelligence | Dashboards and alerts | Inventory searches |
@@ -49,6 +50,8 @@ Every comparison product can derive groups from inventory or compliance state. S
 
 This should be the first major control-plane feature because it improves almost every existing feature.
 
+**Status: done in Phase 2 (PR #8).** Rules compile to parameterised SQL over inventory, sensor and compliance attributes, with nested conditions, include/exclude, preview, membership history, and policy targeting. Alerts and reports can't target groups yet; policies (including application installs), patch campaigns and workflows can.
+
 ### 2. Device certificate and PKI lifecycle
 
 SpireUEM can distribute trusted CA certificates, but it cannot issue, renew, revoke, or use certificates as device identities.
@@ -61,6 +64,8 @@ SpireUEM can distribute trusted CA certificates, but it cannot issue, renew, rev
 - A CA abstraction supporting an internal CA and external enterprise PKI.
 
 All five products have certificate-management facilities. This would also close SpireUEM's bearer-token and first-contact wipe-key trust gaps.
+
+**Status: partly done in Phase 1 (PR #6).** A built-in device CA issues one certificate per device, with renewal, revocation, an `off`/`optional`/`required` mTLS mode and optional server-certificate pinning. Still open: SCEP/EST, external enterprise PKI, and certificate profiles for Wi-Fi, 802.1X, VPN and browsers.
 
 ### 3. Conditional-access and quarantine integrations
 
@@ -90,6 +95,8 @@ Queued root commands are useful for one-off work, but they are not a managed aut
 
 Workspace ONE's sensors and Jamf's scripts and extension attributes are good reference models.
 
+**Status: done in Phase 2 (PR #8).** Versioned scripts with hash checks, parameters and sealed secrets, timeouts and output caps, root or active-user execution, typed sensors feeding attributes, and a `SCRIPT_POLICY` type with detect, remediate and remove scripts. Scheduled and event runs come from workflows. Script signatures are still open.
+
 ### 5. Rich hardware and software inventory
 
 SpireUEM records packages, source packages, OS, kernel, hostname, hardware UUID, and active-session information.
@@ -102,6 +109,8 @@ SpireUEM records packages, source packages, OS, kernel, hostname, hardware UUID,
 - Fleet-wide search and CSV/JSON exports.
 
 Inventory should feed dynamic groups instead of becoming a separate passive database.
+
+**Status: done in Phase 2 (PR #8).** Hardware, network, software and security facts, change history, sensor-backed custom attributes, fleet search and CSV/JSON export. Collectors have only been tested with fakes, not across varied real hardware.
 
 ### 6. Custom roles and organization scopes
 
@@ -142,6 +151,8 @@ SpireUEM has patch windows, rings, immediate patching, Debian CVE matching, and 
 - Per-package exclusions and temporary risk acceptance.
 - Campaign progress, failure classification, and mean-time-to-remediate reporting.
 
+**Status: mostly done in Phase 2 (PR #8).** CVE and package campaigns, canary -> pilot -> production promotion, automatic halt, blackout windows, deadlines, deferrals, reboot policy and time-limited risk acceptance, tested with real `apt` on a lab VM. Still open: an admin rollback action, version pinning, and mean-time-to-remediate reporting.
+
 ### 9. Application lifecycle management
 
 - Package metadata, icons, descriptions, categories, ownership, and support links.
@@ -172,6 +183,8 @@ Actions: assign or remove policy, run a managed script, change ring or tag, open
 
 Keep the first version deterministic. A visual workflow editor can come later.
 
+**Status: done in Phase 2 (PR #8).** A durable event log processed once across servers, with triggers, conditions in the group rule language, and actions including scripts, tags, ring, groups, alerts, lock, quarantine, approvals and `start_campaign`. Loop suppression, cooldowns, an action budget and dry runs limit it. No admin pages yet; it's managed through the JSON API.
+
 ### 11. Stable automation API
 
 SpireUEM has REST handlers, PATs, and alert webhooks, but no documented, versioned public administration API.
@@ -194,6 +207,8 @@ SpireUEM has REST handlers, PATs, and alert webhooks, but no documented, version
 - Clear on-device indicator and user-controlled disconnect.
 - Complete operator, target, start, end, and consent audit records.
 - Optional session recording with explicit retention and privacy controls.
+
+**Status: first item done in Phase 1 (PR #6).** Only an explicit Yes in the `zenity` dialog approves; otherwise the request is refused with `CONSENT_UNAVAILABLE`. The rest of this list is open, and the PIN sent to the administrator is still never applied to GNOME Remote Desktop.
 
 ### 13. Reporting and operational analytics
 
@@ -220,6 +235,8 @@ Dynamic enrollment tokens exist, but the standard bootstrap cannot consume them.
 - Optional approval requirement depending on token policy.
 - Token rotation and enrollment audit history.
 
+**Status: done in Phase 2 (PR #8).** Tokens are read from a file or environment variable, with bounded uses, optional approval, hostname limits, token-assigned tags, rotation, enrollment history, rate limiting and `spired --reset-identity` for golden images. Cloud-init and preseed examples are still open.
+
 ### 15. Additional Linux distributions
 
 Debian depth is a differentiator; expanding too early would weaken it. Once policy engines have clean platform interfaces, add:
@@ -233,14 +250,16 @@ Use separate package, firewall, network, compliance, and desktop adapters instea
 
 ## Recommended order
 
-### Phase 1: secure the trust chain
+### Phase 1: secure the trust chain (done, PR #6)
 
 1. Device certificates, renewal, and mTLS.
 2. Approved PCR baselines and attestation-based secret gating.
 3. Independently signed updates with rollback.
 4. Fail-closed remote-assistance consent.
 
-### Phase 2: manage existing capabilities at scale
+Remaining Phase 1 gaps: a device whose certificate has lapsed can get a new one with its token alone, and rollback and real TPM paths have only been tested with fakes. PR #7 seals EAP-TLS client keys at rest, but PCR enforcement doesn't yet recognise them: an untrusted device still receives the sealed client-key envelope (ciphertext, not plaintext), and a policy whose only secret is a client key isn't flagged as withheld.
+
+### Phase 2: manage existing capabilities at scale (done, PR #8)
 
 5. Rich inventory and custom attributes.
 6. Dynamic groups and saved queries.
