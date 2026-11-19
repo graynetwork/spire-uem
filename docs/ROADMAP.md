@@ -2,7 +2,7 @@
 
 **Assessed:** 17 November 2026
 **Compared with:** Microsoft Intune, Omnissa Workspace ONE UEM, Ivanti Neurons for UEM, IBM MaaS360, and Jamf Pro
-**Status updated:** 19 November 2026. Phase 1 merged in PR #6 and Phase 2 in PR #8; see [Recommended order](#recommended-order). Items below carry a **Status** line where work has landed, and anything not listed there is still open.
+**Status updated:** 19 November 2026. Phase 1 merged in PR #6, Phase 2 in PR #8, and the first part of Phase 3 in PR #13; see [Recommended order](#recommended-order). Items below carry a **Status** line where work has landed, and anything not listed there is still open.
 
 No objective "top five" ranking exists. These five were chosen for enterprise market presence or category importance. Jamf Pro is included as the leading Apple-focused MDM.
 
@@ -80,6 +80,8 @@ SpireUEM records compliance and attestation results but does not use them to con
 
 SpireUEM should integrate with access systems rather than build its own identity proxy.
 
+**Status: partly done.** Phase 1 (PR #6) added approved PCR baselines with time-limited exceptions and refuses sealed secrets, including EAP-TLS client keys (PR #10), to untrusted devices. Phase 3 (PR #13) added signed webhooks, including `compliance_changed` and `attestation_failed` events, and a read-only device API (`/api/admin/v1/devices`). Still open: a rule engine for access decisions, a quarantine policy set, and connectors for Entra, Authentik, NAC and VPN.
+
 ### 4. Reusable scripts and custom sensors
 
 Queued root commands are useful for one-off work, but they are not a managed automation system.
@@ -95,7 +97,7 @@ Queued root commands are useful for one-off work, but they are not a managed aut
 
 Workspace ONE's sensors and Jamf's scripts and extension attributes are good reference models.
 
-**Status: done in Phase 2 (PR #8).** Versioned scripts with hash checks, parameters and sealed secrets, timeouts and output caps, root or active-user execution, typed sensors feeding attributes, and a `SCRIPT_POLICY` type with detect, remediate and remove scripts. Scheduled and event runs come from workflows. Script signatures are still open.
+**Status: done in Phase 2 (PR #8).** Versioned scripts with hash checks, parameters and sealed secrets, timeouts and output caps, root or active-user execution, typed sensors feeding attributes, and a `SCRIPT_POLICY` type with detect, remediate and remove scripts. Scheduled and event runs come from workflows. Admin pages were added in Phase 3 (PR #13). Script signatures are still open.
 
 ### 5. Rich hardware and software inventory
 
@@ -121,6 +123,8 @@ SpireUEM has fixed roles and tag scopes.
 - Organization units or sites with delegated administrators.
 - Optional two-person approval for security-policy, rollout, and mass-action changes.
 - Service accounts with API-specific roles, separate from human PATs.
+
+**Status: service accounts done in Phase 3 (PR #13).** Each has API scopes, a role cap and an optional tag scope, and is managed by SUPER_ADMINs on the API Access page. Custom roles, separate rights, organization units and two-person approval are still open.
 
 Multi-tenancy should wait unless SpireUEM intends to support MSPs.
 
@@ -151,7 +155,7 @@ SpireUEM has patch windows, rings, immediate patching, Debian CVE matching, and 
 - Per-package exclusions and temporary risk acceptance.
 - Campaign progress, failure classification, and mean-time-to-remediate reporting.
 
-**Status: mostly done in Phase 2 (PR #8).** CVE and package campaigns, canary -> pilot -> production promotion, automatic halt, blackout windows, deadlines, deferrals, reboot policy and time-limited risk acceptance, tested with real `apt` on a lab VM. Still open: an admin rollback action, version pinning, and mean-time-to-remediate reporting.
+**Status: mostly done in Phase 2 (PR #8).** CVE and package campaigns, canary -> pilot -> production promotion, automatic halt, blackout windows, deadlines, deferrals, reboot policy and time-limited risk acceptance, tested with real `apt` on a lab VM. Admin pages for campaigns and risk acceptances were added in Phase 3 (PR #13). Still open: an admin rollback action, version pinning, and mean-time-to-remediate reporting.
 
 ### 9. Application lifecycle management
 
@@ -183,7 +187,7 @@ Actions: assign or remove policy, run a managed script, change ring or tag, open
 
 Keep the first version deterministic. A visual workflow editor can come later.
 
-**Status: done in Phase 2 (PR #8).** A durable event log processed once across servers, with triggers, conditions in the group rule language, and actions including scripts, tags, ring, groups, alerts, lock, quarantine, approvals and `start_campaign`. Loop suppression, cooldowns, an action budget and dry runs limit it. No admin pages yet; it's managed through the JSON API.
+**Status: done in Phase 2 (PR #8).** A durable event log processed once across servers, with triggers, conditions in the group rule language, and actions including scripts, tags, ring, groups, alerts, lock, quarantine, approvals and `start_campaign`. Loop suppression, cooldowns, an action budget and dry runs limit it. Admin pages, with a structured editor, run history and approvals, were added in Phase 3 (PR #13).
 
 ### 11. Stable automation API
 
@@ -196,6 +200,8 @@ SpireUEM has REST handlers, PATs, and alert webhooks, but no documented, version
 - Service-account credentials with granular scopes.
 - Event webhooks for enrollment, compliance, patching, policy changes, and device lifecycle.
 - Terraform or Ansible integration only after the API stabilizes.
+
+**Status: mostly done in Phase 3 (PR #13).** `/api/admin/v1/` covers devices and device actions, groups, policies, campaigns and audit events, with bearer-only auth, service-account scopes, cursor pagination, one error format, idempotency keys and an OpenAPI 3.1 spec (`docs/API.md`). Signed event webhooks cover enrollment, compliance, patching and campaigns, policy changes and device lifecycle, through a durable outbox with retries (`docs/WEBHOOKS.md`). Still open: write endpoints for groups, policies, applications and campaign creation, report endpoints, and Terraform or Ansible integration.
 
 ### 12. Remote-support hardening
 
@@ -257,7 +263,7 @@ Use separate package, firewall, network, compliance, and desktop adapters instea
 3. Independently signed updates with rollback.
 4. Fail-closed remote-assistance consent.
 
-Remaining Phase 1 gaps: a device whose certificate has lapsed can get a new one with its token alone, and rollback and real TPM paths have only been tested with fakes. PR #7 seals EAP-TLS client keys at rest, but PCR enforcement doesn't yet recognise them: an untrusted device still receives the sealed client-key envelope (ciphertext, not plaintext), and a policy whose only secret is a client key isn't flagged as withheld.
+Remaining Phase 1 gaps: a device whose certificate has lapsed can get a new one with its token alone, and rollback and real TPM paths have only been tested with fakes. PR #7 seals EAP-TLS client keys at rest, and PR #10 withholds them from untrusted devices under PCR enforcement.
 
 ### Phase 2: manage existing capabilities at scale (done, PR #8)
 
@@ -268,9 +274,9 @@ Remaining Phase 1 gaps: a device whose certificate has lapsed can get a new one 
 9. Patch campaigns and automatic rollout halting.
 10. General remediation workflows.
 
-### Phase 3: enterprise integration
+### Phase 3: enterprise integration (in progress)
 
-11. Stable administration API, service accounts, and event webhooks.
+11. Stable administration API, service accounts, and event webhooks (first part done, PR #13).
 12. Conditional-access and EDR connectors.
 13. Custom roles and organization scopes.
 14. Application lifecycle improvements.
