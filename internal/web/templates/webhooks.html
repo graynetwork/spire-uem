@@ -1,0 +1,182 @@
+{{define "webhooks_content"}}
+<div class="space-y-6 max-w-6xl mx-auto">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-[#1a2234]">
+        <div>
+            <h1 class="text-lg font-semibold text-white tracking-tight">Event webhooks</h1>
+            <p class="text-xs text-slate-400 mt-0.5">Send signed JSON events (enrollment, compliance, patching, policy changes, device lifecycle) to your SIEM or automation. Restricted to Super Administrators.</p>
+        </div>
+    </div>
+
+    {{if .FlashMessage}}
+    <div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-xs text-emerald-400 font-mono">{{.FlashMessage}}</div>
+    {{end}}
+
+    {{if .NewSecret}}
+    <div id="new-secret" class="p-4 bg-amber-500/10 border border-amber-500/40 rounded-md space-y-2">
+        <div class="text-sm text-amber-200 font-semibold">{{if .NewSecret.Rotated}}New signing secret for{{else}}Signing secret for{{end}} "{{.NewSecret.SubscriptionName}}"</div>
+        <code class="block break-all text-xs text-white bg-[#0b111c] border border-[#25334d] rounded px-2 py-2 select-all">{{.NewSecret.Secret}}</code>
+        <div class="text-[11px] text-amber-300">Copy it now. It is shown once and cannot be retrieved later; rotate to get a new one.</div>
+    </div>
+    {{end}}
+
+    <div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-md text-[11px] text-amber-300 leading-relaxed">
+        <strong>Security note:</strong> the server POSTs to these URLs. https is required; loopback, link-local (including cloud metadata) and multicast addresses are always blocked at connect time.
+        Private-network targets (RFC1918, CGNAT) need the per-webhook <em>allow private network</em> flag, which is audited. Redirects are not followed.
+        Each request carries <code>Spire-Event-Id</code> and <code>Spire-Signature: t=&lt;unix&gt;,v1=&lt;hmac&gt;</code>. See docs/WEBHOOKS.md.
+    </div>
+
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234]"><h2 class="text-sm font-semibold text-white">Subscriptions</h2></div>
+        <div class="divide-y divide-[#1a2234]">
+            {{if not .Webhooks}}<div class="px-4 py-6 text-xs text-slate-500">No webhooks yet. Add one below.</div>{{end}}
+            {{range .Webhooks}}
+            <details class="group">
+                <summary class="px-4 py-3 flex items-center justify-between cursor-pointer list-none">
+                    <div class="flex items-center space-x-3 min-w-0">
+                        <span class="text-sm text-white truncate">{{.Name}}</span>
+                        {{if .Enabled}}<span class="text-[10px] text-emerald-400">enabled</span>{{else}}<span class="text-[10px] text-rose-400">disabled</span>{{end}}
+                        {{if .AllowPrivateNetwork}}<span class="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/10 border border-amber-500/30 text-amber-300">private network</span>{{end}}
+                        <span class="text-[11px] text-slate-500 font-mono truncate">{{.URL}}</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <a href="/admin/webhooks?sub={{.ID}}" class="px-2 py-1 text-[11px] rounded bg-[#141b2a] border border-[#25334d] text-slate-300 hover:text-white">Delivery log</a>
+                        {{if .Enabled}}
+                        <form method="POST" action="/admin/webhooks/{{.ID}}/test" class="inline">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="px-2 py-1 text-[11px] rounded bg-blue-600/20 border border-blue-600/40 text-blue-300 hover:bg-blue-600/30">Send test event</button>
+                        </form>
+                        {{end}}
+                    </div>
+                </summary>
+                <div class="px-4 pb-4 space-y-3">
+                    {{if .DisabledReason}}<div class="text-[11px] text-rose-300">Disabled: {{.DisabledReason}}. Tick Enabled and save to resume.</div>{{end}}
+                    <form method="POST" action="/admin/webhooks/{{.ID}}" class="space-y-3">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label class="text-xs text-slate-400">Name
+                                <input name="name" value="{{.Name}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                            </label>
+                            <label class="text-xs text-slate-400">URL
+                                <input name="url" value="{{.URL}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white font-mono">
+                            </label>
+                            <label class="text-xs text-slate-400">Device tag scope <span class="text-slate-500">(comma separated, empty = all devices)</span>
+                                <input name="tag_scope" value="{{.TagScopeStr}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                            </label>
+                            <div class="text-xs text-slate-400 space-y-1 mt-1">
+                                <label class="flex items-center space-x-2"><input type="checkbox" name="enabled" value="true" {{if .Enabled}}checked{{end}}><span>Enabled</span></label>
+                                <label class="flex items-center space-x-2"><input type="checkbox" name="allow_private_network" value="true" {{if .AllowPrivateNetwork}}checked{{end}}><span>Allow private network (RFC1918 / CGNAT; permits http)</span></label>
+                            </div>
+                        </div>
+                        <fieldset class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1">
+                            <legend class="text-xs text-slate-400 mb-1">Event types</legend>
+                            {{$set := .EventSet}}
+                            {{range $.Catalog}}
+                            <label class="text-[11px] text-slate-300 flex items-center space-x-1.5" title="{{.Description}}">
+                                <input type="checkbox" name="event_types" value="{{.Type}}" {{if index $set .Type}}checked{{end}}><span class="font-mono">{{.Type}}</span>
+                            </label>
+                            {{end}}
+                        </fieldset>
+                        <div class="flex items-center space-x-2">
+                            <button type="submit" class="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500">Save changes</button>
+                        </div>
+                    </form>
+                    <div class="flex items-center space-x-2 pt-2 border-t border-[#1a2234]">
+                        <form method="POST" action="/admin/webhooks/{{.ID}}/rotate" class="inline" onsubmit="return confirm('Rotate the signing secret? Receivers must be updated.');">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="px-2 py-1 text-[11px] rounded bg-amber-600/20 border border-amber-600/40 text-amber-300 hover:bg-amber-600/30">Rotate secret</button>
+                        </form>
+                        <form method="POST" action="/admin/webhooks/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete this webhook and its delivery log?');">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="px-2 py-1 text-[11px] rounded bg-rose-600/20 border border-rose-600/40 text-rose-300 hover:bg-rose-600/30">Delete</button>
+                        </form>
+                        <span class="text-[11px] text-slate-500">Signing secret is set (sealed); it cannot be viewed. Last rotated {{.SecretRotatedAt.Format "2006-01-02 15:04"}} UTC.</span>
+                    </div>
+                </div>
+            </details>
+            {{end}}
+        </div>
+    </section>
+
+    {{if .Selected}}
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234] flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-white">Delivery log: {{.Selected.Name}}</h2>
+            <a href="/admin/webhooks" class="text-[11px] text-slate-400 hover:text-white">Close</a>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead class="text-slate-500 text-left"><tr>
+                    <th class="px-3 py-2">When</th><th class="px-3 py-2">Event</th><th class="px-3 py-2">Status</th>
+                    <th class="px-3 py-2">Attempts</th><th class="px-3 py-2">Last result</th><th class="px-3 py-2"></th></tr></thead>
+                <tbody class="divide-y divide-[#1a2234]">
+                {{range .Deliveries}}
+                <tr class="align-top">
+                    <td class="px-3 py-2 text-slate-300 whitespace-nowrap">{{.CreatedAt.Format "01-02 15:04:05"}}</td>
+                    <td class="px-3 py-2"><div class="font-mono text-slate-200">{{.EventType}}</div><div class="text-[10px] text-slate-500 font-mono">{{.EventID}}</div></td>
+                    <td class="px-3 py-2">
+                        {{if eq .Status "DELIVERED"}}<span class="text-emerald-400">DELIVERED</span>
+                        {{else if eq .Status "DEAD"}}<span class="text-rose-400">DEAD</span>
+                        {{else}}<span class="text-amber-300">{{.Status}}</span>{{end}}
+                        {{if .RedeliveryOf}}<span class="text-[10px] text-slate-500">(redelivery)</span>{{end}}
+                    </td>
+                    <td class="px-3 py-2 text-slate-300">{{.Attempts}}</td>
+                    <td class="px-3 py-2 text-slate-300">
+                        {{if .LastStatusCode}}HTTP {{.LastStatusCode}}{{end}} {{.LastError}}
+                        {{if .AttemptLog}}
+                        <details class="mt-1"><summary class="cursor-pointer text-[11px] text-slate-500">attempts</summary>
+                            <ul class="mt-1 space-y-1">
+                            {{range .AttemptLog}}
+                                <li class="font-mono text-[10px] text-slate-400">#{{.AttemptNo}} {{.StartedAt.Format "15:04:05"}} {{.DurationMS}}ms {{if .StatusCode}}HTTP {{.StatusCode}}{{end}} {{.Error}} {{if .ResponseSnippet}}&mdash; {{.ResponseSnippet}}{{end}}</li>
+                            {{end}}
+                            </ul>
+                        </details>
+                        {{end}}
+                    </td>
+                    <td class="px-3 py-2">
+                        <form method="POST" action="/admin/webhooks/deliveries/{{.ID}}/redeliver">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="px-2 py-1 text-[11px] rounded bg-[#141b2a] border border-[#25334d] text-slate-300 hover:text-white">Redeliver</button>
+                        </form>
+                    </td>
+                </tr>
+                {{else}}
+                <tr><td colspan="6" class="px-3 py-6 text-slate-500">No deliveries yet.</td></tr>
+                {{end}}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{end}}
+
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234]"><h2 class="text-sm font-semibold text-white">Add webhook</h2></div>
+        <form method="POST" action="/admin/webhooks" class="p-4 space-y-3">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="text-xs text-slate-400">Name
+                    <input name="name" required class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                </label>
+                <label class="text-xs text-slate-400">URL (https)
+                    <input name="url" required placeholder="https://siem.example.com/spire" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white font-mono">
+                </label>
+                <label class="text-xs text-slate-400">Device tag scope <span class="text-slate-500">(comma separated, empty = all devices; device-less events are not sent to scoped webhooks)</span>
+                    <input name="tag_scope" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white">
+                </label>
+                <div class="text-xs text-slate-400 space-y-1 mt-1">
+                    <label class="flex items-center space-x-2"><input type="checkbox" name="enabled" value="true" checked><span>Enabled</span></label>
+                    <label class="flex items-center space-x-2"><input type="checkbox" name="allow_private_network" value="true"><span>Allow private network (RFC1918 / CGNAT; permits http)</span></label>
+                </div>
+            </div>
+            <fieldset class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1">
+                <legend class="text-xs text-slate-400 mb-1">Event types</legend>
+                {{range .Catalog}}
+                <label class="text-[11px] text-slate-300 flex items-center space-x-1.5" title="{{.Description}}">
+                    <input type="checkbox" name="event_types" value="{{.Type}}"><span class="font-mono">{{.Type}}</span>
+                </label>
+                {{end}}
+            </fieldset>
+            <button type="submit" class="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500">Create webhook</button>
+        </form>
+    </section>
+</div>
+{{end}}

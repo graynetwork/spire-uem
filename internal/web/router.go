@@ -299,6 +299,17 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/alerts/channels/{id}/delete", h.DeleteAlertChannel)
 			r.Post("/alerts/channels/{id}/test", h.TestAlertChannel)
 
+			// Signed event webhooks (subscriptions, secret rotation, delivery log). SUPER_ADMIN.
+			r.Get("/webhooks", h.WebhooksPage)
+			r.Post("/webhooks", h.CreateWebhook)
+			r.Post("/webhooks/deliveries/{did}/redeliver", h.RedeliverWebhook)
+			r.Post("/webhooks/{id}", h.UpdateWebhook)
+			r.Delete("/webhooks/{id}", h.DeleteWebhook)
+			r.Post("/webhooks/{id}/delete", h.DeleteWebhook)
+			r.Post("/webhooks/{id}/rotate", h.RotateWebhookSecret)
+			r.Post("/webhooks/{id}/test", h.TestWebhook)
+			r.Get("/webhooks/{id}/deliveries", h.WebhookDeliveries)
+
 			r.Get("/settings/tokens", h.ListTokensFragment)
 			r.Post("/settings/tokens", h.CreateToken)
 			r.Delete("/settings/tokens/{id}", h.RevokeToken)

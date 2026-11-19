@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/spire-uem/spire-uem/internal/grouprule"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 // groupMembershipHistoryCap bounds how many membership events are kept per group. Older
@@ -694,6 +695,9 @@ func (r *Repository) SetPolicyTargetGroups(ctx context.Context, policyID string,
 	}
 	if _, err := r.pool.Exec(ctx, `UPDATE policies SET target_group_ids=$2, updated_at=NOW() WHERE id=$1`, policyID, groupIDs); err != nil {
 		return fmt.Errorf("set policy target groups: %w", err)
+	}
+	if p, perr := r.GetPolicyByID(ctx, policyID); perr == nil && p != nil {
+		r.emitPolicyEvent(ctx, workflows.EventPolicyUpdated, p, map[string]any{"change": "target_groups"})
 	}
 	return nil
 }

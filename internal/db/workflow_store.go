@@ -26,9 +26,21 @@ func (r *Repository) WorkflowStore() *WorkflowStore { return &WorkflowStore{repo
 // EmitEvent writes a durable event to the log. It is best-effort: an error is logged and
 // swallowed so raising an event never fails or slows the caller that produced it. The caller
 // (check-in, approval, CVE match, offline ticker, etc.) calls this from a hook point.
+//
+// The same call also fans the event out to matching webhook subscriptions through the
+// delivery outbox (one INSERT ... SELECT, see WebhookStore.EnqueueEvent). Webhook-only kinds
+// (policy, campaign and destructive device events) are written ONLY to the outbox, never to
+// workflow_events, so the workflow engine cannot be triggered by them.
 func (r *Repository) EmitEvent(ctx context.Context, kind workflows.EventKind, deviceID string, fields map[string]any, workflowCaused bool) {
-	if err := r.WorkflowStore().InsertEvent(ctx, kind, deviceID, fields, workflowCaused); err != nil {
-		log.Printf("[workflows] emit event %s (device=%s) failed (ignored): %v", kind, deviceID, err)
+	if kind.Valid() {
+		if err := r.WorkflowStore().InsertEvent(ctx, kind, deviceID, fields, workflowCaused); err != nil {
+			log.Printf("[workflows] emit event %s (device=%s) failed (ignored): %v", kind, deviceID, err)
+		}
+	}
+	if kind.WebhookKind() {
+		if err := r.WebhookStore().EnqueueEvent(ctx, kind, deviceID, fields); err != nil {
+			log.Printf("[webhooks] enqueue %s (device=%s) failed (ignored): %v", kind, deviceID, err)
+		}
 	}
 }
 
