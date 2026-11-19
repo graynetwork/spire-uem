@@ -661,3 +661,61 @@ acceptance.
 - `cve.open_high_or_critical` counts Debian urgency `high`/`high**` with a fix available;
   Debian's tracker has no separate "critical" tier, so the field name's "or critical" maps to
   the same top urgency band rather than a distinct level.
+
+## 12. Signed event webhooks
+
+Outbound webhooks send enrollment, compliance, patching, policy, campaign and device-lifecycle
+events to a SIEM or automation endpoint as signed JSON. Format and verification: `docs/WEBHOOKS.md`.
+
+### Fan-out design: outbox written at emit time
+
+`Repository.EmitEvent` is the single point every event passes through. After writing the
+workflow event (workflow kinds only), it calls `WebhookStore.EnqueueEvent`, which runs ONE
+`INSERT ... SELECT` over the enabled subscriptions that match the event type and the device's
+tags, creating one `webhook_deliveries` row per subscription with the finished envelope
+(device hostname snapshotted).
+
+Why this and not the alternatives:
+
+- **Not a second claimer of `workflow_events`.** That table is a single-consumer queue
+  (`PENDING -> PROCESSED`); a second reader would either steal events from the engine or force a
+  per-consumer state machine. Webhook-only kinds also never enter it.
+- **Not an id cursor.** `BIGSERIAL` ids commit out of order, so a "last seen id" cursor skips rows.
+  The outbox has no cursor: a delivery is a row, claimed by state.
+- **Not enqueue-at-claim.** That would tie webhook latency and correctness to the workflow engine
+  and still miss events the engine never claims.
+- **Exactly once per subscription with two servers.** An event is emitted once, by the server that
+  handled the action, so the `INSERT ... SELECT` runs once. A unique index on
+  `(subscription_id, event_id) WHERE redelivery_of IS NULL` backs that up at the database.
+  Delivery workers (every server runs one) claim due rows with `FOR UPDATE SKIP LOCKED`, flip them
+  to `SENDING` with a 60s lease, and increment `attempts`; a crashed worker's lease expires and the
+  row is retried. Two workers therefore never send the same delivery concurrently.
+- **Trade-off.** Enqueue is best-effort after the producing transaction commits (like all
+  `EmitEvent` calls): a crash between commit and enqueue loses that event. Delivery after enqueue is
+  at-least-once (a response lost after the receiver processed it causes a retry), so receivers must
+  de-duplicate on `Spire-Event-Id`.
+
+### Event kinds and workflows
+
+Policy, campaign and destructive device events (`policy_*`, `campaign_*`, `device_revoked`,
+`device_marked_lost`, `device_wiped`) are webhook-only. They are not in `workflows.AllEventKinds`:
+workflow trigger validation rejects them, `EmitEvent` does not write them to `workflow_events`, and
+`Engine.ProcessEvent` ignores any such event that reaches it. Reason: a workflow reacting to an
+admin's own action or to the campaign it started invites loops, and device-less events have nothing
+to evaluate a workflow against. They are emitted after the producing change committed, from the
+repository functions (so every caller is covered), and never fail the action.
+
+### Delivery and SSRF
+
+HTTPS is required. The sender's `net.Dialer.Control` hook checks the resolved IP at connect time,
+so a hostname that resolves to loopback (or rebinds after save) is refused. Loopback, link-local
+(including the cloud metadata address), multicast and unspecified addresses are always blocked,
+including IPv4-mapped and NAT64 forms. Private, CGNAT and other special ranges need the audited
+per-webhook `allow_private_network` flag, which also permits plain `http` (to private addresses
+only). No proxy, no redirects, 10s timeout, 2 KiB response read. Retries: exponential backoff from
+30s doubling to a 4h cap with +/-20% jitter, until 24h after creation or 20 attempts, then `DEAD`.
+Ten consecutive `DEAD` deliveries auto-disable the subscription and raise a `webhook_disabled`
+alert (enable routing for that kind on an alert channel). Finished deliveries are reaped after 30 days.
+
+Signing secrets are sealed with the server KEK (same envelope as alert channel secrets), generated
+server-side, returned once on create/rotate, and never returned by any read.

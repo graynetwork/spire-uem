@@ -1,0 +1,634 @@
+{{define "workflows_content"}}
+<div class="space-y-5">
+    <div>
+        <h1 class="text-lg font-semibold text-white">Automation Workflows</h1>
+        <p class="text-[11px] text-slate-500 mt-0.5">When something happens in the fleet (or on a schedule), check an optional condition and take bounded actions on the device. Every run is recorded; <strong>dry-run</strong> workflows record what they <em>would</em> do without changing anything.</p>
+    </div>
+
+    <div class="flex items-center gap-1 border-b border-[#1a2234] text-xs">
+        <a href="/admin/workflows" class="px-3 py-2 -mb-px border-b-2 {{if eq .WFTab "list"}}border-blue-500 text-white{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">Workflows</a>
+        <a href="/admin/workflows/runs" class="px-3 py-2 -mb-px border-b-2 {{if eq .WFTab "runs"}}border-blue-500 text-white{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">Run history</a>
+        {{if .CanEdit}}<a href="/admin/workflows/approvals" class="px-3 py-2 -mb-px border-b-2 {{if eq .WFTab "approvals"}}border-blue-500 text-white{{else}}border-transparent text-slate-400 hover:text-slate-200{{end}}">Pending approvals</a>{{end}}
+    </div>
+
+    {{if eq .WFTab "list"}}
+        {{if .CanEdit}}
+        <div class="flex items-center justify-between">
+            <span id="wf-page-msg" class="text-[11px] text-rose-400" role="alert"></span>
+            <button type="button" id="wf-new" class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white">New workflow</button>
+        </div>
+        <div id="wf-editor" class="hidden bg-[#0f1420] border border-[#1a2234] rounded-md p-4 space-y-4"></div>
+        {{end}}
+
+        <div class="bg-[#0f1420] border border-[#1a2234] rounded-md overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="text-left text-slate-500 border-b border-[#1a2234]">
+                        <th class="px-3 py-2">Name</th>
+                        <th class="px-3 py-2">Trigger</th>
+                        <th class="px-3 py-2">Actions</th>
+                        <th class="px-3 py-2">Enabled</th>
+                        <th class="px-3 py-2">Mode</th>
+                        <th class="px-3 py-2">Last run</th>
+                        <th class="px-3 py-2"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Workflows}}
+                    <tr class="border-b border-[#131a28]">
+                        <td class="px-3 py-2 text-white">{{.Name}}{{if .Description}}<div class="text-[10px] text-slate-500">{{.Description}}</div>{{end}}</td>
+                        <td class="px-3 py-2 text-slate-300 font-mono text-[11px]">{{if .IsSchedule}}<span class="px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300 font-sans mr-1">schedule</span>{{else}}<span class="px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 font-sans mr-1">event</span>{{end}}{{.TriggerText}}</td>
+                        <td class="px-3 py-2 text-slate-300">{{.ActionCount}}</td>
+                        <td class="px-3 py-2">{{if .Enabled}}<span class="px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">enabled</span>{{else}}<span class="px-1.5 py-0.5 rounded bg-slate-700/40 text-slate-400">disabled</span>{{end}}</td>
+                        <td class="px-3 py-2">{{if .DryRun}}<span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300 whitespace-nowrap">dry run</span>{{else}}<span class="text-slate-400">live</span>{{end}}</td>
+                        <td class="px-3 py-2">{{if .HasLast}}
+                            <span class="px-1.5 py-0.5 rounded {{if eq .LastStatus "COMPLETED"}}bg-emerald-900/40 text-emerald-300{{else if eq .LastStatus "FAILED"}}bg-rose-900/40 text-rose-300{{else if eq .LastStatus "AWAITING_APPROVAL"}}bg-blue-900/40 text-blue-300{{else}}bg-slate-700/40 text-slate-300{{end}}">{{.LastStatus}}</span>{{if .LastDryRun}} <span class="text-amber-400">(dry)</span>{{end}}
+                            <div class="text-[10px] text-slate-500">{{.LastAt.Format "2006-01-02 15:04"}}</div>
+                        {{else}}<span class="text-slate-600">never</span>{{end}}</td>
+                        <td class="px-3 py-2 text-right whitespace-nowrap">
+                            <a href="/admin/workflows/runs?workflow_id={{.ID}}" class="text-blue-400 hover:underline">runs</a>
+                            {{if .Editable}}
+                            <button type="button" data-wf-toggle="{{.ID}}" class="ml-2 text-amber-300 hover:underline">{{if .Enabled}}disable{{else}}enable{{end}}</button>
+                            <button type="button" data-wf-edit="{{.ID}}" class="ml-2 text-blue-400 hover:underline">edit</button>
+                            <button type="button" data-wf-delete="{{.ID}}" data-wf-name="{{.Name}}" class="ml-2 text-rose-400 hover:underline">delete</button>
+                            {{end}}
+                        </td>
+                    </tr>
+                    {{else}}
+                    <tr><td colspan="7" class="px-3 py-4 text-center text-slate-500">No workflows yet.</td></tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+
+        {{if .CanEdit}}
+        <script type="application/json" id="wf-config">{{.WFConfig}}</script>
+        {{template "workflows_editor_script" .}}
+        {{end}}
+
+    {{else if eq .WFTab "runs"}}
+        <form method="GET" action="/admin/workflows/runs" class="flex items-center gap-2 text-xs">
+            <label for="wf-filter" class="text-slate-400">Workflow</label>
+            <select id="wf-filter" name="workflow_id" class="rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                <option value="">All workflows</option>
+                {{range .WorkflowOptions}}<option value="{{.ID}}" {{if eq .ID $.FilterWorkflow}}selected{{end}}>{{.Name}}</option>{{end}}
+            </select>
+            <button type="submit" class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white">Filter</button>
+        </form>
+        <div class="space-y-3">
+            {{range .Runs}}
+            <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-3 text-xs">
+                <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-white font-semibold">{{.WorkflowName}}</span>
+                    <span class="text-slate-500">v{{.WorkflowVersion}}</span>
+                    <span class="px-1.5 py-0.5 rounded {{if eq .Status "COMPLETED"}}bg-emerald-900/40 text-emerald-300{{else if eq .Status "FAILED"}}bg-rose-900/40 text-rose-300{{else if eq .Status "AWAITING_APPROVAL"}}bg-blue-900/40 text-blue-300{{else if eq .Status "DRY_RUN"}}bg-amber-900/40 text-amber-300{{else}}bg-slate-700/40 text-slate-300{{end}}">{{.Status}}</span>
+                    {{if .DryRun}}<span class="px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300">DRY RUN: nothing was changed</span>{{end}}
+                    <span class="ml-auto text-slate-500">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</span>
+                </div>
+                <dl class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+                    <div><dt class="inline text-slate-500">Trigger: </dt><dd class="inline text-slate-300 font-mono">{{.Trigger}}</dd></div>
+                    <div><dt class="inline text-slate-500">Device: </dt><dd class="inline text-slate-300">{{if .DeviceID}}<a class="text-blue-400 hover:underline" href="/admin/devices/{{.DeviceID}}">{{if .Hostname}}{{.Hostname}}{{else}}{{.DeviceID}}{{end}}</a>{{else}}<span class="text-slate-600">(removed)</span>{{end}}</dd></div>
+                    <div><dt class="inline text-slate-500">Condition: </dt><dd class="inline text-slate-300">{{if .HasCondition}}{{if .ConditionResult}}matched, ran <strong>then</strong> actions{{else}}did not match, ran <strong>else</strong> actions{{end}}{{else}}none (always runs){{end}}</dd></div>
+                    {{if .EventText}}<div class="md:col-span-2"><dt class="inline text-slate-500">Event fields: </dt><dd class="inline text-slate-300 font-mono break-all">{{.EventText}}</dd></div>{{end}}
+                    {{if .Detail}}<div class="md:col-span-2"><dt class="inline text-slate-500">Detail: </dt><dd class="inline text-slate-300 break-all">{{.Detail}}</dd></div>{{end}}
+                </dl>
+                {{if .Actions}}
+                <table class="w-full mt-2 text-[11px]">
+                    <thead><tr class="text-left text-slate-500"><th class="py-1 pr-2 w-8">#</th><th class="py-1 pr-2">Action</th><th class="py-1 pr-2">Outcome</th><th class="py-1">Detail</th></tr></thead>
+                    <tbody>
+                    {{range .Actions}}
+                    <tr class="border-t border-[#131a28] align-top">
+                        <td class="py-1 pr-2 text-slate-500">{{.Seq}}</td>
+                        <td class="py-1 pr-2 text-slate-300 font-mono">{{.ActionType}}<div class="text-[10px] text-slate-500 break-all">{{.Args}}</div></td>
+                        <td class="py-1 pr-2"><span class="px-1.5 py-0.5 rounded {{if eq .Result "ok"}}bg-emerald-900/40 text-emerald-300{{else if eq .Result "failed"}}bg-rose-900/40 text-rose-300{{else if eq .Result "dry_run"}}bg-amber-900/40 text-amber-300{{else if eq .Result "pending"}}bg-blue-900/40 text-blue-300{{else}}bg-slate-700/40 text-slate-300{{end}}">{{.Result}}</span></td>
+                        <td class="py-1 text-slate-300 break-all">{{.Detail}}</td>
+                    </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+                {{end}}
+            </div>
+            {{else}}
+            <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4 text-center text-xs text-slate-500">No runs recorded.</div>
+            {{end}}
+        </div>
+
+    {{else if eq .WFTab "approvals"}}
+        <p class="text-[11px] text-slate-500">A workflow paused at a <em>require approval</em> step waits here. Approving runs the remaining actions listed; rejecting ends the run. Pending approvals expire on their own.</p>
+        <span id="wf-page-msg" class="text-[11px] text-rose-400" role="alert"></span>
+        <div class="space-y-3">
+            {{range .Approvals}}
+            <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-3 text-xs">
+                <div class="flex flex-wrap items-center gap-2">
+                    <span class="text-white font-semibold">{{.WorkflowName}}</span>
+                    <span class="text-slate-400">on {{if .DeviceID}}<a class="text-blue-400 hover:underline" href="/admin/devices/{{.DeviceID}}">{{if .Hostname}}{{.Hostname}}{{else}}{{.DeviceID}}{{end}}</a>{{else}}(removed device){{end}}</span>
+                    <span class="ml-auto text-slate-500">expires {{.ExpiresAt.Format "2006-01-02 15:04"}}</span>
+                </div>
+                <div class="mt-2 text-slate-400">If approved, these actions will run in order:</div>
+                <ol class="list-decimal list-inside mt-1 text-slate-200 space-y-0.5">
+                    {{range .Steps}}<li>{{.}}</li>{{else}}<li class="text-slate-500">(no further actions)</li>{{end}}
+                </ol>
+                <div class="mt-3 flex items-center gap-2">
+                    <button type="button" data-wf-decide="approve" data-wf-approval="{{.ID}}" class="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white">Approve</button>
+                    <button type="button" data-wf-decide="reject" data-wf-approval="{{.ID}}" class="px-3 py-1 rounded bg-rose-700 hover:bg-rose-600 text-white">Reject</button>
+                </div>
+            </div>
+            {{else}}
+            <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4 text-center text-xs text-slate-500">Nothing is waiting for approval.</div>
+            {{end}}
+        </div>
+        <script>
+        (function () {
+            var csrf = document.querySelector('meta[name="csrf-token"]').content;
+            var msg = document.getElementById('wf-page-msg');
+            document.querySelectorAll('[data-wf-decide]').forEach(function (b) {
+                b.addEventListener('click', function () {
+                    var d = b.getAttribute('data-wf-decide');
+                    if (d === 'reject' && !window.confirm('Reject this approval and end the run?')) { return; }
+                    b.disabled = true;
+                    fetch('/admin/workflows/approvals/' + encodeURIComponent(b.getAttribute('data-wf-approval')) + '/' + d, {
+                        method: 'POST', headers: {'X-CSRF-Token': csrf, 'Accept': 'application/json'}
+                    }).then(function (r) { return r.json().then(function (j) { return {ok: r.ok, body: j}; }); })
+                      .then(function (res) {
+                          if (res.ok) { window.location.reload(); return; }
+                          b.disabled = false;
+                          msg.textContent = (res.body && res.body.error) || 'Request failed';
+                      }).catch(function (e) { b.disabled = false; msg.textContent = 'Request failed: ' + e; });
+                });
+            });
+        })();
+        </script>
+    {{end}}
+</div>
+{{end}}
+
+{{define "workflows_editor_script"}}
+<script>
+(function () {
+    var cfg = JSON.parse(document.getElementById('wf-config').textContent);
+    var csrf = document.querySelector('meta[name="csrf-token"]').content;
+    var root = document.getElementById('wf-editor');
+    var pageMsg = document.getElementById('wf-page-msg');
+    var FIELD_CLS = 'rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white';
+    var BTN_CLS = 'px-2 py-1 rounded text-[11px] bg-slate-700 hover:bg-slate-600 text-white';
+    var ATTR_OPS = ['eq','ne','lt','lte','gt','gte','contains','starts_with','in','matches','before','after','older_than','newer_than','exists','missing'];
+    var NO_VALUE_OPS = {exists: 1, missing: 1};
+    var LIST_OPS = {'in': 1, contains_any: 1, contains_all: 1};
+    var ACTION_LABELS = {
+        add_tag: 'Add tag', remove_tag: 'Remove tag', set_ring: 'Set patch ring',
+        group_include: 'Add device to group', group_exclude: 'Remove device from group',
+        run_script: 'Run script', send_alert: 'Send alert', lock: 'Lock sessions',
+        quarantine: 'Quarantine (add quarantine tag)', require_approval: 'Require approval (pause)',
+        start_campaign: 'Start patch campaign'
+    };
+    var st = null;
+
+    function el(tag, cls, text) {
+        var e = document.createElement(tag);
+        if (cls) { e.className = cls; }
+        if (text !== undefined) { e.textContent = text; }
+        return e;
+    }
+    function labeled(label, input, cls) {
+        var w = el('div', cls || '');
+        var l = el('label', 'block text-[11px] text-slate-400 mb-1', label);
+        w.appendChild(l); w.appendChild(input); return w;
+    }
+    function input(value, onchange, opts) {
+        opts = opts || {};
+        var i = el('input', FIELD_CLS + ' ' + (opts.cls || 'w-full'));
+        i.type = opts.type || 'text';
+        if (opts.placeholder) { i.placeholder = opts.placeholder; }
+        if (opts.min !== undefined) { i.min = opts.min; }
+        i.value = value === undefined || value === null ? '' : value;
+        i.addEventListener('input', function () { onchange(i.value); });
+        return i;
+    }
+    function checkbox(value, onchange) {
+        var i = el('input', 'mr-1.5 align-middle');
+        i.type = 'checkbox'; i.checked = !!value;
+        i.addEventListener('change', function () { onchange(i.checked); });
+        return i;
+    }
+    function select(options, value, onchange, cls) {
+        var s = el('select', FIELD_CLS + ' ' + (cls || 'w-full'));
+        options.forEach(function (o) {
+            var opt = el('option', '', o.label);
+            opt.value = o.value;
+            if (o.value === value) { opt.selected = true; }
+            s.appendChild(opt);
+        });
+        s.addEventListener('change', function () { onchange(s.value); });
+        return s;
+    }
+    function idOptions(list, withBlank) {
+        var o = withBlank ? [{value: '', label: '(choose)'}] : [];
+        list.forEach(function (x) { o.push({value: x.id, label: x.name}); });
+        return o;
+    }
+    function strOptions(list) { return list.map(function (x) { return {value: x, label: x}; }); }
+    function fieldInfo(name) {
+        for (var i = 0; i < cfg.fields.length; i++) { if (cfg.fields[i].name === name) { return cfg.fields[i]; } }
+        return null;
+    }
+    function autotype(s) {
+        s = s.trim();
+        if (/^-?\d+(\.\d+)?$/.test(s)) { return Number(s); }
+        if (s === 'true') { return true; }
+        if (s === 'false') { return false; }
+        return s;
+    }
+    function splitList(s) { return s.split(',').map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 0; }); }
+
+    // ---------- model <-> request ----------
+    function blankAction(type) {
+        return {type: type, tag: '', ring: 'CANARY', group_id: '', script_id: '', script_version: '', params: [],
+                severity: 'WARNING', subject: '', message: '', campaign_id: ''};
+    }
+    function actionFromRequest(a) {
+        var m = blankAction(a.type);
+        m.tag = a.tag || ''; m.ring = a.ring || 'CANARY'; m.group_id = a.group_id || '';
+        m.script_id = a.script_id || ''; m.script_version = a.script_version ? String(a.script_version) : '';
+        m.severity = a.severity || 'WARNING'; m.subject = a.subject || ''; m.message = a.message || '';
+        var p = a.params || {};
+        if (a.type === 'start_campaign') { m.campaign_id = p.campaign_id || ''; }
+        else { Object.keys(p).sort().forEach(function (k) { m.params.push({k: k, v: p[k]}); }); }
+        return m;
+    }
+    function actionToRequest(m) {
+        var a = {type: m.type};
+        switch (m.type) {
+        case 'add_tag': case 'remove_tag': a.tag = m.tag.trim(); break;
+        case 'set_ring': a.ring = m.ring; break;
+        case 'group_include': case 'group_exclude': a.group_id = m.group_id; break;
+        case 'run_script':
+            a.script_id = m.script_id;
+            if (String(m.script_version).trim() !== '') { a.script_version = parseInt(m.script_version, 10) || 0; }
+            var ps = {};
+            m.params.forEach(function (p) { if (p.k.trim() !== '') { ps[p.k.trim()] = p.v; } });
+            if (Object.keys(ps).length) { a.params = ps; }
+            break;
+        case 'send_alert': a.severity = m.severity; a.subject = m.subject; if (m.message.trim()) { a.message = m.message; } break;
+        case 'lock': if (m.message.trim()) { a.message = m.message; } break;
+        case 'start_campaign': a.params = {campaign_id: m.campaign_id}; break;
+        }
+        return a;
+    }
+    function condToModel(cond) {
+        // Returns {mode, comb, rows, raw}. Anything the builder cannot express goes to raw.
+        var out = {mode: 'none', comb: 'all', rows: [], raw: ''};
+        if (!cond || (typeof cond === 'object' && !Array.isArray(cond) && Object.keys(cond).length === 0)) { return out; }
+        out.raw = JSON.stringify(cond, null, 2);
+        var leaves = null;
+        if (cond.all && Object.keys(cond).length === 1) { out.comb = 'all'; leaves = cond.all; }
+        else if (cond.any && Object.keys(cond).length === 1) { out.comb = 'any'; leaves = cond.any; }
+        else if (cond.field) { leaves = [cond]; }
+        if (leaves && leaves.length && leaves.every(function (l) { return l && l.field && l.op && !l.all && !l.any && !l.not; })) {
+            out.mode = 'builder';
+            leaves.forEach(function (l) {
+                var isAttr = l.field.indexOf('attr.') === 0;
+                var v = '';
+                if (l.value !== undefined && l.value !== null) { v = Array.isArray(l.value) ? l.value.join(', ') : String(l.value); }
+                out.rows.push({field: isAttr ? '__attr__' : l.field, attr: isAttr ? l.field.slice(5) : '', op: l.op, value: v});
+            });
+        } else { out.mode = 'raw'; }
+        return out;
+    }
+    function condRowToLeaf(r) {
+        var name = r.field === '__attr__' ? 'attr.' + r.attr.trim() : r.field;
+        var leaf = {field: name, op: r.op};
+        if (NO_VALUE_OPS[r.op]) { return leaf; }
+        var f = fieldInfo(r.field);
+        var kind = f ? f.kind : 'attr';
+        if (LIST_OPS[r.op]) {
+            var arr = splitList(r.value);
+            if (kind === 'number' || kind === 'attr') { arr = arr.map(function (x) { return kind === 'number' ? Number(x) : autotype(x); }); }
+            leaf.value = arr;
+        } else if (kind === 'number') { leaf.value = Number(r.value); }
+        else if (kind === 'boolean') { leaf.value = r.value === 'true'; }
+        else if (kind === 'attr') { leaf.value = (r.op === 'older_than' || r.op === 'newer_than' || r.op === 'matches' || r.op === 'before' || r.op === 'after' || r.op === 'contains' || r.op === 'starts_with') ? r.value : autotype(r.value); }
+        else { leaf.value = r.value; }
+        return leaf;
+    }
+    function newState() {
+        return {id: '', name: '', description: '', enabled: true, dry_run: true, cooldown: '3600',
+            trig: 'event', kind: cfg.event_kinds.length ? cfg.event_kinds[0].kind : '', filter: [],
+            cron: '0 * * * *', tkind: 'ring', tgroup: '', ttags: '', tring: 'CANARY',
+            cond: {mode: 'none', comb: 'all', rows: [], raw: ''}, then: [], els: []};
+    }
+    function stateFromWorkflow(w) {
+        var s = newState();
+        s.id = w.id; s.name = w.name; s.description = w.description || ''; s.enabled = w.enabled; s.dry_run = w.dry_run;
+        s.cooldown = String(w.cooldown_seconds || '');
+        if (w.trigger) {
+            s.trig = 'event'; s.kind = w.trigger.Kind;
+            var f = w.trigger.Filter || {};
+            Object.keys(f).sort().forEach(function (k) { s.filter.push({k: k, v: String(f[k])}); });
+        } else if (w.schedule) {
+            s.trig = 'schedule'; s.cron = w.schedule.Cron; s.tkind = w.schedule.TargetKind;
+            s.tgroup = w.schedule.TargetGroup || ''; s.ttags = (w.schedule.TargetTags || []).join(', ');
+            s.tring = w.schedule.TargetRing || 'CANARY';
+        }
+        s.cond = condToModel(w.condition);
+        s.then = (w.then_actions || []).map(actionFromRequest);
+        s.els = (w.else_actions || []).map(actionFromRequest);
+        return s;
+    }
+    // toRequest builds exactly the JSON the API accepts. Trigger/Schedule have no json tags in the
+    // engine, so their keys are the Go field names.
+    function toRequest() {
+        var req = {name: st.name, description: st.description, enabled: st.enabled, dry_run: st.dry_run,
+                   cooldown_seconds: parseInt(st.cooldown, 10) || 0};
+        if (st.trig === 'event') {
+            var f = {};
+            st.filter.forEach(function (p) { if (p.k.trim() !== '') { f[p.k.trim()] = p.v; } });
+            req.trigger = {Kind: st.kind};
+            if (Object.keys(f).length) { req.trigger.Filter = f; }
+        } else {
+            var sc = {Cron: st.cron.trim(), TargetKind: st.tkind};
+            if (st.tkind === 'group') { sc.TargetGroup = st.tgroup; }
+            if (st.tkind === 'tags') { sc.TargetTags = splitList(st.ttags); }
+            if (st.tkind === 'ring') { sc.TargetRing = st.tring; }
+            req.schedule = sc;
+        }
+        if (st.cond.mode === 'builder' && st.cond.rows.length) {
+            var c = {}; c[st.cond.comb] = st.cond.rows.map(condRowToLeaf); req.condition = c;
+        } else if (st.cond.mode === 'raw' && st.cond.raw.trim() !== '') {
+            req.condition = JSON.parse(st.cond.raw);
+        }
+        req.then_actions = st.then.map(actionToRequest);
+        req.else_actions = st.els.map(actionToRequest);
+        return req;
+    }
+
+    // ---------- rendering ----------
+    var errBox, pendingErr = '';
+    function showError(msg) {
+        if (!errBox) { return; }
+        errBox.textContent = msg || '';
+        errBox.classList.toggle('hidden', !msg);
+        if (msg) { errBox.scrollIntoView({block: 'nearest'}); }
+    }
+    function section(title, hint) {
+        var s = el('fieldset', 'border border-[#1a2234] rounded p-3 space-y-2');
+        s.appendChild(el('legend', 'px-1 text-xs font-semibold text-white', title));
+        if (hint) { s.appendChild(el('p', 'text-[10px] text-slate-500', hint)); }
+        return s;
+    }
+    function kvRows(list, kPlaceholder, vPlaceholder) {
+        var box = el('div', 'space-y-1');
+        list.forEach(function (p, idx) {
+            var row = el('div', 'flex items-center gap-2');
+            row.appendChild(input(p.k, function (v) { p.k = v; }, {cls: 'w-1/3', placeholder: kPlaceholder}));
+            row.appendChild(input(p.v, function (v) { p.v = v; }, {cls: 'flex-1', placeholder: vPlaceholder}));
+            var rm = el('button', BTN_CLS, 'remove'); rm.type = 'button';
+            rm.addEventListener('click', function () { list.splice(idx, 1); render(); });
+            row.appendChild(rm);
+            box.appendChild(row);
+        });
+        var add = el('button', BTN_CLS, 'Add'); add.type = 'button';
+        add.addEventListener('click', function () { list.push({k: '', v: ''}); render(); });
+        box.appendChild(add);
+        return box;
+    }
+
+    function triggerSection() {
+        var s = section('1. Trigger', 'Run when an event happens in the fleet, or on a cron schedule.');
+        s.appendChild(select([{value: 'event', label: 'When an event happens'}, {value: 'schedule', label: 'On a schedule (cron)'}],
+            st.trig, function (v) { st.trig = v; render(); }, 'w-64'));
+        if (st.trig === 'event') {
+            var kinds = cfg.event_kinds.map(function (k) { return {value: k.kind, label: k.kind}; });
+            s.appendChild(labeled('Event', select(kinds, st.kind, function (v) { st.kind = v; render(); }, 'w-72')));
+            var hint = '';
+            cfg.event_kinds.forEach(function (k) { if (k.kind === st.kind) { hint = k.fields; } });
+            s.appendChild(el('p', 'text-[10px] text-slate-500', hint ? 'Event fields you can match: ' + hint : 'This event carries no extra fields; it applies to the device.'));
+            s.appendChild(el('div', 'text-[11px] text-slate-400', 'Only when these event fields equal (optional):'));
+            s.appendChild(kvRows(st.filter, 'field, e.g. urgency', 'value, e.g. high'));
+        } else {
+            s.appendChild(labeled('Cron expression (5 fields, evaluated once per minute)', input(st.cron, function (v) { st.cron = v; }, {cls: 'w-72 font-mono', placeholder: '0 3 * * 1'})));
+            s.appendChild(labeled('Run over', select([{value: 'ring', label: 'a patch ring'}, {value: 'group', label: 'a device group'}, {value: 'tags', label: 'devices with tags'}],
+                st.tkind, function (v) { st.tkind = v; render(); }, 'w-56')));
+            if (st.tkind === 'ring') { s.appendChild(labeled('Ring', select(strOptions(cfg.rings), st.tring, function (v) { st.tring = v; }, 'w-48'))); }
+            if (st.tkind === 'group') { s.appendChild(labeled('Group', select(idOptions(cfg.groups, true), st.tgroup, function (v) { st.tgroup = v; }, 'w-72'))); }
+            if (st.tkind === 'tags') { s.appendChild(labeled('Tags (comma-separated)', input(st.ttags, function (v) { st.ttags = v; }, {cls: 'w-72'}))); }
+        }
+        return s;
+    }
+
+    function conditionSection() {
+        var s = section('2. Condition (optional)', 'Checked against the device each time the workflow fires. If it matches, the "then" actions run; otherwise the "else" actions run. No condition means always "then".');
+        var c = st.cond;
+        s.appendChild(select([{value: 'none', label: 'No condition'}, {value: 'builder', label: 'Build a condition'}, {value: 'raw', label: 'Advanced: raw rule JSON'}],
+            c.mode, function (v) {
+                if (v === 'builder' && c.mode === 'raw') {
+                    var parsed = null;
+                    try { parsed = condToModel(c.raw.trim() ? JSON.parse(c.raw) : null); } catch (e) { parsed = null; }
+                    if (parsed && parsed.mode === 'builder') { st.cond = parsed; render(); return; }
+                    pendingErr = 'This rule is not valid JSON, or uses nesting or "not", which the builder cannot show. Keep it in raw mode.';
+                    render(); return;
+                }
+                if (v === 'raw' && c.mode === 'builder') {
+                    var o = {}; o[c.comb] = c.rows.map(condRowToLeaf);
+                    c.raw = JSON.stringify(o, null, 2);
+                }
+                c.mode = v; render();
+            }, 'w-64'));
+        if (c.mode === 'builder') {
+            s.appendChild(labeled('Match', select([{value: 'all', label: 'ALL of these'}, {value: 'any', label: 'ANY of these'}], c.comb, function (v) { c.comb = v; }, 'w-40')));
+            var box = el('div', 'space-y-1');
+            c.rows.forEach(function (r, idx) {
+                var row = el('div', 'flex flex-wrap items-center gap-2');
+                var fopts = cfg.fields.map(function (f) { return {value: f.name, label: f.name + '  (' + f.kind + ')'}; });
+                fopts.push({value: '__attr__', label: 'attr.<key>  (custom attribute)'});
+                row.appendChild(select(fopts, r.field, function (v) { r.field = v; var f = fieldInfo(v); r.op = f ? f.ops[0] : 'eq'; r.value = ''; render(); }, 'w-72'));
+                if (r.field === '__attr__') { row.appendChild(input(r.attr, function (v) { r.attr = v; }, {cls: 'w-32', placeholder: 'key'})); }
+                var f = fieldInfo(r.field);
+                var ops = f ? f.ops : ATTR_OPS;
+                row.appendChild(select(strOptions(ops), r.op, function (v) { r.op = v; render(); }, 'w-36'));
+                if (!NO_VALUE_OPS[r.op]) {
+                    if (f && f.kind === 'boolean' && !LIST_OPS[r.op]) {
+                        row.appendChild(select([{value: 'true', label: 'true'}, {value: 'false', label: 'false'}], r.value === 'false' ? 'false' : 'true', function (v) { r.value = v; }, 'w-24'));
+                        if (r.value !== 'false') { r.value = 'true'; }
+                    } else {
+                        var ph = LIST_OPS[r.op] ? 'comma-separated values' : (r.op === 'older_than' || r.op === 'newer_than') ? 'e.g. 7d or 12h' : 'value';
+                        row.appendChild(input(r.value, function (v) { r.value = v; }, {cls: 'w-56', placeholder: ph}));
+                    }
+                }
+                var rm = el('button', BTN_CLS, 'remove'); rm.type = 'button';
+                rm.addEventListener('click', function () { c.rows.splice(idx, 1); render(); });
+                row.appendChild(rm);
+                box.appendChild(row);
+            });
+            var add = el('button', BTN_CLS, 'Add condition'); add.type = 'button';
+            add.addEventListener('click', function () { c.rows.push({field: cfg.fields[0].name, attr: '', op: cfg.fields[0].ops[0], value: ''}); render(); });
+            box.appendChild(add);
+            s.appendChild(box);
+            var ref = el('details', 'text-[10px] text-slate-500');
+            ref.appendChild(el('summary', 'cursor-pointer', 'Field reference'));
+            var ul = el('ul', 'mt-1 space-y-0.5 font-mono');
+            cfg.fields.forEach(function (f) { ul.appendChild(el('li', '', f.name + ' (' + f.kind + '): ' + f.ops.join(', '))); });
+            ref.appendChild(ul);
+            s.appendChild(ref);
+        } else if (c.mode === 'raw') {
+            var ta = el('textarea', FIELD_CLS + ' w-full font-mono'); ta.rows = 6; ta.spellcheck = false; ta.value = c.raw;
+            ta.placeholder = '{"all":[{"field":"device.status","op":"eq","value":"APPROVED"}]}';
+            ta.addEventListener('input', function () { c.raw = ta.value; });
+            s.appendChild(ta);
+            s.appendChild(el('p', 'text-[10px] text-slate-500', 'Fields: ' + cfg.fields.map(function (f) { return f.name; }).join(', ') + ', attr.<key>. Combinators: all, any, not.'));
+        }
+        return s;
+    }
+
+    function actionCard(list, idx, branchLabel) {
+        var m = list[idx];
+        var card = el('div', 'border border-[#1a2234] rounded bg-[#0a0e17] p-2 space-y-2');
+        var head = el('div', 'flex items-center gap-2');
+        head.appendChild(el('span', 'text-[11px] text-slate-500 w-5', (idx + 1) + '.'));
+        head.appendChild(select(cfg.action_types.map(function (t) { return {value: t, label: ACTION_LABELS[t] || t}; }), m.type,
+            function (v) { list[idx] = blankAction(v); render(); }, 'w-72'));
+        var sp = el('span', 'flex-1');
+        head.appendChild(sp);
+        [['up', '▲', -1], ['down', '▼', 1]].forEach(function (d) {
+            var b = el('button', BTN_CLS, d[1]); b.type = 'button'; b.title = 'Move ' + d[0]; b.setAttribute('aria-label', 'Move action ' + d[0]);
+            b.addEventListener('click', function () {
+                var j = idx + d[2];
+                if (j < 0 || j >= list.length) { return; }
+                var t = list[idx]; list[idx] = list[j]; list[j] = t; render();
+            });
+            head.appendChild(b);
+        });
+        var rm = el('button', BTN_CLS + ' !bg-rose-800', 'remove'); rm.type = 'button';
+        rm.addEventListener('click', function () { list.splice(idx, 1); render(); });
+        head.appendChild(rm);
+        card.appendChild(head);
+        var body = el('div', 'grid grid-cols-1 md:grid-cols-2 gap-2 pl-7');
+        switch (m.type) {
+        case 'add_tag': case 'remove_tag':
+            body.appendChild(labeled('Tag', input(m.tag, function (v) { m.tag = v; }, {placeholder: 'e.g. needs-patching'}))); break;
+        case 'set_ring':
+            body.appendChild(labeled('Patch ring', select(strOptions(cfg.rings), m.ring, function (v) { m.ring = v; }))); break;
+        case 'group_include': case 'group_exclude':
+            body.appendChild(labeled('Group', select(idOptions(cfg.groups, true), m.group_id, function (v) { m.group_id = v; })));
+            body.appendChild(el('p', 'text-[10px] text-slate-500 self-end', 'Changes the group\'s static include list.')); break;
+        case 'run_script':
+            body.appendChild(labeled('Script', select(idOptions(cfg.scripts, true), m.script_id, function (v) { m.script_id = v; })));
+            body.appendChild(labeled('Version (blank = latest published)', input(m.script_version, function (v) { m.script_version = v; }, {type: 'number', min: 0, cls: 'w-32'})));
+            var pw = labeled('Script parameters', kvRows(m.params, 'name', 'value'), 'md:col-span-2');
+            body.appendChild(pw); break;
+        case 'send_alert':
+            body.appendChild(labeled('Severity', select(strOptions(cfg.severities), m.severity, function (v) { m.severity = v; })));
+            body.appendChild(labeled('Subject', input(m.subject, function (v) { m.subject = v; })));
+            body.appendChild(labeled('Message (optional)', input(m.message, function (v) { m.message = v; }), 'md:col-span-2')); break;
+        case 'lock':
+            body.appendChild(labeled('Message shown (optional)', input(m.message, function (v) { m.message = v; }), 'md:col-span-2')); break;
+        case 'quarantine':
+            body.appendChild(el('p', 'text-[10px] text-slate-500 md:col-span-2', 'Adds the quarantine tag configured in server settings. No arguments.')); break;
+        case 'require_approval':
+            body.appendChild(el('p', 'text-[10px] text-slate-500 md:col-span-2', 'Pauses the run here. The actions after this step run only if a security admin approves it under Pending approvals.')); break;
+        case 'start_campaign':
+            body.appendChild(labeled('Patch campaign', select(idOptions(cfg.campaigns, true), m.campaign_id, function (v) { m.campaign_id = v; })));
+            body.appendChild(el('p', 'text-[10px] text-slate-500 self-end', 'Moves a DRAFT or PAUSED campaign to RUNNING.')); break;
+        }
+        card.appendChild(body);
+        return card;
+    }
+    function actionsSection(title, hint, list) {
+        var s = section(title, hint);
+        var box = el('div', 'space-y-2');
+        list.forEach(function (_, idx) { box.appendChild(actionCard(list, idx)); });
+        s.appendChild(box);
+        var addRow = el('div', 'flex items-center gap-2');
+        var sel = select(cfg.action_types.map(function (t) { return {value: t, label: ACTION_LABELS[t] || t}; }), cfg.action_types[0], function () {}, 'w-72');
+        var add = el('button', BTN_CLS, 'Add action'); add.type = 'button';
+        add.addEventListener('click', function () { list.push(blankAction(sel.value)); render(); });
+        addRow.appendChild(sel); addRow.appendChild(add);
+        s.appendChild(addRow);
+        return s;
+    }
+
+    function save() {
+        var req;
+        showError('');
+        try { req = toRequest(); } catch (e) { showError('The condition is not valid JSON: ' + e.message); return; }
+        var url = st.id ? '/admin/workflows/' + encodeURIComponent(st.id) : '/admin/workflows';
+        saveBtn.disabled = true;
+        fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf, 'Accept': 'application/json'}, body: JSON.stringify(req)})
+            .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, body: j}; }, function () { return {ok: r.ok, body: {}}; }); })
+            .then(function (res) {
+                if (res.ok) { window.location.href = '/admin/workflows'; return; }
+                saveBtn.disabled = false;
+                showError((res.body && res.body.error) || 'Save failed');
+            }).catch(function (e) { saveBtn.disabled = false; showError('Save failed: ' + e); });
+    }
+
+    var saveBtn;
+    function render() {
+        while (root.firstChild) { root.removeChild(root.firstChild); }
+        root.classList.remove('hidden');
+        root.appendChild(el('h2', 'text-sm font-semibold text-white', st.id ? 'Edit workflow' : 'New workflow'));
+        var top = el('div', 'grid grid-cols-1 md:grid-cols-3 gap-3');
+        top.appendChild(labeled('Name', input(st.name, function (v) { st.name = v; }, {placeholder: 'e.g. Quarantine on failed attestation'})));
+        top.appendChild(labeled('Description', input(st.description, function (v) { st.description = v; })));
+        top.appendChild(labeled('Cooldown per device (seconds; blank = 1 hour)', input(st.cooldown, function (v) { st.cooldown = v; }, {type: 'number', min: 0, cls: 'w-40'})));
+        root.appendChild(top);
+        var flags = el('div', 'flex flex-wrap items-center gap-6 text-xs text-slate-300');
+        var l1 = el('label'); l1.appendChild(checkbox(st.enabled, function (v) { st.enabled = v; })); l1.appendChild(document.createTextNode('Enabled'));
+        var l2 = el('label'); l2.appendChild(checkbox(st.dry_run, function (v) { st.dry_run = v; })); l2.appendChild(document.createTextNode('Dry run: record what would happen, change nothing'));
+        flags.appendChild(l1); flags.appendChild(l2);
+        root.appendChild(flags);
+        root.appendChild(triggerSection());
+        root.appendChild(conditionSection());
+        root.appendChild(actionsSection('3. Then actions', 'Run in order when the condition matches (or there is no condition).', st.then));
+        root.appendChild(actionsSection('4. Else actions (optional)', 'Run in order when the condition does not match.', st.els));
+
+        errBox = el('div', 'hidden rounded border border-rose-700 bg-rose-900/30 px-3 py-2 text-xs text-rose-200 break-words');
+        errBox.setAttribute('role', 'alert');
+        root.appendChild(errBox);
+        if (pendingErr) { showError(pendingErr); pendingErr = ''; }
+        var bar = el('div', 'flex items-center gap-2');
+        saveBtn = el('button', 'px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white', st.id ? 'Save changes' : 'Create workflow');
+        saveBtn.type = 'button'; saveBtn.addEventListener('click', save);
+        var cancel = el('button', 'px-3 py-1.5 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600 text-white', 'Cancel'); cancel.type = 'button';
+        cancel.addEventListener('click', function () { root.classList.add('hidden'); st = null; });
+        bar.appendChild(saveBtn); bar.appendChild(cancel);
+        root.appendChild(bar);
+        var det = el('details', 'text-[10px] text-slate-500');
+        det.appendChild(el('summary', 'cursor-pointer', 'Show the JSON this form sends'));
+        var pre = el('pre', 'mt-1 p-2 rounded bg-[#0a0e17] border border-[#1a2234] font-mono whitespace-pre-wrap break-all');
+        det.appendChild(pre);
+        det.addEventListener('toggle', function () {
+            if (!det.open) { return; }
+            try { pre.textContent = JSON.stringify(toRequest(), null, 2); } catch (e) { pre.textContent = 'Not valid yet: ' + e.message; }
+        });
+        root.appendChild(det);
+    }
+
+    function open(s) { st = s; render(); root.scrollIntoView({block: 'nearest'}); }
+    document.getElementById('wf-new').addEventListener('click', function () { open(newState()); });
+    function post(url, method) {
+        return fetch(url, {method: method, headers: {'X-CSRF-Token': csrf, 'Accept': 'application/json'}})
+            .then(function (r) { return r.json().then(function (j) { return {ok: r.ok, body: j}; }); });
+    }
+    function pageFail(res) { pageMsg.textContent = (res.body && res.body.error) || 'Request failed'; }
+    document.querySelectorAll('[data-wf-edit]').forEach(function (b) {
+        b.addEventListener('click', function () {
+            var id = b.getAttribute('data-wf-edit');
+            for (var i = 0; i < cfg.workflows.length; i++) { if (cfg.workflows[i].id === id) { open(stateFromWorkflow(cfg.workflows[i])); return; } }
+        });
+    });
+    document.querySelectorAll('[data-wf-toggle]').forEach(function (b) {
+        b.addEventListener('click', function () {
+            post('/admin/workflows/' + encodeURIComponent(b.getAttribute('data-wf-toggle')) + '/toggle', 'POST')
+                .then(function (res) { if (res.ok) { window.location.reload(); } else { pageFail(res); } });
+        });
+    });
+    document.querySelectorAll('[data-wf-delete]').forEach(function (b) {
+        b.addEventListener('click', function () {
+            if (!window.confirm('Delete workflow "' + b.getAttribute('data-wf-name') + '"? Its run history is kept but detached.')) { return; }
+            post('/admin/workflows/' + encodeURIComponent(b.getAttribute('data-wf-delete')), 'DELETE')
+                .then(function (res) { if (res.ok) { window.location.reload(); } else { pageFail(res); } });
+        });
+    });
+})();
+</script>
+{{end}}

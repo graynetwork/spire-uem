@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/spire-uem/spire-uem/internal/crypto"
 	"github.com/spire-uem/spire-uem/internal/types"
+	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
 // Sentinel errors for the two-person wipe workflow, surfaced to the admin UI.
@@ -121,6 +122,9 @@ func (r *Repository) SetDeviceLost(ctx context.Context, deviceID, markedBy, lock
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit set lost tx: %w", err)
+	}
+	if desiredLost {
+		r.EmitEvent(ctx, workflows.EventDeviceMarkedLost, deviceID, map[string]any{"marked_by": markedBy}, false)
 	}
 	return &s, nil
 }
@@ -333,9 +337,16 @@ func (r *Repository) CompleteWipeRequest(ctx context.Context, requestID, status,
 		UPDATE device_wipe_requests
 		SET status=$2, completed_at=NOW(), result_detail=$3, updated_at=NOW()
 		WHERE id=$1 AND status='DELIVERED'`
-	_, err := r.pool.Exec(ctx, q, requestID, st, truncateDetail(detail))
+	var deviceID string
+	err := r.pool.QueryRow(ctx, q+` RETURNING device_id::text`, requestID, st, truncateDetail(detail)).Scan(&deviceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("complete wipe request: %w", err)
+	}
+	if st == string(types.WipeCompleted) {
+		r.EmitEvent(ctx, workflows.EventDeviceWiped, deviceID, map[string]any{"request_id": requestID, "status": st}, false)
 	}
 	return nil
 }
