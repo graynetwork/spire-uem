@@ -8,43 +8,40 @@ SpireUEM is a self-hosted UEM control plane and endpoint agent for Debian workst
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    subgraph ControlPlane["SpireUEM control plane"]
-        WebUI["Admin UI and HTMX"]
-        API["REST and WebSocket API"]
-        Auth["Local auth, MFA, PATs, OIDC"]
-        DB[(PostgreSQL 15+)]
-        KEK["RSA-4096 KEK wraps AES-GCM DEKs"]
-        WebUI --> API
-        API --> Auth
-        API --> DB
-        API --> KEK
-    end
-
-    subgraph Endpoint["Managed Debian endpoint"]
-        Spired["spired root daemon"]
-        IPC["/run/spire/agent.sock with SO_PEERCRED"]
-        Hub["Spire Hub: Python, GTK4 and Libadwaita"]
-        CLI["spire-ctl"]
-        TPM["TPM 2.0"]
-        LUKS["LUKS2 recovery-key escrow"]
-        Policy["Declarative policy engines"]
-        Spired --> TPM
-        Spired --> LUKS
-        Spired --> Policy
-        Spired --- IPC
-        IPC --> Hub
-        IPC --> CLI
-    end
-
-    API <== "HTTPS/WSS or a trusted TLS proxy" ==> Spired
-```
+![SpireUEM architecture: the control plane, PostgreSQL, the managed endpoint and the offline release signing](docs/diagrams/architecture.svg)
 
 - **`spire-server`** hosts the API, WebSocket gateway, admin console, migration runner, alert workers, CVE importer, and cryptographic escrow.
 - **`spired`** is a static Go daemon that runs as root and reconciles assigned policy.
 - **Spire Hub** is an unprivileged GTK4/Libadwaita application implemented in Python and launched by a small Go wrapper. The Debian package installs Python and GI dependencies.
 - **`spire-ctl`** exposes local status, catalog, install, uninstall, and immediate-sync operations through the authenticated UNIX socket.
+
+## How it works
+
+### Enrollment, device trust and secret delivery
+
+A device enrolls manually or with a token and receives a bearer token and a device certificate. At every check-in the server checks both, then decides from the device's latest TPM attestation whether it may receive network secrets.
+
+![Enrollment, mTLS check-in, PCR baseline comparison and secret gating](docs/diagrams/enrollment-and-trust.svg)
+
+### Fleet data: inventory, groups and workflows
+
+Inventory and sensor reports become typed device attributes. Dynamic groups query them, and policies, applications and patch campaigns target the groups. Workflows react to events and can change tags, run scripts or start a campaign.
+
+![Inventory and sensors feeding attributes, dynamic groups, targeting and workflows](docs/diagrams/fleet-data-flow.svg)
+
+### Patch campaigns
+
+Campaigns roll out in stages and promote automatically when a stage succeeds. They halt when failures cross a threshold.
+
+![Patch campaign lifecycle, stage promotion and per-device dispatch](docs/diagrams/patch-campaigns.svg)
+
+### Signed agent updates and rollback
+
+Releases are signed off the server, and the agent verifies the signed manifest before installing. An update that doesn't check in healthy is rolled back by a timer that runs the previous binary.
+
+![Offline signing, agent verification, install and automatic rollback](docs/diagrams/signed-updates.svg)
+
+The diagrams are draw.io files in [`docs/diagrams/`](docs/diagrams/); see its README to edit and re-export them.
 
 ## Security boundaries
 
