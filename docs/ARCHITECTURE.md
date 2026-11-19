@@ -144,9 +144,9 @@ against them.
     secret, and never removes an already-working profile on account of the withhold.
   - If the enforcement setting cannot be read from the database, the server treats the mode
     as `enforce` for that check-in.
-  - Only **sealed** fields are withheld (Wi-Fi PSK and EAP passwords, 802.1X passwords,
-    WireGuard peer pre-shared keys). An EAP-TLS client private key is stored in the policy
-    payload unencrypted and is still delivered to untrusted devices.
+  - Every secret field is withheld: Wi-Fi PSK and EAP passwords, EAP-TLS client private
+    keys (Wi-Fi and wired), 802.1X passwords and WireGuard peer pre-shared keys. A field
+    counts whether it is sealed or a legacy plaintext value stored before it was sealed at rest.
   - With no baseline in scope, `ATTESTED` counts as trusted: `enforce` then only requires a
     fresh, valid quote with Secure Boot evidence, not known-good measurements.
 - A challenge-stage failure (invalid EK certificate or attestation key) is recorded in the
@@ -631,7 +631,7 @@ acceptance.
   verification of firmware/bootloader contents; enforcement gates only sealed
   network-profile secrets, not all assigned policy; the trust decision uses the latest
   recorded result, so a device that never re-attests after its result goes stale stays
-  untrusted until it does; EAP-TLS client private keys are unsealed and not withheld.
+  untrusted until it does.
 - Device mutual TLS and certificate pinning exist but default to `optional`; `required` must be turned on, and only `required` mode refuses an uncertified device.
 - A device whose certificate has lapsed can obtain a new one with its bearer token alone, so a stolen token remains sufficient for such a device.
 - First-contact wipe-signing-key trust depends on transport TLS unless the agent pins the server with `server_ca_file` / `server_ca_sha256`.
