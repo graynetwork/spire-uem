@@ -135,7 +135,7 @@ func TestEnforceWiredEnterpriseEAPTLS(t *testing.T) {
 			Identity:   "host/workstation",
 			CACert:     "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
 			ClientCert: "-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----",
-			ClientKey:  "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----",
+			ClientKey:  types.SecretEnvelope{Plaintext: "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----"},
 		},
 	})
 	pol := types.AssignedPolicy{ID: "wired1", PolicyType: types.PolicyTypeNetworkProfile, Payload: payload}

@@ -34,7 +34,7 @@ func buildNetworkProfilePayload(r *http.Request) (json.RawMessage, error) {
 			w.Identity = strings.TrimSpace(r.FormValue("np_wifi_identity"))
 			w.CACert = r.FormValue("np_wifi_ca_cert")
 			w.ClientCert = r.FormValue("np_wifi_client_cert")
-			w.ClientKey = r.FormValue("np_wifi_client_key")
+			w.ClientKey = types.SecretEnvelope{Plaintext: r.FormValue("np_wifi_client_key")}
 			w.Password = types.SecretEnvelope{Plaintext: r.FormValue("np_wifi_password")}
 		default:
 			return nil, fmt.Errorf("invalid wifi security %q", sec)
@@ -47,7 +47,7 @@ func buildNetworkProfilePayload(r *http.Request) (json.RawMessage, error) {
 			Identity:   strings.TrimSpace(r.FormValue("np_wired_identity")),
 			CACert:     r.FormValue("np_wired_ca_cert"),
 			ClientCert: r.FormValue("np_wired_client_cert"),
-			ClientKey:  r.FormValue("np_wired_client_key"),
+			ClientKey:  types.SecretEnvelope{Plaintext: r.FormValue("np_wired_client_key")},
 			Password:   types.SecretEnvelope{Plaintext: r.FormValue("np_wired_password")},
 		}
 
@@ -207,14 +207,17 @@ func (h *Handler) sealPolicyPayloadSecrets(policyType types.PolicyType, payload 
 		if p.Wifi.PSK, err = seal(p.Wifi.PSK); err != nil {
 			return nil, err
 		}
+		if p.Wifi.ClientKey, err = seal(p.Wifi.ClientKey); err != nil {
+			return nil, err
+		}
 		if p.Wifi.Password, err = seal(p.Wifi.Password); err != nil {
 			return nil, err
 		}
-		// Treat an EAP-TLS private key as a secret too (sealed via a wrapper envelope field is
-		// overkill; the key material is written only to the device keyfile, so we leave the PEM in
-		// the payload but note it is delivered only over the TLS-proxied channel). Documented.
 	}
 	if p.Wired != nil {
+		if p.Wired.ClientKey, err = seal(p.Wired.ClientKey); err != nil {
+			return nil, err
+		}
 		if p.Wired.Password, err = seal(p.Wired.Password); err != nil {
 			return nil, err
 		}
