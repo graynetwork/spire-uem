@@ -24,6 +24,9 @@ func SealSecret(pub *rsa.PublicKey, plaintext string) (types.SecretEnvelope, err
 	if err != nil {
 		return types.SecretEnvelope{}, fmt.Errorf("seal payload secret: %w", err)
 	}
+	defer clear(encDEK)
+	defer clear(encSecret)
+	defer clear(nonce)
 	return types.SecretEnvelope{
 		Ciphertext:   base64.StdEncoding.EncodeToString(encSecret),
 		EncryptedDEK: base64.StdEncoding.EncodeToString(encDEK),
@@ -45,14 +48,17 @@ func OpenSecret(priv *rsa.PrivateKey, env types.SecretEnvelope) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("decode sealed secret ciphertext: %w", err)
 	}
+	defer clear(encSecret)
 	encDEK, err := base64.StdEncoding.DecodeString(env.EncryptedDEK)
 	if err != nil {
 		return "", fmt.Errorf("decode sealed secret DEK: %w", err)
 	}
+	defer clear(encDEK)
 	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
 	if err != nil {
 		return "", fmt.Errorf("decode sealed secret nonce: %w", err)
 	}
+	defer clear(nonce)
 	pt, err := EnvelopeDecryptRecoveryKey(priv, encDEK, encSecret, nonce)
 	if err != nil {
 		return "", fmt.Errorf("open payload secret: %w", err)
