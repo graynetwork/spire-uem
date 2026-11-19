@@ -99,3 +99,42 @@ func TestPAT_OwnerTagScopeApplies(t *testing.T) {
 		t.Errorf("device list via scoped PAT includes an out-of-scope device")
 	}
 }
+
+// TestGroupsPage_RendersForLoggedInAdmin: the groups page passed the admin's account object
+// where the layout expects the username string, so the layout's {{slice .AdminUser 0 1}}
+// failed and the page was cut off after the sidebar.
+func TestGroupsPage_RendersForLoggedInAdmin(t *testing.T) {
+	pool := tokenWebTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer pool.Close()
+	ctx := context.Background()
+	repo := db.NewRepository(pool)
+	h, err := web.NewHandler(repo, nil, audit.NewForwarder(repo, ""))
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	router := chi.NewRouter()
+	h.RegisterRoutes(router, "breakglass", "")
+	name := "grp-page-" + strings.ReplaceAll(time.Now().Format("150405.000000"), ".", "")
+	if _, err := repo.CreateLocalAdminUser(ctx, types.CreateUserRequest{
+		Username: name, Email: name + "@example.test", Password: "correct-horse-battery", Role: types.RoleSecurityAdmin,
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	cookie, _, err := web.IssueSession(ctx, repo, name, false)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/admin/groups", nil)
+	req.Header.Set("Accept", "text/html")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, name) || !strings.Contains(body, "</html>") {
+		t.Errorf("groups page did not render fully: status %d, has username %v, complete %v",
+			rec.Code, strings.Contains(body, name), strings.Contains(body, "</html>"))
+	}
+}
