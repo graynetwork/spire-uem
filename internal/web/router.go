@@ -147,6 +147,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 
 		// Access posture (conditional access): rule set view. AUDITOR+; edit is below.
 		r.Get("/access-posture", h.AccessPosturePage)
+		// RADIUS / NAC connector: settings, NAS clients, CoA delivery log (AUDITOR+ read).
+		r.Get("/radius", h.RadiusPage)
 
 		r.Get("/patch-windows", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/policies", http.StatusFound)
@@ -214,6 +216,11 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			// Reverse-proxy forward-auth settings (fleet-wide; refused to tag-scoped admins).
 			r.Get("/access-proxy", h.AccessProxyPage)
 			r.Post("/access-proxy", h.SaveAccessProxy)
+			// RADIUS / NAC connector mutations (SECURITY_ADMIN+, refused for tag-scoped admins).
+			r.Post("/radius/settings", h.UpdateRadiusSettings)
+			r.Post("/radius/nas", h.CreateRadiusNAS)
+			r.Post("/radius/nas/{id}", h.UpdateRadiusNAS)
+			r.Post("/radius/nas/{id}/delete", h.DeleteRadiusNAS)
 			r.Post("/baselines/{id}/deactivate", h.DeactivateBaseline)
 			// Per-device attestation exception (reason + mandatory expiry). Scoped via the
 			// /admin/devices/{id}/... path through DeviceScopeMiddleware.

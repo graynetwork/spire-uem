@@ -1,0 +1,63 @@
+# Example virtual server: MAC authentication bypass (MAB) and 802.1X with SpireUEM posture.
+#
+# A complete, minimal server for the NAC use case so the fail-closed behaviour is visible in
+# one file. In an existing deployment copy the marked blocks into your own authorize and
+# post-auth sections instead. MAB and the SpireUEM-down case are exercised against real
+# FreeRADIUS 3.2.7 by scripts/test_radius.sh. The EAP-TLS branch was NOT run with a real
+# supplicant (no eapol_test available); the certificate-serial request it sends is tested at
+# HTTP level.
+
+server spire-nac {
+	listen {
+		type   = auth
+		ipaddr = *
+		port   = 0
+	}
+
+	authorize {
+		if (&EAP-Message) {
+			# 802.1X. The EAP module authenticates the certificate; the posture check
+			# happens in post-auth, after the handshake, so a valid certificate whose
+			# device is not compliant is still turned away.
+			eap {
+				ok = return
+			}
+		}
+		else {
+			# --- BLOCK 1: MAC authentication bypass --------------------------------
+			# Accept only MAC-shaped User-Names, then let SpireUEM decide.
+			if (&User-Name =~ /^([0-9a-fA-F]{2}[-:.]?){5}[0-9a-fA-F]{2}$/) {
+				spire_nac_check
+				update control {
+					&Auth-Type := Accept
+				}
+			}
+			else {
+				reject
+			}
+		}
+	}
+
+	authenticate {
+		Auth-Type eap {
+			eap
+		}
+	}
+
+	post-auth {
+		# --- BLOCK 2: 802.1X / EAP-TLS ---------------------------------------------
+		# Certificate attributes live in session-state after the handshake; copy the
+		# serial into the request so rlm_rest sends it.
+		if (&EAP-Message) {
+			update request {
+				&TLS-Client-Cert-Serial := &session-state:TLS-Client-Cert-Serial
+			}
+			spire_nac_check
+		}
+
+		Post-Auth-Type REJECT {
+			# --- BLOCK 3: anything that failed above ends here --------------------
+			attr_filter.access_reject
+		}
+	}
+}

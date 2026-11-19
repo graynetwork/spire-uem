@@ -1,0 +1,41 @@
+# Fail-closed device-posture check against SpireUEM.
+#
+# `spire_nac_check` ends in exactly one of two ways: the request carries an explicit accept
+# from SpireUEM, or it is rejected. There is no path that falls through to "accept".
+#
+#   * SpireUEM answers 200 with control:Tmp-String-0 = "spire-accept" (plus VLAN attributes
+#     when configured): the request continues.
+#   * Anything else rejects: 401/403/404/5xx, a timeout, a refused connection, a response
+#     that does not parse, or a response without the marker. rlm_rest turns those into the
+#     reject / userlock / notfound / fail return codes, and the marker test below does not
+#     care which one it was.
+#
+# The positive test (== "spire-accept") is on purpose: an absent attribute does not match,
+# so an empty or "noop" answer rejects instead of accepting.
+
+# This file is read inside radiusd.conf's `policy { }` section (policy.d/), so it holds the
+# policy definition only.
+
+spire_nac_check {
+	# Never trust a marker that was already in the list before we asked.
+	update control {
+		&Tmp-String-0 !* ANY
+	}
+	update control {
+		&REST-HTTP-Header := "Authorization: Bearer ${spire_token}"
+	}
+
+	spire
+
+	if (&control:Tmp-String-0 == "spire-accept") {
+		update control {
+			&Tmp-String-0 !* ANY
+		}
+	}
+	else {
+		update reply {
+			&Reply-Message := "Access denied by device posture"
+		}
+		reject
+	}
+}

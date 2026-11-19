@@ -559,6 +559,10 @@ func (h *Handler) registerAdminAPIv1(r chi.Router) {
 			// Conditional access: read-only posture for connectors (posture:read).
 			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/devices/{id}/posture", h.apiGetDevicePosture)
 			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/posture/lookup", h.apiPostureLookup)
+
+			// RADIUS / NAC: FreeRADIUS rlm_rest decision endpoint (posture:read). Not wrapped in
+			// the idempotency middleware on purpose: an access decision must never be replayed.
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Post("/access/radius/authorize", h.apiRadiusAuthorize)
 		})
 
 		// Reverse-proxy forward-auth. Same Bearer authentication and limiter as above, plus the

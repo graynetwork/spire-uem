@@ -1783,6 +1783,86 @@
      }
     }
    }
+  },
+  "/access/radius/authorize": {
+   "post": {
+    "operationId": "radiusAuthorize",
+    "summary": "RADIUS / NAC access decision (FreeRADIUS rlm_rest)",
+    "description": "Called by FreeRADIUS 3.2 through rlm_rest with its JSON request body (attributes as {\"User-Name\":{\"type\":\"string\",\"value\":[\"x\"]}}). Identity is the device-CA certificate serial (TLS-Client-Cert-Serial, strong) or, only when enabled in settings, the Calling-Station-Id MAC (weak). 200 = accept: the body is an rlm_rest reply with control:Tmp-String-0 = spire-accept and optional Tunnel-* VLAN attributes. 403 = reject; the body never says why. Any other status must be treated as reject. Decisions are never cached or replayed, so no Idempotency-Key is accepted.",
+    "tags": [
+     "access"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "x-no-idempotency": true,
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "additionalProperties": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Accept",
+      "headers": {
+       "X-Spire-Identity-Strength": {
+        "schema": {
+         "type": "string",
+         "enum": [
+          "strong",
+          "weak"
+         ]
+        }
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Reject (or insufficient scope/role; the standard error shape is used for those)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "decision": {
+           "type": "string",
+           "enum": [
+            "reject"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
   }
  },
  "components": {
