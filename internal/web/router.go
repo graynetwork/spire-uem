@@ -145,6 +145,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 
 		r.Get("/vulnerabilities", h.VulnerabilitiesPage)
 
+		// Access posture (conditional access): rule set view. AUDITOR+; edit is below.
+		r.Get("/access-posture", h.AccessPosturePage)
+
 		r.Get("/patch-windows", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/policies", http.StatusFound)
 		})
@@ -198,6 +201,11 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/luks/reveal", h.RevealLUKSRawRecoveryKey)
 			// Mark / clear LOST device mode (lost-device action). SECURITY_ADMIN+.
 			r.Post("/devices/{id}/lost", h.MarkDeviceLost)
+			// Quarantine / release (SECURITY_ADMIN+, tag-scope aware, reason required, audited).
+			r.Post("/devices/{id}/quarantine", h.QuarantineDevice)
+			r.Post("/devices/{id}/release", h.ReleaseDevice)
+			r.Post("/access-posture", h.SaveAccessPosture)
+			r.Post("/policies/{id}/quarantine-allowed", h.SetPolicyQuarantineAllowed)
 
 			// Approved PCR baselines (SECURITY_ADMIN+, tag-scope aware).
 			r.Get("/baselines", h.ListBaselinesPage)

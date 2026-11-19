@@ -535,6 +535,10 @@ func (h *Handler) registerAdminAPIv1(r chi.Router) {
 			r.With(requireAPI(types.ScopeDevicesActions, types.RoleOperator), h.idempotencyMiddleware).Post("/devices/{id}/lock", h.apiDeviceLock)
 			r.With(requireAPI(types.ScopeDevicesActions, types.RoleOperator), h.idempotencyMiddleware).Post("/devices/{id}/reboot", h.apiDeviceReboot)
 
+			// Quarantine changes device access: SECURITY_ADMIN+ in addition to the scope.
+			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/quarantine", h.apiDeviceQuarantine)
+			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/release", h.apiDeviceRelease)
+
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups", h.apiListGroups)
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups/{id}", h.apiGetGroup)
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups/{id}/members", h.apiGroupMembers)
