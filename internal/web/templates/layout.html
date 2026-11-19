@@ -83,6 +83,10 @@
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "groups"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m6-5.13a4 4 0 11-8 0 4 4 0 018 0zm6 3a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                             <span>Groups</span>
                         </a>
+                        <a href="/admin/workflows" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "workflows"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
+                            <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "workflows"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                            <span>Workflows</span>
+                        </a>
                         <a href="/admin/applications" class="flex items-center px-2.5 py-1.5 text-xs font-medium rounded-md transition {{if eq .ActiveNav "applications"}}bg-[#172236] text-white border-l-2 border-blue-500{{else}}text-slate-400 hover:text-slate-200 hover:bg-[#141b2a]{{end}}">
                             <svg class="w-4 h-4 mr-2.5 {{if eq .ActiveNav "applications"}}text-blue-400{{else}}text-slate-500{{end}}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
                             <span>Applications</span>
@@ -209,6 +213,8 @@
                 {{template "baselines_content" .}}
             {{else if eq .ActiveNav "groups"}}
                 {{template "groups_content" .}}
+            {{else if eq .ActiveNav "workflows"}}
+                {{template "workflows_content" .}}
             {{end}}
         </main>
     </div>
