@@ -357,6 +357,14 @@ func (s *RadiusStore) EnqueueChanges(ctx context.Context, now time.Time) (int, e
 			break
 		}
 	}
+	// Never park the cursor in the future: a verdict whose state_changed_at is ahead of the
+	// clock (the evaluator supplies it) would otherwise hide every real change until then.
+	if maxSeen.After(now) {
+		maxSeen = now
+	}
+	if maxSeen.Before(cursor) {
+		maxSeen = cursor
+	}
 	if _, err := tx.Exec(ctx, `UPDATE radius_coa_cursor SET changed_at=$1, updated_at=NOW() WHERE id=1`, maxSeen); err != nil {
 		return total, err
 	}

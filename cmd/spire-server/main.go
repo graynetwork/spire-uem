@@ -24,8 +24,8 @@ import (
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/groupsync"
-	"github.com/spire-uem/spire-uem/internal/web"
 	"github.com/spire-uem/spire-uem/internal/radius"
+	"github.com/spire-uem/spire-uem/internal/web"
 	"github.com/spire-uem/spire-uem/internal/webhooks"
 	"github.com/spire-uem/spire-uem/internal/workflows"
 )
