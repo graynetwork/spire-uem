@@ -161,6 +161,7 @@ For physical TPM and LUKS qualification, use [the bare-metal runbook](docs/BARE_
 - [Spire Hub and local troubleshooting](docs/DESKTOP_CLIENT_GUIDE.md)
 - [Bare-metal qualification](docs/BARE_METAL_RUNBOOK.md)
 - [Dated competitive comparison](docs/COMPETITIVE_ANALYSIS.md)
+- [Roadmap and gaps against leading UEM products](docs/ROADMAP.md)
 
 ## License
 
