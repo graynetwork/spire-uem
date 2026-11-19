@@ -25,6 +25,7 @@ import (
 	"github.com/spire-uem/spire-uem/internal/gateway"
 	"github.com/spire-uem/spire-uem/internal/groupsync"
 	"github.com/spire-uem/spire-uem/internal/web"
+	"github.com/spire-uem/spire-uem/internal/webhooks"
 	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
@@ -140,6 +141,19 @@ func main() {
 	repo.NewWorkflowActions(alertMgr, wfEngine.Config().QuarantineTag).RegisterBuiltins(wfEngine.Registry())
 	// Patch campaigns join workflows through the action registry (start_campaign).
 	repo.RegisterCampaignWorkflowAction(wfEngine.Registry())
+	// Signed event webhooks: delivery worker over the durable outbox. Safe on every server
+	// instance (claims use FOR UPDATE SKIP LOCKED). A subscription auto-disabled after a long
+	// dead streak raises an alert through the existing channels.
+	whWorker := webhooks.NewWorker(repo.WebhookStore(), webhooks.NewSender())
+	whWorker.OnAutoDisable = func(c context.Context, name, reason string) {
+		alertMgr.Notify(c, alerts.Event{
+			Kind:     alerts.EventWebhookDisabled,
+			Severity: alerts.SeverityWarning,
+			Subject:  "Event webhook \"" + name + "\" was disabled: " + reason,
+			Details:  map[string]any{"webhook": name, "dedupe": "webhook:" + name},
+		})
+	}
+	go whWorker.Run(ctx)
 	// Forward offline-device detections from the alerts ticker into the workflow event log.
 	alertMgr.SetOfflineHook(func(c context.Context, deviceID, hostname string, minutes int) {
 		repo.EmitEvent(c, workflows.EventDeviceOffline, deviceID,

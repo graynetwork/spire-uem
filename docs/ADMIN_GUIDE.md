@@ -532,3 +532,25 @@ including expired ones, and creates (reason and expiry of 1 to 180 days required
 A tag-scoped admin can only delete acceptances within their own tags. A blackout cron that is not
 five fields is rejected at creation, in the API too, because the dispatcher treats a malformed one
 as always blacked out.
+
+## Event webhooks
+
+SUPER_ADMIN only: **Webhooks** in the sidebar (`/admin/webhooks`). A webhook sends signed JSON
+events to your SIEM or automation. Payload, event list and verification code are in
+`docs/WEBHOOKS.md`.
+
+- **Create**: name, https URL, at least one event type, optional device tag scope, enabled. The
+  signing secret is shown once after create; copy it then. **Rotate secret** issues a new one at
+  once (update receivers first or accept a short failure window; pending retries use the new secret).
+- **Tag scope**: only events for devices carrying one of the tags are sent. Events with no device
+  (policy and campaign events) are not sent to a scoped webhook. Leave the scope empty to receive them.
+- **Allow private network**: needed for targets in RFC1918, CGNAT or similar ranges, and the only
+  way to use plain http. Loopback and link-local addresses are always blocked. Turning this on is
+  audited (`WEBHOOK_ALLOW_PRIVATE_NETWORK`).
+- **Send test event** queues a `webhook.test` delivery. **Delivery log** shows each delivery, its
+  attempts (status code, error, duration, response snippet) and a **Redeliver** button, which resends
+  the same event id.
+- A webhook whose deliveries are dead 10 times in a row is disabled automatically and a
+  `webhook_disabled` alert is raised (enable that kind on an alert channel to be told). Fix the
+  receiver, tick Enabled and save.
+- The same functions are available as JSON (any request without `Accept: text/html` gets JSON).

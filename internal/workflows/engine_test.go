@@ -564,3 +564,23 @@ func TestAgentStart_FlagsRunScriptTrigger(t *testing.T) {
 		t.Fatalf("agent_started trigger must flag run_script as agent_start")
 	}
 }
+
+// A webhook-only kind (policy/campaign/destructive device events) must never run a workflow,
+// even if such an event reaches the queue and a workflow row somehow names it as its trigger.
+func TestProcessEvent_IgnoresWebhookOnlyKinds(t *testing.T) {
+	for _, kind := range WebhookOnlyKinds {
+		fs := newFakeStore()
+		fs.addDevice("dev1", "APPROVED", nil)
+		w := addTagWF("w1", "sneaky", nil)
+		w.Trigger.Kind = kind
+		fs.workflowsByEv[kind] = []Workflow{w}
+		eng, ex := newEngineWith(fs)
+		ev := Event{ID: 1, Kind: kind, DeviceID: "dev1", Fields: map[string]any{}}
+		if err := eng.ProcessEvent(context.Background(), ev); err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+		if len(ex.calls) != 0 || len(fs.runStatus) != 0 {
+			t.Fatalf("%s must not trigger a workflow, got calls=%#v runs=%d", kind, ex.calls, len(fs.runStatus))
+		}
+	}
+}

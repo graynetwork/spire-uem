@@ -202,7 +202,7 @@ func (e *wfEnv) mkApproval(wfID, wfName string, scope []string, deviceID string,
 	return id
 }
 
-const htmlAccept = "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8"
+// htmlAccept is shared with campaigns_ui_test.go.
 
 func runNames(t *testing.T, body []byte) map[string]bool {
 	t.Helper()
