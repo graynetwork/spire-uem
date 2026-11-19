@@ -134,7 +134,7 @@ func (h *Handler) apiRadiusAuthorize(w http.ResponseWriter, r *http.Request) {
 	if dev != nil && req.NASIPAddress != "" {
 		if _, err := store.RecordSession(r.Context(), db.RadiusSession{
 			DeviceID: dev.ID, NASAddress: req.NASIPAddress, NASIdentifier: req.NASIdentifier,
-			CallingStationID: db.NormalizeMAC(req.CallingStationID), UserName: req.UserName,
+			CallingStationID: req.CallingStationID, UserName: req.UserName,
 			AcctSessionID: req.AcctSessionID, GrantedState: state,
 		}, radius.SessionTTL); err != nil {
 			// The verdict stands; only the later disconnect is affected. Logged loudly.
@@ -425,6 +425,9 @@ func (h *Handler) CreateRadiusNAS(w http.ResponseWriter, r *http.Request) {
 	in, ok := radiusInput(w, r, "name", "address", "coa_port", "secret", "enabled")
 	if !ok {
 		return
+	}
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") && in["enabled"] == "" {
+		in["enabled"] = "true" // a JSON create without the field means enabled; a form sends the checkbox
 	}
 	n, secret, generated, err := h.repo.RadiusStore().CreateNAS(r.Context(), radiusNASFromInput(in), AdminUserFromContext(r.Context()))
 	if err != nil {

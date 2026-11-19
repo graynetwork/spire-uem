@@ -1,0 +1,5 @@
+# Put this file at /etc/freeradius/spire_token.conf, mode 0640, owner root:freerad, and add
+#     $INCLUDE /etc/freeradius/spire_token.conf
+# at the TOP of radiusd.conf (before `modules {`). The token is a SpireUEM service account
+# token (spire_sa_...) holding ONLY the posture:read scope.
+spire_token = "spire_sa_REPLACE_ME"

@@ -1,0 +1,52 @@
+# SpireUEM device-posture decision, called over HTTPS with rlm_rest (FreeRADIUS 3.2).
+#
+# Install: copy to /etc/freeradius/mods-available/spire and symlink it into mods-enabled/.
+# Replace the host name below with your SpireUEM server. The bearer token is NOT set here:
+# policy.d/spire_nac adds it from ${spire_token} (see spire_token.conf.example).
+#
+# There is deliberately no `connect_uri`: with one, FreeRADIUS refuses to start while
+# SpireUEM is unreachable. Without it (and with pool start = 0) FreeRADIUS starts, and every
+# request made while SpireUEM is down is rejected by the policy.
+rest spire {
+	tls {
+		# Verify SpireUEM's certificate (the default, spelled out so nobody turns it off).
+		check_cert    = yes
+		check_cert_cn = yes
+		# ca_file = /etc/freeradius/certs/spire-ca.pem   # only for a private CA
+	}
+
+	connect_timeout = 2.0
+
+	# Used for MAC bypass (policy called from the authorize section).
+	authorize {
+		uri     = "https://spire.example.com/api/admin/v1/access/radius/authorize"
+		method  = 'post'
+		body    = 'json'
+		timeout = 3.0
+		tls     = ${..tls}
+		# SpireUEM only ever answers with fixed, validated values. Still, never let a
+		# response value be expanded as a policy expression.
+		do_xlat = no
+	}
+
+	# Used for EAP-TLS / 802.1X, once the TLS handshake has authenticated the certificate.
+	post-auth {
+		uri     = "https://spire.example.com/api/admin/v1/access/radius/authorize"
+		method  = 'post'
+		body    = 'json'
+		timeout = 3.0
+		tls     = ${..tls}
+		do_xlat = no
+	}
+
+	pool {
+		start = 0
+		min = 0
+		max = ${thread[pool].max_servers}
+		spare = 1
+		uses = 0
+		retry_delay = 5
+		lifetime = 0
+		idle_timeout = 60
+	}
+}
