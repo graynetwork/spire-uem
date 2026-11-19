@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -186,43 +187,52 @@ func (h *Handler) GetCampaign(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// campaignControl handles pause/resume/cancel/promote via a shared path.
+// controlCampaign handles start/pause/resume/cancel for the /admin routes.
 func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action string) {
 	c, ok := h.getScopedCampaign(w, r, chi.URLParam(r, "id"))
 	if !ok {
 		return
 	}
-	actor := AdminUserFromContext(r.Context())
+	from := c.State
+	newState, status, msg := h.applyCampaignControl(r.Context(), c, action, AdminUserFromContext(r.Context()))
+	if status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
+	h.auditCampaign(r, "CAMPAIGN_"+strings.ToUpper(action), c.ID, map[string]any{"from": string(from), "to": string(newState)})
+	writeCampaignJSON(w, http.StatusOK, map[string]any{"id": c.ID, "state": string(newState)})
+}
+
+// applyCampaignControl is the single state machine for campaign start/pause/resume/cancel,
+// shared by the /admin routes and the versioned admin API so both enforce the same
+// transitions. The caller has already loaded the campaign and checked the actor may see
+// it. On refusal it returns a non-zero HTTP status and message.
+func (h *Handler) applyCampaignControl(ctx context.Context, c *campaign.Campaign, action, actor string) (campaign.CampaignState, int, string) {
 	var newState campaign.CampaignState
 	switch action {
 	case "start":
 		if c.State != campaign.StateDraft && c.State != campaign.StatePaused {
-			http.Error(w, "campaign cannot be started from "+string(c.State), http.StatusBadRequest)
-			return
+			return "", http.StatusBadRequest, "campaign cannot be started from " + string(c.State)
 		}
 		newState = campaign.StateRunning
 	case "pause":
 		if c.State != campaign.StateRunning {
-			http.Error(w, "only a running campaign can be paused", http.StatusBadRequest)
-			return
+			return "", http.StatusBadRequest, "only a running campaign can be paused"
 		}
 		newState = campaign.StatePaused
 	case "resume":
 		// Resume clears a halt as well as a pause. It never revives a finished campaign.
 		if c.State != campaign.StatePaused && c.State != campaign.StateHalted {
-			http.Error(w, "campaign cannot be resumed from "+string(c.State), http.StatusBadRequest)
-			return
+			return "", http.StatusBadRequest, "campaign cannot be resumed from " + string(c.State)
 		}
 		newState = campaign.StateRunning
 	case "cancel":
 		if c.State == campaign.StateCompleted || c.State == campaign.StateCancelled {
-			http.Error(w, "campaign is already "+string(c.State), http.StatusBadRequest)
-			return
+			return "", http.StatusBadRequest, "campaign is already " + string(c.State)
 		}
 		newState = campaign.StateCancelled
 	default:
-		http.Error(w, "unknown action", http.StatusBadRequest)
-		return
+		return "", http.StatusBadRequest, "unknown action"
 	}
 	detail := ""
 	if action == "resume" && c.State == campaign.StateHalted {
@@ -232,20 +242,17 @@ func (h *Handler) controlCampaign(w http.ResponseWriter, r *http.Request, action
 		// devices go back to PENDING and receive the work again at their next check-in.
 		// This runs before the state change so the evaluation loop never sees the campaign
 		// RUNNING with the stale failures still counted.
-		n, err := h.repo.RetryFailedCampaignWork(r.Context(), c.ID, c.CurrentStage)
+		n, err := h.repo.RetryFailedCampaignWork(ctx, c.ID, c.CurrentStage)
 		if err != nil {
-			http.Error(w, "failed to re-queue failed devices; campaign left halted", http.StatusInternalServerError)
-			return
+			return "", http.StatusInternalServerError, "failed to re-queue failed devices; campaign left halted"
 		}
 		detail = fmt.Sprintf("re-queued %d failed or interrupted device(s)", n)
 	}
-	if err := h.repo.SetCampaignState(r.Context(), c.ID, newState); err != nil {
-		http.Error(w, "failed to update campaign", http.StatusInternalServerError)
-		return
+	if err := h.repo.SetCampaignState(ctx, c.ID, newState); err != nil {
+		return "", http.StatusInternalServerError, "failed to update campaign"
 	}
-	_ = h.repo.RecordCampaignEvent(r.Context(), c.ID, action, actor, detail, c.CurrentStage)
-	h.auditCampaign(r, "CAMPAIGN_"+strings.ToUpper(action), c.ID, map[string]any{"from": string(c.State), "to": string(newState)})
-	writeCampaignJSON(w, http.StatusOK, map[string]any{"id": c.ID, "state": string(newState)})
+	_ = h.repo.RecordCampaignEvent(ctx, c.ID, action, actor, detail, c.CurrentStage)
+	return newState, 0, ""
 }
 
 // StartCampaign, PauseCampaign, ResumeCampaign, CancelCampaign are the control endpoints.
