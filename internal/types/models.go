@@ -517,6 +517,19 @@ type NetworkProfilePayload struct {
 	WireGuard *WireGuardProfile  `json:"wireguard,omitempty"`
 }
 
+// ClientCertSource names where a NETWORK_PROFILE's EAP-TLS client certificate comes from.
+type ClientCertSource string
+
+const (
+	// ClientCertSourceInline is today's behaviour: the admin pastes client_cert and client_key.
+	// The empty string means the same.
+	ClientCertSourceInline ClientCertSource = "inline"
+	// ClientCertSourceDevice means the agent uses the device's own network certificate: a
+	// per-device key generated on the endpoint and a certificate issued by the device CA.
+	// client_cert and client_key must be empty and eap must be tls.
+	ClientCertSourceDevice ClientCertSource = "device"
+)
+
 // WifiProfile holds Wi-Fi connection settings.
 type WifiProfile struct {
 	SSID     string       `json:"ssid"`
@@ -531,6 +544,9 @@ type WifiProfile struct {
 	ClientCert string         `json:"client_cert,omitempty"` // PEM text (EAP-TLS)
 	ClientKey  SecretEnvelope `json:"client_key,omitempty"`  // PEM text (EAP-TLS); encrypted at rest via envelope
 	Password   SecretEnvelope `json:"password,omitempty"`    // PEAP-MSCHAPv2 password (and EAP-TLS key passphrase)
+	// ClientCertSource says where the EAP-TLS client certificate comes from: "" or "inline"
+	// (the admin pastes client_cert and client_key) or "device" (SpireUEM issues it).
+	ClientCertSource ClientCertSource `json:"client_cert_source,omitempty"`
 }
 
 // WiredDot1xProfile holds wired 802.1X connection settings.
@@ -541,6 +557,8 @@ type WiredDot1xProfile struct {
 	ClientCert string         `json:"client_cert,omitempty"`
 	ClientKey  SecretEnvelope `json:"client_key,omitempty"` // PEM text (EAP-TLS); encrypted at rest via envelope
 	Password   SecretEnvelope `json:"password,omitempty"`
+	// ClientCertSource: see WifiProfile.ClientCertSource.
+	ClientCertSource ClientCertSource `json:"client_cert_source,omitempty"`
 }
 
 // WireGuardProfile holds a WireGuard VPN interface definition. No private key is ever present.

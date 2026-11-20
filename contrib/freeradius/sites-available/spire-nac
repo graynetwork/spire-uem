@@ -2,10 +2,9 @@
 #
 # A complete, minimal server for the NAC use case so the fail-closed behaviour is visible in
 # one file. In an existing deployment copy the marked blocks into your own authorize and
-# post-auth sections instead. MAB and the SpireUEM-down case are exercised against real
-# FreeRADIUS 3.2.7 by scripts/test_radius.sh. The EAP-TLS branch was NOT run with a real
-# supplicant (no eapol_test available); the certificate-serial request it sends is tested at
-# HTTP level.
+# post-auth sections instead. MAB, the SpireUEM-down case and EAP-TLS with device network
+# certificates are exercised against real FreeRADIUS 3.2.7 (with eapol_test as the supplicant)
+# by scripts/test_radius.sh. For EAP-TLS, use mods-available/spire_eap_tls as the eap module.
 
 server spire-nac {
 	listen {

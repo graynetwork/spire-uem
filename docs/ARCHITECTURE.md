@@ -90,6 +90,17 @@ Built-in TLS uses `tls.VerifyClientCertIfGiven` with the device CA pool. Every p
 
 `required` mode is refused in combination with a trusted TLS proxy (`SPIRE_TRUST_PROXY`): SpireUEM reads the client certificate from the TLS handshake it terminates itself and never trusts a forwarded client-certificate header. Agents may additionally pin the control-plane's TLS trust with `server_ca_file` and/or `server_ca_sha256`, replacing the system root store for the server connection; doing so removes the first-contact trust window in the wipe-signing key.
 
+### Network certificate life cycle (EAP-TLS)
+
+The device CA issues each device a second certificate for 802.1X and Wi-Fi, with its own key, so the agent's mTLS key is never given to NetworkManager. Every certificate records a purpose (`agent`, `network`, `browser`) in `device_certificates`. Only an `agent` certificate authenticates the agent API; only a `network` certificate identifies a device to RADIUS.
+
+1. **Need.** A `NETWORK_PROFILE` (Wi-Fi enterprise or wired 802.1X) with `client_cert_source: device` needs the certificate. It must use EAP-TLS and carry no pasted certificate, key or password, so it holds no secret and attestation withholding never applies to it.
+2. **Request.** After each check-in, `spired` tells its network certificate manager whether any assigned profile needs the certificate. While one does, and no valid certificate is held, the agent generates a fresh ECDSA P-256 key, sends only a CSR with purpose `network` to `POST /api/v1/desktop/cert/issue` (bearer token plus the agent certificate in the TLS handshake), and checks the answer: the certificate must be for that key, inside its validity window and name a device. The server never sees the key.
+3. **Storage.** `network.key` (0600), `network.crt` and `device-ca.crt` sit beside the agent key in the root-only token directory. The agent stages the new key and certificate, checks that they match, then swaps both in. A key and certificate that do not match, for example after a crash between the two renames, count as missing and are replaced on the next pass. After a successful request the agent triggers a check-in so the profile is applied at once.
+4. **Use.** The keyfile written for NetworkManager names `client-cert` and `private-key` by absolute path (no inline copy, `private-key-password-flags=4` because the key is an unencrypted PKCS#8 file), and the EAP identity defaults to the device id. Until a valid pair exists the profile is reported non-compliant and no keyfile is written; an existing keyfile is left alone.
+5. **Renewal.** At about two thirds of the lifetime (30 days by default) the agent requests a new certificate with a new key. If that fails, it keeps the current pair and retries with backoff (1 minute, doubling, at most 30 minutes). The server keeps the newest two network certificates per device, so the old one works until the swap.
+6. **Removal.** When no assigned profile uses the device certificate any more, the agent deletes the key, certificate and CA copy. It does nothing until a check-in has told it what is assigned, so a restart never deletes them. `spired --reset-identity` removes them too. Revoking the device, or one certificate, makes RADIUS refuse it at the next authentication.
+
 ## 3. Local IPC
 
 `spired` creates `/run/spire/agent.sock` with mode `0666` so the desktop user can connect. For every accepted socket, it reads Linux peer credentials with `SO_PEERCRED`:
