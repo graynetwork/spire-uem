@@ -41,3 +41,21 @@ func TestHubScript_ContainsMetadata(t *testing.T) {
 		}
 	}
 }
+
+// The browser certificate tests run the real certutil and pk12util against a temporary HOME.
+// They are skipped when python3, certutil, pk12util or openssl is missing.
+func TestHubBrowserCertEnrolment(t *testing.T) {
+	for _, tool := range []string{"python3", "certutil", "pk12util", "openssl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not available in PATH", tool)
+		}
+	}
+	cmd := exec.Command("python3", "-m", "unittest", "-v", "test_browser_cert")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("browser certificate tests failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "OK") || strings.Contains(string(out), "skipped") {
+		t.Fatalf("browser certificate tests did not all run:\n%s", out)
+	}
+}
