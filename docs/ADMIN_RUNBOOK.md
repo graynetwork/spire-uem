@@ -197,7 +197,25 @@ A device with **no active certificate** (enrolled before mTLS was enabled, issua
 | `optional` (default) | A presented certificate is validated and must match the device's bearer token; a device without one still authenticates on the token alone. |
 | `required` | Device REST and WebSocket endpoints refuse any request without a valid certificate matching the bearer token. Enroll and claim stay reachable; admin browser routes never need a client certificate. |
 
-The device detail page shows each device's certificate status (short serial, expiry, revoked), and **Settings → Security** shows the active mode read-only. Revoking a device revokes all of its certificates immediately.
+The device detail page lists the device's certificates of every purpose (agent, network and browser): purpose, user (browser only), short serial, fingerprint, issued, expires and status (active, expired or revoked). It shows active certificates by default; **Show all** adds revoked and expired ones. **Settings → Security** shows the active mode read-only. Revoking a device revokes all of its certificates immediately.
+
+### 4.1 Viewing and revoking certificates
+
+SECURITY_ADMIN and SUPER_ADMIN see a **Revoke** button on each active certificate and confirm before it runs. AUDITORs see the table without buttons. A tag-scoped admin sees and revokes certificates only on devices carrying one of their tags. Each revoke is audited as `DEVICE_CERT_REVOKE` (purpose, serial, user) and raises the `device_cert_revoked` webhook event. The same actions are in the admin API (`GET /devices/{id}/certificates`, `POST /devices/{id}/certificates/{cert_id}/revoke`); see `docs/API.md`.
+
+What revoking each purpose does:
+
+| Purpose | Effect of revoking one certificate |
+|---|---|
+| `network` | RADIUS refuses it at the next authorization. The device keeps working otherwise and can request a new network certificate. |
+| `browser` | Forward-auth refuses it at the next request. The user can request a new one while the device's agent certificate is valid. |
+| `agent` | The device's agent API refuses it. Because a device with no active agent certificate could otherwise fetch a new one with its bearer token alone, revoking an agent certificate also sets a flag on the device: **bearer-only issuance is refused until an administrator re-approves it.** The device page then shows a notice and a **Re-approve issuance** button (API: `POST /devices/{id}/certificates/reapprove`). Network and browser certificates need a live agent certificate to be issued, so they cannot be renewed in the meantime either. |
+
+A device that never held a certificate, or whose certificate only expired, is not flagged and keeps the first-issue behaviour described above. Revoking a network or browser certificate never sets the flag. To cut a compromised device off completely, revoke the device itself rather than one certificate: a device whose token is exposed can still use that token until the device is revoked. Re-approving a device does not clear the flag; use the button or API call. Issuance at enrollment (token claim or token enroll) is a separate path and is not affected by the flag.
+
+### 4.2 Downloading the device CA
+
+**Device CA** in the sidebar shows the CA subject, validity dates and SHA-256 fingerprint, with a PEM download, for any signed-in admin. The same data is at `GET /admin/device-ca.pem` and, for automation, `GET /api/admin/v1/pki/device-ca`. Install this certificate as the trust anchor on the FreeRADIUS server (EAP-TLS `ca_file`) and on a TLS-terminating reverse proxy that asks browsers for a client certificate, and check the fingerprint against the one shown. The CA certificate is public. The page says so when no device CA is configured (`SPIRE_DEVICE_MTLS=off`).
 
 **Proxy limitation.** `required` mode cannot be combined with a trusted TLS proxy (`SPIRE_TRUST_PROXY`): SpireUEM verifies the client certificate from the TLS handshake it terminates itself and never trusts a forwarded client-certificate header, which anything behind the proxy could spoof. To use `required` mode, terminate TLS in `spire-server` with `SPIRE_TLS_CERT_FILE` / `SPIRE_TLS_KEY_FILE`. The server refuses to start if `required` is set alongside `SPIRE_TRUST_PROXY`.
 

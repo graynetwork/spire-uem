@@ -736,7 +736,7 @@ Why this and not the alternatives:
 ### Event kinds and workflows
 
 Policy, campaign and destructive device events (`policy_*`, `campaign_*`, `device_revoked`,
-`device_marked_lost`, `device_wiped`, `device_quarantined`, `device_released`) are webhook-only. They are not in `workflows.AllEventKinds`:
+`device_marked_lost`, `device_wiped`, `device_quarantined`, `device_released`, `device_cert_revoked`) are webhook-only. They are not in `workflows.AllEventKinds`:
 workflow trigger validation rejects them, `EmitEvent` does not write them to `workflow_events`, and
 `Engine.ProcessEvent` ignores any such event that reaches it. Reason: a workflow reacting to an
 admin's own action or to the campaign it started invites loops, and device-less events have nothing
