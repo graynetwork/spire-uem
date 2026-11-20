@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Spire Hub browser certificate
+Comment=Keeps the SpireUEM browser certificate current while you are signed in
+Exec=/usr/bin/spire-hub --browser-cert-daemon
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

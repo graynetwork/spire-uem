@@ -37,6 +37,9 @@ const (
 	PolicyTypeNetworkProfile   PolicyType = "NETWORK_PROFILE"
 	PolicyTypeUSBDeviceControl PolicyType = "USB_DEVICE_CONTROL"
 	PolicyTypeAuditdRules      PolicyType = "AUDITD_RULES"
+	// PolicyTypeBrowserCertificate turns on per-user browser certificates and sets the
+	// browsers to present them automatically.
+	PolicyTypeBrowserCertificate PolicyType = "BROWSER_CERTIFICATE"
 )
 
 // DeploymentRing represents the phased patch deployment ring of a device or policy.
@@ -398,6 +401,23 @@ type TrustedCACertificate struct {
 // and removes spire-managed certs no longer listed. Compliance is reported by SHA-256 fingerprint.
 type TrustedCACertificatesPayload struct {
 	Certificates []TrustedCACertificate `json:"certificates"`
+}
+
+// Browser families a BROWSER_CERTIFICATE policy can configure.
+const (
+	BrowserFamilyChromium = "chromium" // Google Chrome, Chromium, Brave, Edge
+	BrowserFamilyFirefox  = "firefox"
+)
+
+// BrowserCertificatePayload defines the payload for BROWSER_CERTIFICATE policies.
+type BrowserCertificatePayload struct {
+	// AutoSelectURLs are Chrome AutoSelectCertificateForUrls URL patterns (for example
+	// "https://apps.example.com" or "[*.]example.com"). Chromium-family browsers present the
+	// browser certificate to these sites without a prompt.
+	AutoSelectURLs []string `json:"auto_select_urls"`
+	// Browsers lists the browser families to configure: "chromium" and/or "firefox".
+	// Empty means both.
+	Browsers []string `json:"browsers,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

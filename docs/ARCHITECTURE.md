@@ -113,6 +113,8 @@ This restricts unprivileged cross-user access. It does not defend against root, 
 
 The IPC routes are `GET /v1/status`, `POST /v1/sync`, `GET /v1/catalog`, `POST /v1/install`, and `POST /v1/uninstall`.
 
+Two more routes serve browser certificates (section 12c): `GET /v1/browser-cert/config` and `POST /v1/browser-cert/issue`. The issue route takes the account name from the caller's uid, never from the request.
+
 ## 4. TPM attestation
 
 ### Evidence collected
@@ -796,6 +798,45 @@ identity, posture) and measures roughly 0.5 ms per request on a local database, 
 would delay the effect of a quarantine, which is what connectors exist to enforce.
 
 See `docs/ACCESS_PROXY.md` and `docs/ACCESS_AUTHENTIK.md`.
+## 12c. Browser certificates (internal/ipc/browser_cert.go, cmd/spire-hub, internal/engine/browser_cert.go)
+
+Each desktop user can hold one certificate per device from the device CA, so forward-auth can identify the device and the
+user instead of an address. The agent certificate, the network certificate and the browser certificate chain to the same
+CA, but each has its own key and purpose (`device_certificates.purpose`); only a browser certificate is accepted by
+forward-auth.
+
+Flow:
+
+1. An administrator assigns a `BROWSER_CERTIFICATE` policy. The agent (root) writes a managed policy file of its own for
+   Chrome, Chromium, Brave and Edge (`AutoSelectCertificateForUrls`, issuer filter `SpireUEM Device CA`) and merges one
+   preference (`security.default_personal_cert`) into Firefox's `policies.json`, recording what it replaced. Removal
+   deletes exactly those files and restores the preference. A `policies.json` that does not parse is left alone and the
+   policy reports failed.
+2. `spire-hub` runs as the user (a window-less loop started from `/etc/xdg/autostart`, and inside the GTK client). It
+   asks `GET /v1/browser-cert/config` whether the policy is assigned. If so it generates an EC P-256 key **inside**
+   `~/.pki/nssdb` with `certutil -R` and posts only the CSR to `POST /v1/browser-cert/issue`.
+3. `spired` takes the account name from `SO_PEERCRED` (`os/user`). It refuses root, uids below `max(1000, UID_MIN)`,
+   uid 65534 and above, names that fail `crypto.ValidCertUser`, any request while no policy is assigned, a CSR that is
+   not a self-signed ECDSA P-256 request, and more than 6 requests per hour per uid. It forwards the CSR to
+   `POST /api/v1/desktop/cert/issue` with purpose `browser` over its own mTLS client and bearer token.
+4. The server issues a 7-day leaf (`spire://device/<id>`, `spire://user/<name>`, CN `<name>@<id>`), keeps at most two live
+   per device and user, and caps a device at eight users.
+5. `spire-hub` imports the leaf with `certutil -A`, checks that it bound to the key it generated, imports the device CA
+   with no trust, removes older SpireUEM entries and their keys, and renews after two thirds of the lifetime. Firefox
+   profiles (`~/.mozilla/firefox`, snap and flatpak paths) get the same certificate and key through a `pk12util`
+   bundle; the one-time password is passed in a 0600 file on tmpfs, not on a command line. A shared PKCS#11 module was
+   not used because Firefox cannot be pointed at a user database through policy.
+
+Failure behaviour: no `certutil` means one logged line and a short message in the client; a failed renewal keeps the
+current certificate; a failed first enrolment removes the key it generated. Nothing SpireUEM did not add is listed or
+changed in a key store (its entries all start with `SpireUEM Browser Certificate`).
+
+Forward-auth additionally returns the user in `X-Spire-User` and has an optional `access.require_same_user` setting.
+Known gaps: the user can copy their own key; there are no TPM-bound keys; Snap/Flatpak Chromium-family stores are not
+handled; the Chromium and Firefox policy files cover the system packages only.
+
+See `docs/ACCESS_PROXY.md`.
+
 ## 13. RADIUS / NAC connector (internal/radius, internal/db/radius.go)
 
 A connector, not an identity provider: FreeRADIUS calls `POST /api/admin/v1/access/radius/authorize`

@@ -1,5 +1,5 @@
 -- =====================================================================
--- SpireUEM — Migration 000075: certificate re-approval flag
+-- SpireUEM — Migration 000072: certificate re-approval flag
 -- =====================================================================
 -- /api/v1/desktop/cert/renew lets a device that holds NO active agent
 -- certificate fetch a first one with its bearer token alone. Without more,

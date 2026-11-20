@@ -501,7 +501,14 @@ type issued struct {
 	fp     string
 }
 
+// issueFrom issues a browser certificate for user "alice", the kind forward-auth accepts.
 func issueFrom(t *testing.T, ca *crypto.FileDeviceCA, deviceID string, validity time.Duration) issued {
+	t.Helper()
+	return issueFor(t, ca, deviceID, crypto.CertPurposeBrowser, "alice", validity)
+}
+
+// issueFor issues a certificate of the given purpose (and user, for a browser certificate).
+func issueFor(t *testing.T, ca *crypto.FileDeviceCA, deviceID, purpose, user string, validity time.Duration) issued {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -511,7 +518,7 @@ func issueFrom(t *testing.T, ca *crypto.FileDeviceCA, deviceID string, validity 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ic, err := ca.IssueFromCSR(csr, deviceID, validity)
+	ic, err := ca.IssueWithOptions(csr, crypto.IssueOptions{DeviceID: deviceID, Purpose: purpose, User: user, Validity: validity})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -76,7 +76,7 @@ func (h *Handler) RenewDeviceCert(w http.ResponseWriter, r *http.Request) {
 	// while offline): it may obtain a first certificate with its bearer token alone, which
 	// grants nothing the token did not already grant. Once it holds an active certificate,
 	// every further issuance requires that certificate. A device whose agent certificate an
-	// admin revoked is also refused until an admin re-approves issuance (migration 075).
+	// admin revoked is also refused until an admin re-approves issuance (migration 072).
 	presented := clientCertFromRequest(r)
 	auditAction := "DEVICE_CERT_RENEW"
 	if presented == nil {

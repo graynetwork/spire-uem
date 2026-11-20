@@ -1487,3 +1487,63 @@ for that minute misses it (there is no catch-up). Only one instance fires each m
 **Tuning.** The engine's defaults (event batch 50, action budget 200/min, approval TTL 24h, event
 retention 7 days, quarantine tag `quarantine`) are compiled in via `workflows.DefaultConfig()`;
 adjust in `cmd/spire-server/main.go` if a deployment needs different bounds.
+
+
+## 20. Browser certificates (`BROWSER_CERTIFICATE`)
+
+Gives every desktop user a 7-day certificate for this device, held in their own browser key store, so a TLS-terminating
+proxy and forward-auth can identify the device and the user. Read `docs/ACCESS_PROXY.md` for the proxy side.
+
+### 20.1 Turn it on
+
+1. The device CA must be configured (`SPIRE_DEVICE_CA_CERT_FILE`/`_KEY_FILE`) and agents must hold their agent
+   certificates (section 4). A browser certificate is issued only to a device that presents its agent certificate
+   in the TLS handshake, so the control plane must terminate TLS itself (`SPIRE_TLS_CERT_FILE`); a TLS-terminating
+   proxy in front of it hides the agent certificate and issuing fails.
+2. Create a `BROWSER_CERTIFICATE` policy (Policies page, or a JSON payload such as
+   `{"auto_select_urls":["https://apps.example.com","[*.]corp.example.com"],"browsers":["chromium","firefox"]}`).
+   `auto_select_urls` are Chrome `AutoSelectCertificateForUrls` patterns: `https://host[:port]`, `host`, `[*.]host`. A bare
+   `*`, plain `http://` and paths are refused. `browsers` may be `chromium`, `firefox` or both (empty means both);
+   `auto_select_urls` is required when Chromium is included.
+3. Install the package `libnss3-tools` on the endpoints (the SpireUEM package recommends it). Without `certutil`, Spire Hub
+   shows a message and no certificate is installed.
+4. On the Access Proxy page name the certificate header and trust the proxy. Optionally turn on "Require the browser
+   certificate's user to be the device's active desktop user".
+
+### 20.2 What the agent writes
+
+| Where | What | When the policy is revoked |
+|---|---|---|
+| `/etc/opt/chrome/policies/managed/spire-browser-cert.json`, and the same file under `/etc/chromium`, `/etc/brave`, `/etc/opt/edge` | `AutoSelectCertificateForUrls` limited to issuer `CN=SpireUEM Device CA` | the file is deleted |
+| `/etc/firefox/policies/policies.json` (and `distribution/policies.json` of installed Firefox builds) | one preference, `security.default_personal_cert = Select Automatically`; the previous value, if any, is recorded | the preference is put back; a file the agent created is deleted; every other key is kept |
+| `/var/lib/spire/browser-cert/state.json` | what was written, for removal | the file is deleted |
+
+A `policies.json` that is not valid JSON is not touched and the policy reports FAILED. Firefox has no per-site list: it
+picks the certificate automatically for any site that asks for one from the device CA. If you change the preference by hand
+after the agent set it, removal leaves your value.
+
+### 20.3 Operating it
+
+* Each user's certificate is requested by `spire-hub` when they sign in and renewed after about 5 days. The user is the
+  account that owns the process; it cannot be chosen. Root and system accounts are refused.
+* A device may hold certificates for at most 8 users and 2 live certificates per user.
+* Revoke a device (or its certificates) to cut access; posture is also checked on every request.
+* Audit: each issue is a `DEVICE_CERT_ISSUE` event with purpose `browser` and the user.
+* `GET /api/admin/v1/posture/lookup?serial=...&purpose=browser` (or `fingerprint=`) limits a certificate lookup to one purpose.
+
+### 20.4 Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Spire Hub row says `certutil` is missing | Install `libnss3-tools`. |
+| No row at all | The policy is not assigned or has not been enforced yet (`spire-ctl sync`). |
+| `403` for the user | `[forward-auth] deny` in the server log. Agent and network certificates, a user-less certificate, a revoked one and a non-compliant device are each denied. |
+| Browser prompts for a certificate | The site is not in `auto_select_urls`, or the Chromium policy file is missing (`chrome://policy`). |
+| Firefox shows no certificate | Restart Firefox; check for a primary password; check `about:policies`. |
+
+### 20.5 Limits
+
+The user can copy their own key out of their key store, so a browser certificate proves "this device and this account"
+at most. It is short-lived and posture is checked per request for that reason. There are no TPM-bound keys. Snap and
+Flatpak Chromium-family browsers are not configured. The proxy must terminate TLS itself. Removing the policy stops
+auto-selection at once but leaves the certificates in the key stores until they expire.
