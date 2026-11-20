@@ -118,11 +118,20 @@ func validateWifi(w *types.WifiProfile) error {
 		if w.Password.IsSealed() && passwordVal == "" {
 			passwordVal = "[sealed]"
 		}
-		if err := validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, clientKeyVal, passwordVal); err != nil {
+		device, err := checkClientCertSource(w.ClientCertSource, w.EAP, w.ClientCert, w.ClientKey, w.Password)
+		if err != nil {
+			return err
+		}
+		if err := validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, clientKeyVal, passwordVal, device); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("invalid wifi security %q", w.Security)
+	}
+	if w.Security == types.WifiWPA2Personal || w.Security == types.WifiWPA3Personal {
+		if w.ClientCertSource != "" && w.ClientCertSource != types.ClientCertSourceInline {
+			return fmt.Errorf("client_cert_source only applies to 802.1X (enterprise) Wi-Fi")
+		}
 	}
 	return nil
 }
@@ -139,13 +148,17 @@ func validateWired(w *types.WiredDot1xProfile) error {
 	if w.Password.IsSealed() && passwordVal == "" {
 		passwordVal = "[sealed]"
 	}
-	return validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, clientKeyVal, passwordVal)
+	device, err := checkClientCertSource(w.ClientCertSource, w.EAP, w.ClientCert, w.ClientKey, w.Password)
+	if err != nil {
+		return err
+	}
+	return validateEAP(w.EAP, w.Identity, w.CACert, w.ClientCert, clientKeyVal, passwordVal, device)
 }
 
-func validateEAP(eap types.EAPMethod, identity, caCert, clientCert, clientKey, password string) error {
+func validateEAP(eap types.EAPMethod, identity, caCert, clientCert, clientKey, password string, deviceCert bool) error {
 	switch eap {
 	case types.EAPTLS:
-		if strings.TrimSpace(clientCert) == "" || strings.TrimSpace(clientKey) == "" {
+		if !deviceCert && (strings.TrimSpace(clientCert) == "" || strings.TrimSpace(clientKey) == "") {
 			return fmt.Errorf("EAP-TLS requires client_cert and client_key")
 		}
 	case types.EAPPEAPMSCHAPv2:
@@ -225,7 +238,14 @@ func (k *kf) String() string { return k.sb.String() }
 
 // renderNetworkProfile builds the .nmconnection keyfile. For WireGuard it returns the generated
 // public key (to report back); other kinds return "".
-func renderNetworkProfile(policyID string, p types.NetworkProfilePayload) (content string, wgPublicKey string, err error) {
+//
+// dc is the device's network certificate; it is required when the profile's client_cert_source
+// is "device" and ignored otherwise. A device profile with no usable certificate is an error,
+// so a keyfile that points at missing files is never produced.
+func renderNetworkProfile(policyID string, p types.NetworkProfilePayload, dc *networkCertInfo) (content string, wgPublicKey string, err error) {
+	if PayloadUsesDeviceNetworkCert(p) && dc == nil {
+		return "", "", fmt.Errorf("no network certificate available for client_cert_source device")
+	}
 	connID := nmFilePrefix + policyID
 	autoconnect := "true"
 	if !p.Autoconnect {
@@ -263,7 +283,7 @@ func renderNetworkProfile(policyID string, p types.NetworkProfilePayload) (conte
 				k.kv("key-mgmt", "wpa-eap")
 			}
 			k.blank()
-			renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, secretValue(w.ClientKey), secretValue(w.Password))
+			renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, secretValue(w.ClientKey), secretValue(w.Password), deviceCertFor(w.ClientCertSource, dc))
 		}
 
 	case types.NetworkProfileWiredDot1x:
@@ -275,7 +295,7 @@ func renderNetworkProfile(policyID string, p types.NetworkProfilePayload) (conte
 		k.blank()
 		k.section("802-3-ethernet")
 		k.blank()
-		renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, secretValue(w.ClientKey), secretValue(w.Password))
+		renderEAPSection(&k, w.EAP, w.Identity, w.CACert, w.ClientCert, secretValue(w.ClientKey), secretValue(w.Password), deviceCertFor(w.ClientCertSource, dc))
 
 	case types.NetworkProfileWireGuard:
 		wg := p.WireGuard
@@ -337,11 +357,36 @@ func renderNetworkProfile(policyID string, p types.NetworkProfilePayload) (conte
 	return k.String(), wgPublicKey, nil
 }
 
-func renderEAPSection(k *kf, eap types.EAPMethod, identity, caCert, clientCert, clientKey, password string) {
+// deviceCertFor returns dc when the profile uses the device certificate, else nil.
+func deviceCertFor(src types.ClientCertSource, dc *networkCertInfo) *networkCertInfo {
+	if src == types.ClientCertSourceDevice {
+		return dc
+	}
+	return nil
+}
+
+// renderEAPSection writes the [802-1x] section. With dc set (EAP-TLS, device certificate) the
+// client certificate and key are written as absolute file paths, never inline, the identity
+// defaults to the device id, and private-key-password-flags=4 (not required) tells
+// NetworkManager the PKCS#8 key is unencrypted so it does not wait for a passphrase.
+func renderEAPSection(k *kf, eap types.EAPMethod, identity, caCert, clientCert, clientKey, password string, dc *networkCertInfo) {
 	k.section("802-1x")
 	switch eap {
 	case types.EAPTLS:
 		k.kv("eap", "tls")
+		if dc != nil {
+			if identity == "" {
+				identity = dc.DeviceID
+			}
+			k.kv("identity", identity)
+			if caCert != "" {
+				k.kv("ca-cert", inlineBlob(caCert))
+			}
+			k.kv("client-cert", dc.CertPath)
+			k.kv("private-key", dc.KeyPath)
+			k.kv("private-key-password-flags", "4")
+			return
+		}
 		if identity != "" {
 			k.kv("identity", identity)
 		}
@@ -409,7 +454,22 @@ func EnforceNetworkProfilePolicy(ctx context.Context, policy types.AssignedPolic
 	}
 	details["kind"] = string(payload.Kind)
 
-	content, wgPub, err := renderNetworkProfile(policy.ID, payload)
+	// A device-certificate profile needs the network key and certificate on disk. Until the
+	// agent holds a valid pair the profile is non-compliant and NO keyfile is written; an
+	// existing keyfile is left alone so a working connection is not torn down by a gap.
+	var devCert *networkCertInfo
+	if PayloadUsesDeviceNetworkCert(payload) {
+		details["client_cert_source"] = string(types.ClientCertSourceDevice)
+		dc, derr := loadNetworkCert()
+		if derr != nil {
+			details["network_certificate"] = "missing"
+			return nmOut(policy.ID, types.ComplianceNonCompliant, "device network certificate not ready: "+derr.Error(), details)
+		}
+		devCert = dc
+		details["network_certificate_not_after"] = dc.NotAfter.UTC().Format(time.RFC3339)
+	}
+
+	content, wgPub, err := renderNetworkProfile(policy.ID, payload, devCert)
 	if err != nil {
 		return nmFail(policy.ID, details, fmt.Sprintf("render keyfile: %v", err))
 	}

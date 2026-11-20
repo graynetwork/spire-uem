@@ -2282,6 +2282,13 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A raw JSON payload skips the form builder, so check the NETWORK_PROFILE client
+	// certificate source here before anything is stored.
+	if err := checkNetworkProfileCertSource(policyType, payloadRaw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// policy-types-b: seal any plaintext secrets in the payload (e.g. NETWORK_PROFILE PSK / EAP
 	// password) with the server KEK before persistence, so the stored payload and the admin UI
 	// never hold plaintext. No-op for policy types without secrets.
