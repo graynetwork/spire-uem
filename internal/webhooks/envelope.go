@@ -145,6 +145,7 @@ var Catalog = []CatalogEntry{
 	{"posture_changed", "A device's access posture verdict changed state.", false, "from, to, reasons"},
 	{"device_quarantined", "A device was quarantined.", false, "reason, actor, source"},
 	{"device_released", "A device's quarantine was released.", false, "actor, reason"},
+	{"device_cert_revoked", "An admin revoked one of a device's certificates.", false, "purpose, serial, user"},
 	{"policy_created", "A policy was created.", true, "policy_id, name, policy_type"},
 	{"policy_updated", "A policy's definition or assignment changed.", true, "policy_id, name, change"},
 	{"policy_toggled", "A policy was activated or deactivated.", true, "policy_id, name, is_active"},
