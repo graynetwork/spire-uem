@@ -51,7 +51,7 @@ administrators cannot change it: the settings are fleet-wide.
 
 | Identity | Strength | When SpireUEM uses it |
 |---|---|---|
-| Client certificate issued by the SpireUEM device CA | strong | A certificate header is configured on the Access Proxy page and the request carries it. |
+| Browser certificate issued by the SpireUEM device CA (one per desktop user) | strong | A certificate header is configured on the Access Proxy page and the request carries it. |
 | Source IP address | weak | No certificate on the request, and "Accept a source IP address as the device identity" is on. |
 
 ### What the proxy must do (read this)
@@ -92,9 +92,114 @@ On a WireGuard or NetBird overlay the source address is bound to the peer's key 
 packets from another peer's overlay address), so IP identity is much stronger there. That is the practical setup
 today: **protect applications over the overlay and turn weak identity on only for that path.**
 
-Browsers do not hold the SpireUEM device certificate today (it is `spired`'s mTLS key). Certificate-based
-forward-auth therefore needs browser certificate profiles (roadmap item 2), which are not built. The certificate
-path is implemented and tested, but there is nothing in the product yet that puts the certificate into a browser.
+Browsers can hold a SpireUEM certificate of their own: see "Browser certificates" below. That is the strong
+identity, and it is what a certificate header must carry. The agent's own certificate and a network (802.1X)
+certificate name the same device but are **not** accepted here.
+
+## Browser certificates (TLS client authentication)
+
+A device with a `BROWSER_CERTIFICATE` policy gives each desktop user a short-lived certificate from the device CA.
+Its key is generated in that user's browser key store and the agent only ever sees a certificate signing request.
+The certificate names the device (`spire://device/<id>`) and the local account (`spire://user/<name>`, subject
+`<name>@<device-id>`). It is valid for **7 days** and renewed after about 5. A reverse proxy asks the browser for it
+during the TLS handshake and passes it to forward-auth, so the identity is the device **and** the user instead of an
+address.
+
+What you must set up:
+
+1. **The proxy terminates TLS itself** and asks for a client certificate, trusting only the device CA. The
+   certificate is checked in the handshake, so a proxy that only forwards TCP (or sits behind another TLS
+   terminator) cannot do this. The device CA is `SPIRE_DEVICE_CA_CERT_FILE` on the server, and also the
+   `device_ca_certificate_pem` field of a `/cert/issue` response.
+2. Client authentication is **optional** (`VerifyClientCertIfGiven`, `ssl_verify_client optional`, `verify_if_given`),
+   so a browser without a certificate still reaches the proxy and is then refused by forward-auth with the same
+   `403` as everything else, unless weak identity is on.
+3. The proxy passes the certificate to forward-auth in the one header you name on the Access Proxy page, **sets it on
+   every request and deletes it when there is no client certificate**.
+4. **Strip every `X-Spire-*` header the client sends.** Forward-auth answers `X-Spire-Device-Id`, `X-Spire-Posture`,
+   `X-Spire-Identity-Strength` and `X-Spire-User`; the application may log or trust them, so the proxy must overwrite
+   them from the auth response and must never pass a client's own. The configurations here do that for the headers
+   they list. `X-Spire-User` is always answered on an allow, **empty** for an address identity, so a proxy that copies
+   auth response headers also overwrites a forged value on that path (tested with Traefik). Do not rely on that
+   alone: strip `X-Spire-*` from the incoming request on every route that has no forward-auth.
+
+Traefik (v3):
+
+```yaml
+tls:
+  options:
+    default:
+      clientAuth:
+        caFiles: [/etc/traefik/spire-device-ca.pem]
+        clientAuthType: VerifyClientCertIfGiven
+http:
+  middlewares:
+    spire-pass-cert:
+      passTLSClientCert:
+        pem: true            # sets X-Forwarded-Tls-Client-Cert; removed when there is no client certificate
+    spire-device-posture:
+      chain:
+        middlewares: [spire-add-token, spire-pass-cert, spire-posture, spire-strip-token]
+```
+
+nginx:
+
+```nginx
+ssl_client_certificate /etc/nginx/spire-device-ca.pem;
+ssl_verify_client optional;
+# in the auth subrequest location: sent on every request, empty when no certificate
+proxy_set_header X-Ssl-Client-Cert $ssl_client_escaped_cert;
+```
+
+Caddy:
+
+```caddy
+app.example {
+    tls {
+        client_auth {
+            mode verify_if_given
+            trust_pool file /etc/caddy/spire-device-ca.pem
+        }
+    }
+    forward_auth spire.internal.example:443 {
+        uri /api/admin/v1/access/forward-auth
+        header_up Authorization "Bearer spire_sa_..."
+        header_up X-Client-Cert {http.request.tls.client.certificate_der_base64}
+        copy_headers X-Spire-Device-Id X-Spire-Posture X-Spire-Identity-Strength X-Spire-User
+    }
+    reverse_proxy app:8080
+}
+```
+
+Only Traefik was run against a real proxy (see below). The nginx and Caddy snippets follow their documentation and
+are untested. Check how Caddy treats an empty `header_up` when the client sent no certificate before relying on it.
+
+**Pangolin is untested.** Pangolin runs Traefik, but terminates TLS for its sites through its own tunnel and managed
+configuration, so whether the browser's client certificate reaches Traefik in the handshake depends on your
+Pangolin setup. Put the client-auth options in a separate file-provider file and check with `curl --cert` that the
+header arrives before trusting it.
+
+**What forward-auth checks for a certificate:** it chains to the device CA, has the client-auth usage, is inside its
+validity, is a **browser** certificate that is registered and not revoked, names a valid user, and names the device
+it is registered to; then the device must be `COMPLIANT` right now. An agent certificate and a network
+certificate fail the purpose check. The user is returned in `X-Spire-User`.
+
+**Optional: same user.** "Require the browser certificate's user to be the device's active desktop user" on the Access
+Proxy page (off by default) denies a certificate whose user is not the user the device last reported at the
+console. The report is as old as the device's last check-in, only the seat0 session counts, and a device that
+reported no user is denied. Use it where several people share a device.
+
+**Revoking.** Revoking a device revokes its browser certificates. Posture is checked on every request, so a
+quarantined device loses access at once whatever certificate it holds.
+
+Limits:
+
+* The desktop user can read their own key from their key store. A browser certificate therefore proves "this
+  device and this account", not that nobody copied the key. That is why it lives 7 days and why posture is checked on
+  every request. There are **no TPM-bound or hardware-bound keys** yet.
+* Chrome, Chromium and GNOME Web (`~/.pki/nssdb`) and Firefox profiles are handled. Snap and Flatpak Chromium-family
+  browsers keep their key stores elsewhere and are not.
+* The proxy must terminate TLS. Forward-auth cannot prove the client holds the key; only the proxy's handshake does.
 
 ## Keeping the connector token away from the application
 
@@ -139,7 +244,7 @@ http:
         address: "https://spire.internal.example/api/admin/v1/access/forward-auth"
         # trustForwardHeader stays false (the default): Traefik then REPLACES X-Forwarded-For with the
         # address it saw, so a client cannot forge it.
-        authResponseHeaders: [X-Spire-Device-Id, X-Spire-Posture, X-Spire-Identity-Strength]
+        authResponseHeaders: [X-Spire-Device-Id, X-Spire-Posture, X-Spire-Identity-Strength, X-Spire-User]
     spire-strip-token:
       headers:
         customRequestHeaders:
@@ -175,9 +280,11 @@ location / {
     auth_request_set $spire_dev $upstream_http_x_spire_device_id;
     auth_request_set $spire_pos $upstream_http_x_spire_posture;
     auth_request_set $spire_str $upstream_http_x_spire_identity_strength;
+    auth_request_set $spire_usr $upstream_http_x_spire_user;
     proxy_set_header X-Spire-Device-Id         $spire_dev;   # overwrites anything the client sent
     proxy_set_header X-Spire-Posture           $spire_pos;
     proxy_set_header X-Spire-Identity-Strength $spire_str;
+    proxy_set_header X-Spire-User              $spire_usr;
     proxy_pass http://app;
 }
 location = /_spire_posture {
@@ -203,7 +310,7 @@ app.example {
     forward_auth spire.internal.example:443 {
         uri /api/admin/v1/access/forward-auth
         header_up Authorization "Bearer spire_sa_..."   # applies to the auth request only
-        copy_headers X-Spire-Device-Id X-Spire-Posture X-Spire-Identity-Strength
+        copy_headers X-Spire-Device-Id X-Spire-Posture X-Spire-Identity-Strength X-Spire-User
         transport http {
             tls
         }
@@ -221,6 +328,13 @@ inside `forward_auth` and name that header on the Access Proxy page.
 `scripts/test_access_proxy.sh` starts Traefik, nginx and Caddy in Docker on 127.0.0.1 in front of an echo backend and
 a SpireUEM built from your checkout, then proves: compliant allowed with headers, noncompliant / unknown / ambiguous
 refused, token never reaches the application, spoofed `X-Forwarded-For` ignored, weak identity switch.
+
+The last part of the script covers browser certificates end to end. A second SpireUEM instance with built-in TLS issues
+a browser and a network certificate through the real `/api/v1/desktop/cert/issue` endpoint, and a real Traefik v3 terminates
+TLS with optional client auth against the device CA. curl then shows: a browser certificate on a compliant device allowed
+with `X-Spire-User` set; no certificate, the agent certificate, a network certificate, a revoked certificate, a quarantined
+device, a certificate from another CA and a pasted certificate header all denied; forged `X-Spire-*` headers not reaching
+the application; and the optional same-user check.
 
 Every `403` has the same body. To see why, read the SpireUEM log line `[forward-auth] deny request_id=...: <reason>`
 (the reasons never include tokens or certificates). Common ones: `request does not come from a trusted proxy`

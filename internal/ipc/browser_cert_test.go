@@ -102,8 +102,12 @@ func newBCFixture(t *testing.T, withPolicy bool) *bcFixture {
 				return "bob", nil
 			case 1002:
 				return "bad name", nil
+			case 1500:
+				return "", fmt.Errorf("no such user")
 			}
-			return "", fmt.Errorf("no such user")
+			// Every other uid, including root and the system accounts, has a perfectly good
+			// name, so only the uid checks can refuse it.
+			return fmt.Sprintf("u%d", uid), nil
 		},
 		func() uint32 { return 1000 }, 0)
 	if withPolicy {

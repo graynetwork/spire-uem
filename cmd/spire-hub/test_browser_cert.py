@@ -66,9 +66,31 @@ class FakeIPC:
         ext = os.path.join(self.workdir, "ext.cnf")
         with open(ext, "w") as fh:
             fh.write("extendedKeyUsage=clientAuth\n")
-        subprocess.run(["openssl", "x509", "-req", "-in", csr, "-CA", self.ca_pem, "-CAkey", self.ca_key,
-                        "-set_serial", str(100 + self.issued), "-not_before", self._stamp(-60), "-not_after",
-                        self._stamp(7 * 86400), "-out", out, "-extfile", ext,
+        # "openssl ca" accepts explicit start and end dates on every OpenSSL 3 release (the
+        # x509 command only gained them in 3.4), so the validity can follow the test clock.
+        db = os.path.join(self.workdir, "ca-db")
+        os.makedirs(db, exist_ok=True)
+        open(os.path.join(db, "index.txt"), "a").close()
+        with open(os.path.join(db, "serial"), "w") as fh:
+            fh.write("%02X\n" % (100 + self.issued))
+        cnf = os.path.join(self.workdir, "ca.cnf")
+        with open(cnf, "w") as fh:
+            fh.write(f"""[ca]
+default_ca = c
+[c]
+dir = {db}
+database = {db}/index.txt
+new_certs_dir = {db}
+serial = {db}/serial
+default_md = sha256
+policy = p
+unique_subject = no
+[p]
+commonName = supplied
+""")
+        subprocess.run(["openssl", "ca", "-batch", "-config", cnf, "-cert", self.ca_pem, "-keyfile", self.ca_key,
+                        "-in", csr, "-out", out, "-notext", "-startdate", self._stamp(-60),
+                        "-enddate", self._stamp(7 * 86400), "-extfile", ext,
                         "-subj", f"/CN={self.user}@device-1"], check=True, capture_output=True)
         with open(out) as fh:
             leaf = fh.read()

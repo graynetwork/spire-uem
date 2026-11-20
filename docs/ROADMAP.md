@@ -65,7 +65,7 @@ SpireUEM can distribute trusted CA certificates, but it cannot issue, renew, rev
 
 All five products have certificate-management facilities. This would also close SpireUEM's bearer-token and first-contact wipe-key trust gaps.
 
-**Status: partly done in Phase 1 (PR #6).** A built-in device CA issues one certificate per device, with renewal, revocation, an `off`/`optional`/`required` mTLS mode and optional server-certificate pinning. Still open: SCEP/EST, external enterprise PKI, and certificate profiles for Wi-Fi, 802.1X, VPN and browsers.
+**Status: partly done in Phase 1 (PR #6).** A built-in device CA issues one certificate per device, with renewal, revocation, an `off`/`optional`/`required` mTLS mode and optional server-certificate pinning. Still open: SCEP/EST, external enterprise PKI, and certificate profiles for Wi-Fi, 802.1X, VPN and browsers. A `BROWSER_CERTIFICATE` policy now gives each desktop user a 7-day browser certificate with its key in their NSS database and Firefox profiles, and forward-auth accepts it (no TPM-bound keys yet).
 
 ### 3. Conditional-access and quarantine integrations
 
