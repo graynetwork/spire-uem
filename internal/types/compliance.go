@@ -56,6 +56,7 @@ func IsSecurityBaselinePolicy(pt PolicyType) bool {
 		PolicyTypeFirewallRuleset,
 		PolicyTypeLocalAccountPolicy,
 		PolicyTypeTrustedCACerts,
+		PolicyTypeBrowserCertificate,
 		PolicyTypePackageAbsence,
 		PolicyTypeSystemdService:
 		return true
