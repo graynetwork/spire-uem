@@ -55,6 +55,13 @@ func (r *Repository) RevokeDeviceCertificateByAdmin(ctx context.Context, deviceI
 		return nil, fmt.Errorf("revoke device certificate: %w", err)
 	}
 	if c.Purpose == types.CertPurposeAgent {
+		// A renewed device still holds its previous agent certificate, valid until it
+		// expires. Revoking only the one the admin clicked would leave the other usable, so
+		// an agent revoke covers every live agent certificate of the device.
+		if _, err := tx.Exec(ctx, `UPDATE device_certificates SET revoked_at = NOW()
+			WHERE device_id = $1 AND purpose = 'agent' AND revoked_at IS NULL`, deviceID); err != nil {
+			return nil, fmt.Errorf("revoke device certificate: revoke other agent certificates: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `UPDATE devices SET cert_reapproval_required = TRUE WHERE id = $1`, deviceID); err != nil {
 			return nil, fmt.Errorf("revoke device certificate: set re-approval flag: %w", err)
 		}

@@ -202,6 +202,43 @@ func TestPurposeCerts_Integration(t *testing.T) {
 		t.Fatalf("browser renew at cap: got %d (%s), want 200", code, body)
 	}
 
+	// Agent renewals keep only the newest two agent certificates live: after two renewals
+	// the original agent certificate is revoked.
+	for i := 0; i < 2; i++ {
+		c, _ := newCSR(t)
+		rb, _ := json.Marshal(types.DeviceCertRenewRequest{CSRPEM: c})
+		req, _ := http.NewRequest(http.MethodPost, "https://"+addr+"/api/v1/desktop/cert/renew", bytes.NewReader(rb))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Spire-Agent-Version", "9.9.9")
+		resp, err := agent.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("agent renew %d: got %d", i, resp.StatusCode)
+		}
+		// The second renewal revokes the certificate this client presents, so open a new
+		// connection each time rather than reuse a verified one.
+		agent.CloseIdleConnections()
+	}
+	live, err := repo.ListDeviceCertificates(ctx, devID, true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentLive := 0
+	for _, c := range live {
+		if c.Purpose == types.CertPurposeAgent {
+			agentLive++
+		}
+	}
+	if agentLive != 2 {
+		t.Fatalf("after two agent renewals: %d live agent certificates, want 2", agentLive)
+	}
+	if code := doGET(t, agent, statusURL, token); code != http.StatusForbidden {
+		t.Fatalf("original agent cert after two renewals: got %d, want 403", code)
+	}
+
 	// Revoking the device revokes every purpose.
 	if _, err := repo.RevokeDevice(ctx, devID); err != nil {
 		t.Fatal(err)

@@ -40,6 +40,10 @@ func (h *Handler) issueAndStoreCert(ctx context.Context, deviceID, csrPEM, audit
 	if _, err := h.repo.StoreDeviceCertificate(ctx, deviceID, issued.Serial, issued.FingerprintSHA256, issued.NotBefore, issued.NotAfter); err != nil {
 		return "", time.Time{}, err
 	}
+	// Keep only the new agent certificate and its predecessor live, as for other purposes.
+	if _, err := h.repo.PruneDeviceCertificates(ctx, deviceID, types.CertPurposeAgent, "", keepCertsPerSubject); err != nil {
+		log.Printf("[api] warning: prune agent certificates for device %s: %v", deviceID, err)
+	}
 	action := auditAction
 	if action == "" {
 		action = "DEVICE_CERT_ISSUE"

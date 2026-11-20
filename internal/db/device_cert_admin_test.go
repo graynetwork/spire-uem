@@ -59,3 +59,46 @@ func TestWebhook_DeviceCertRevoked(t *testing.T) {
 		t.Errorf("payload carries key or certificate material: %s", e.Raw)
 	}
 }
+
+// Revoking one agent certificate revokes every live agent certificate of the device (a renewed
+// device still holds its predecessor) and sets the re-approval flag, but leaves the device's
+// network and browser certificates alone.
+func TestRevokeAgentCertByAdmin_RevokesAllAgentCerts(t *testing.T) {
+	repo, ctx := whRepo(t)
+	dev, _, err := repo.GetOrCreateDevice(ctx, uniqueHW("agentrev"), "agentrev-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	tag := tagFor("agentrev")
+	oldAgent, err := repo.StoreDeviceCertificate(ctx, dev.ID, tag+"-a1", tag+"-fa1", now.Add(-2*time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newAgent, err := repo.StoreDeviceCertificate(ctx, dev.ID, tag+"-a2", tag+"-fa2", now.Add(-time.Hour), now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	netCert, err := repo.StoreDeviceCertificateFor(ctx, dev.ID, types.CertPurposeNetwork, "", tag+"-n", tag+"-fn", now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.RevokeDeviceCertificateByAdmin(ctx, dev.ID, newAgent.ID); err != nil || got == nil {
+		t.Fatalf("revoke: %v %v", got, err)
+	}
+	for _, c := range []struct {
+		serial      string
+		wantRevoked bool
+	}{{oldAgent.Serial, true}, {newAgent.Serial, true}, {netCert.Serial, false}} {
+		rec, err := repo.GetDeviceCertificateBySerial(ctx, c.serial)
+		if err != nil || rec == nil {
+			t.Fatalf("lookup %s: %v", c.serial, err)
+		}
+		if rec.Revoked() != c.wantRevoked {
+			t.Errorf("%s (%s): revoked=%v, want %v", c.serial, rec.Purpose, rec.Revoked(), c.wantRevoked)
+		}
+	}
+	if blocked, err := repo.DeviceCertReapprovalRequired(ctx, dev.ID); err != nil || !blocked {
+		t.Fatalf("re-approval flag: %v %v", blocked, err)
+	}
+}
