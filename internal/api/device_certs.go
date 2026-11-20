@@ -145,6 +145,12 @@ func (h *Handler) verifyClientCertForDevice(ctx context.Context, cert *x509.Cert
 	if rec == nil {
 		return http.StatusForbidden, errors.New("client certificate is not recognised")
 	}
+	// Only the agent's own certificate authenticates the agent API. A network or browser
+	// certificate chains to the same CA and names the same device, but its key is held by
+	// NetworkManager or by the desktop user, so it must never stand in for the agent.
+	if rec.Purpose != types.CertPurposeAgent {
+		return http.StatusForbidden, errors.New("client certificate is not an agent certificate")
+	}
 	if rec.Revoked() {
 		return http.StatusForbidden, errors.New("client certificate has been revoked")
 	}

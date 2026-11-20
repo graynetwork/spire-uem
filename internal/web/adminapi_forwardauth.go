@@ -105,7 +105,9 @@ func (h *Handler) apiForwardAuth(w http.ResponseWriter, r *http.Request) {
 			h.forwardDeny(w, r, "client certificate rejected: "+err.Error())
 			return
 		}
-		identity = types.AccessIdentity{CertSerial: cert.SerialNumber.String()}
+		// Only a BROWSER certificate counts here: an agent or network certificate names the
+		// same device but its key is not the desktop user's.
+		identity = types.AccessIdentity{CertSerial: cert.SerialNumber.String(), CertPurposes: []types.CertPurpose{types.CertPurposeBrowser}}
 		certDev = crypto.DeviceIDFromCert(cert)
 	default:
 		if !cfg.AllowWeakIdentity {

@@ -192,21 +192,27 @@ func NormalizeMAC(s string) string {
 // MAC or IP, returns no devices and no error.
 func (r *Repository) ResolveAccessIdentity(ctx context.Context, id types.AccessIdentity) ([]string, error) {
 	const live = `d.status = 'APPROVED' AND d.is_lost = FALSE`
+	// purposeFilter limits certificate lookups to id.CertPurposes ($2); an empty list
+	// matches any purpose.
+	const purposeFilter = `(cardinality($2::text[]) = 0 OR c.purpose = ANY($2::text[]))`
 	var (
-		q   string
-		arg any
+		q    string
+		arg  any
+		cert bool
 	)
 	switch {
 	case strings.TrimSpace(id.CertSerial) != "":
 		q = `SELECT d.id FROM device_certificates c JOIN devices d ON d.id = c.device_id
 		     WHERE c.serial = $1 AND c.revoked_at IS NULL AND c.not_before <= NOW()
-		       AND c.not_after > NOW() AND ` + live + ` ORDER BY d.id`
+		       AND c.not_after > NOW() AND ` + purposeFilter + ` AND ` + live + ` ORDER BY d.id`
+		cert = true
 		arg = strings.TrimSpace(id.CertSerial)
 	case strings.TrimSpace(id.CertFingerprint) != "":
 		fp := strings.ToLower(strings.NewReplacer(":", "", " ", "").Replace(strings.TrimSpace(id.CertFingerprint)))
 		q = `SELECT d.id FROM device_certificates c JOIN devices d ON d.id = c.device_id
 		     WHERE c.fingerprint_sha256 = $1 AND c.revoked_at IS NULL AND c.not_before <= NOW()
-		       AND c.not_after > NOW() AND ` + live + ` ORDER BY d.id`
+		       AND c.not_after > NOW() AND ` + purposeFilter + ` AND ` + live + ` ORDER BY d.id`
+		cert = true
 		arg = fp
 	case strings.TrimSpace(id.MAC) != "":
 		mac := NormalizeMAC(id.MAC)
@@ -231,7 +237,15 @@ func (r *Repository) ResolveAccessIdentity(ctx context.Context, id types.AccessI
 	default:
 		return nil, nil
 	}
-	rows, err := r.pool.Query(ctx, q, arg)
+	args := []any{arg}
+	if cert {
+		purposes := make([]string, 0, len(id.CertPurposes))
+		for _, p := range id.CertPurposes {
+			purposes = append(purposes, string(p))
+		}
+		args = append(args, purposes)
+	}
+	rows, err := r.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("resolve access identity: %w", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -199,4 +200,70 @@ func parseLeaf(t *testing.T, certPEM []byte) *x509.Certificate {
 		t.Fatalf("parse leaf: %v", err)
 	}
 	return cert
+}
+
+func TestDeviceCA_IssueWithOptions_Purposes(t *testing.T) {
+	ca := newTestCA(t)
+	csr, _ := p256CSR(t, &x509.CertificateRequest{})
+
+	parse := func(ic *IssuedCert) *x509.Certificate {
+		t.Helper()
+		blk, _ := pem.Decode(ic.CertPEM)
+		c, err := x509.ParseCertificate(blk.Bytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	net, err := ca.IssueWithOptions(csr, IssueOptions{DeviceID: "dev-1", Purpose: CertPurposeNetwork})
+	if err != nil {
+		t.Fatalf("network: %v", err)
+	}
+	nc := parse(net)
+	if DeviceIDFromCert(nc) != "dev-1" || UserFromCert(nc) != "" || nc.Subject.CommonName != "dev-1" || len(nc.URIs) != 1 {
+		t.Fatalf("network leaf: cn=%q uris=%v", nc.Subject.CommonName, nc.URIs)
+	}
+
+	br, err := ca.IssueWithOptions(csr, IssueOptions{DeviceID: "dev-1", Purpose: CertPurposeBrowser, User: "alice", Validity: time.Hour})
+	if err != nil {
+		t.Fatalf("browser: %v", err)
+	}
+	bc := parse(br)
+	if DeviceIDFromCert(bc) != "dev-1" || UserFromCert(bc) != "alice" || bc.Subject.CommonName != "alice@dev-1" {
+		t.Fatalf("browser leaf: cn=%q uris=%v", bc.Subject.CommonName, bc.URIs)
+	}
+	if len(bc.ExtKeyUsage) != 1 || bc.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth || bc.IsCA {
+		t.Fatalf("browser leaf must be client-auth only")
+	}
+	if got := bc.NotAfter.Sub(bc.NotBefore); got > time.Hour+5*time.Minute {
+		t.Fatalf("browser validity not applied: %s", got)
+	}
+
+	for name, opts := range map[string]IssueOptions{
+		"agent with user":   {DeviceID: "dev-1", Purpose: CertPurposeAgent, User: "alice"},
+		"network with user": {DeviceID: "dev-1", Purpose: CertPurposeNetwork, User: "alice"},
+		"browser no user":   {DeviceID: "dev-1", Purpose: CertPurposeBrowser},
+		"browser bad user":  {DeviceID: "dev-1", Purpose: CertPurposeBrowser, User: "a/b"},
+		"browser dash user": {DeviceID: "dev-1", Purpose: CertPurposeBrowser, User: "-rf"},
+		"unknown purpose":   {DeviceID: "dev-1", Purpose: "vpn"},
+		"empty purpose":     {DeviceID: "dev-1"},
+		"no device":         {Purpose: CertPurposeNetwork},
+	} {
+		if _, err := ca.IssueWithOptions(csr, opts); err == nil {
+			t.Errorf("%s: issued, want error", name)
+		}
+	}
+}
+
+func TestValidCertUser(t *testing.T) {
+	for name, want := range map[string]bool{
+		"alice": true, "a.b_c-d": true, "user42": true,
+		"": false, "-x": false, ".": false, "..": false, "a b": false, "a/b": false,
+		"ålice": false, "a@b": false, strings.Repeat("a", 65): false, strings.Repeat("a", 64): true,
+	} {
+		if got := ValidCertUser(name); got != want {
+			t.Errorf("ValidCertUser(%q) = %v, want %v", name, got, want)
+		}
+	}
 }

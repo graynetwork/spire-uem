@@ -735,6 +735,54 @@ type DeviceCertRenewResponse struct {
 	DeviceCertNotAfter   string `json:"device_cert_not_after"`
 }
 
+// CertPurpose names what a device-CA certificate may be used for. Every certificate has
+// exactly one purpose and its own private key, and every consumer accepts only its own
+// purpose: the agent API accepts only CertPurposeAgent, RADIUS only CertPurposeNetwork and
+// reverse-proxy forward-auth only CertPurposeBrowser.
+type CertPurpose string
+
+const (
+	// CertPurposeAgent is the agent's REST/WebSocket mTLS identity. Its key is root-only.
+	CertPurposeAgent CertPurpose = "agent"
+	// CertPurposeNetwork is used by NetworkManager for EAP-TLS (802.1X, Wi-Fi, VPN). Its key
+	// is root-only and separate from the agent key.
+	CertPurposeNetwork CertPurpose = "network"
+	// CertPurposeBrowser is a per-user certificate whose key lives in the desktop user's
+	// browser key store, so that user (and only that user) can read it.
+	CertPurposeBrowser CertPurpose = "browser"
+)
+
+// Valid reports whether p is one of the known purposes.
+func (p CertPurpose) Valid() bool {
+	switch p {
+	case CertPurposeAgent, CertPurposeNetwork, CertPurposeBrowser:
+		return true
+	}
+	return false
+}
+
+// DeviceCertIssueRequest is sent by spired to POST /api/v1/desktop/cert/issue to obtain a
+// network or browser certificate. It requires the bearer token AND the device's current agent
+// client certificate. The agent purpose is NOT issued here (use /cert/renew).
+type DeviceCertIssueRequest struct {
+	Purpose CertPurpose `json:"purpose"`
+	// CSRPEM is a PEM PKCS#10 request for a FRESH ECDSA P-256 key used only for this purpose.
+	CSRPEM string `json:"csr_pem"`
+	// User is the local account name a browser certificate is for (spired takes it from the
+	// IPC peer's uid, never from the desktop client). Required for browser, empty otherwise.
+	User string `json:"user,omitempty"`
+}
+
+// DeviceCertIssueResponse carries the issued leaf and the device CA certificate (the CA is
+// what RADIUS servers and proxies must trust; the agent may also show it to the user).
+type DeviceCertIssueResponse struct {
+	Purpose              CertPurpose `json:"purpose"`
+	DeviceCertificatePEM string      `json:"device_certificate_pem"`
+	DeviceCACertPEM      string      `json:"device_ca_certificate_pem"`
+	NotAfter             string      `json:"not_after"`
+	Serial               string      `json:"serial"`
+}
+
 // AssignedPolicy is returned to a device during check-in.
 type AssignedPolicy struct {
 	ID                      string                    `json:"id"`

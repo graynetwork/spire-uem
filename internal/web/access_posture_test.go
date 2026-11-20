@@ -530,7 +530,7 @@ func newTestCA(t *testing.T) *crypto.FileDeviceCA {
 }
 
 func (e *apiEnv) register(d *types.Device, c issued) {
-	if _, err := e.repo.StoreDeviceCertificate(context.Background(), d.ID, c.serial, c.fp, time.Now().Add(-time.Minute), time.Now().Add(time.Hour)); err != nil {
+	if _, err := e.repo.StoreDeviceCertificateFor(context.Background(), d.ID, types.CertPurposeBrowser, "alice", c.serial, c.fp, time.Now().Add(-time.Minute), time.Now().Add(time.Hour)); err != nil {
 		e.t.Fatal(err)
 	}
 }
