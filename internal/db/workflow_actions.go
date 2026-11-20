@@ -82,7 +82,7 @@ func (a *WorkflowActions) Execute(ctx context.Context, rc workflows.RunContext, 
 	case workflows.ActionAddTag:
 		return a.addTag(ctx, rc, dev, strings.ToLower(strings.TrimSpace(act.Tag)))
 	case workflows.ActionQuarantine:
-		return a.addTag(ctx, rc, dev, strings.ToLower(strings.TrimSpace(a.quarantineTag)))
+		return a.quarantine(ctx, rc, dev)
 	case workflows.ActionRemoveTag:
 		return a.removeTag(ctx, rc, dev, strings.ToLower(strings.TrimSpace(act.Tag)))
 	case workflows.ActionSetRing:
@@ -289,4 +289,32 @@ func removeStr(s []string, v string) []string {
 		}
 	}
 	return out
+}
+
+// quarantine creates a real quarantine record (source workflow; the posture goes
+// QUARANTINED and the check-in withholds policies) and, for compatibility with existing group
+// rules, still adds the configured quarantine tag. The tag step keeps its scope rule: a
+// scoped creator without the tag in scope gets the record but not the tag. Releasing is
+// deliberately NOT a workflow action: only an administrator can release.
+func (a *WorkflowActions) quarantine(ctx context.Context, rc workflows.RunContext, dev *types.Device) (workflows.ActionResult, string, error) {
+	if rc.DryRun {
+		return workflows.ResultDryRun, "would quarantine the device and add tag " + a.quarantineTag, nil
+	}
+	reason := "quarantined by workflow \"" + rc.WorkflowName + "\""
+	_, created, err := a.repo.CreateQuarantine(ctx, dev.ID, reason, rc.Actor, types.QuarantineSourceWorkflow)
+	if err != nil {
+		return workflows.ResultFailed, "quarantine: " + err.Error(), err
+	}
+	tagRes, tagMsg, tagErr := a.addTag(ctx, rc, dev, strings.ToLower(strings.TrimSpace(a.quarantineTag)))
+	if tagErr != nil {
+		return workflows.ResultFailed, "quarantine recorded; tag step: " + tagMsg, tagErr
+	}
+	msg := "quarantined"
+	if !created {
+		msg = "already quarantined"
+	}
+	if tagRes == workflows.ResultSkipped {
+		return workflows.ResultOK, msg + " (tag not added: " + tagMsg + ")", nil
+	}
+	return workflows.ResultOK, msg + "; " + tagMsg, nil
 }

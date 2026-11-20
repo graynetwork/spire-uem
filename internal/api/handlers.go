@@ -316,7 +316,16 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	// policy-types-b: unseal payload secrets (e.g. NETWORK_PROFILE PSK / EAP password) just-in-time
 	// so only the agent receives plaintext, over the deployment's TLS-terminating proxy. Under
 	// attestation enforcement, an untrusted device has its sealed secrets withheld instead.
-	trust := h.gatePolicySecrets(r.Context(), dev, policies)
+	// Quarantine: a quarantined device (or one whose quarantine state cannot be read) gets
+	// NO sealed network secrets regardless of attestation mode, and only the policies marked
+	// allowed_in_quarantine (see withholdQuarantinedPolicies below).
+	quarantined, qErr := h.deviceQuarantined(r.Context(), dev.ID)
+	trust := types.TrustEvaluation{Trusted: true, Reason: "quarantined: attestation gate not applied"}
+	if quarantined {
+		h.withholdPolicySecrets(policies, "device quarantined; sealed secrets withheld")
+	} else {
+		trust = h.gatePolicySecrets(r.Context(), dev, policies)
+	}
 	if !trust.Trusted {
 		// warn and enforce both reach here for an untrusted device; raise the attestation
 		// alert so an operator sees it. (In warn, secrets were still delivered.)
@@ -357,6 +366,10 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[api] warning: failed to resolve SCRIPT_POLICY payloads for %s: %v", dev.ID, rerr)
 	} else {
 		policies = resolved
+	}
+
+	if quarantined {
+		h.withholdQuarantinedPolicies(r.Context(), dev.ID, policies, qErr)
 	}
 
 	// Reusable scripts and sensors. A run left RUNNING past a generous cutoff (an agent that
@@ -402,6 +415,10 @@ func (h *Handler) Checkin(w http.ResponseWriter, r *http.Request) {
 	// primary address change). Best-effort: never fails the check-in. `dev` here is the
 	// device as it was BEFORE this check-in, so the comparison sees the real transition.
 	h.emitCheckinWorkflowEvents(r.Context(), dev, &req, seenIP)
+
+	// Recompute this device's access posture from the facts just recorded. Asynchronous and
+	// best-effort: it never fails or slows the check-in.
+	h.repo.EvaluatePostureAsync(dev.ID)
 
 	// Append lost-device action directives to this check-in's command list. These are
 	// synthetic (not persisted command rows): the lost directive is re-delivered every

@@ -14,12 +14,15 @@ const (
 	ScopeCampaignsRead  = "campaigns:read"
 	ScopeCampaignsWrite = "campaigns:write"
 	ScopeAuditRead      = "audit:read"
+	// ScopePostureRead lets a conditional-access connector read device access posture.
+	ScopePostureRead = "posture:read"
 )
 
 // AllAPIScopes lists every scope a service account may hold.
 var AllAPIScopes = []string{
 	ScopeDevicesRead, ScopeDevicesActions, ScopeGroupsRead, ScopeGroupsWrite,
 	ScopePoliciesRead, ScopeCampaignsRead, ScopeCampaignsWrite, ScopeAuditRead,
+	ScopePostureRead,
 }
 
 // ValidAPIScope reports whether s is a known scope.

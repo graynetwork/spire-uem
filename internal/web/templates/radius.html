@@ -1,0 +1,116 @@
+{{define "radius_content"}}
+<div class="space-y-6 max-w-6xl mx-auto">
+    <div class="pb-4 border-b border-[#1a2234]">
+        <h1 class="text-lg font-semibold text-white tracking-tight">RADIUS / NAC</h1>
+        <p class="text-xs text-slate-400 mt-0.5">FreeRADIUS asks SpireUEM for an access decision (802.1X, MAC bypass, VPN). SpireUEM maps the device's posture to accept, reject or a VLAN, and disconnects the session when the posture changes. See docs/ACCESS_RADIUS.md.</p>
+    </div>
+
+    {{if .FlashMessage}}<div class="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-md text-xs text-emerald-400 font-mono">{{.FlashMessage}}</div>{{end}}
+
+    {{if .NewSecret}}
+    <div id="new-secret" class="p-4 bg-amber-500/10 border border-amber-500/40 rounded-md space-y-2">
+        <div class="text-sm text-amber-200 font-semibold">Shared secret for "{{.NewSecret.NASName}}"</div>
+        <code class="block break-all text-xs text-white bg-[#0b111c] border border-[#25334d] rounded px-2 py-2 select-all">{{.NewSecret.Secret}}</code>
+        <div class="text-[11px] text-amber-300">Configure it on the NAS now. It is shown once and cannot be retrieved later.</div>
+    </div>
+    {{end}}
+
+    {{if not .CanEdit}}<div class="p-3 bg-amber-500/10 border border-amber-500/30 rounded-md text-[11px] text-amber-300">These settings are global. Your account is limited to a set of device tags, so you can read them but not change them.</div>{{end}}
+
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234]"><h2 class="text-sm font-semibold text-white">Decision mapping</h2>
+            <p class="text-[11px] text-slate-500 mt-0.5">UNKNOWN or stale posture, an unknown device, an ambiguous match and any error are always rejected unless a guest VLAN is explicitly enabled below.{{if .UpdatedBy}} Last changed by {{.UpdatedBy}}.{{end}}</p></div>
+        <form method="POST" action="/admin/radius/settings" class="p-4 space-y-4">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="text-xs text-slate-400">Compliant VLAN <span class="text-slate-500">(empty = accept without VLAN attributes)</span>
+                    <input name="compliant_vlan" value="{{.Settings.CompliantVLAN}}" inputmode="numeric" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white" {{if not .CanEdit}}disabled{{end}}></label>
+                <label class="text-xs text-slate-400">Quarantine VLAN <span class="text-slate-500">(empty = reject quarantined devices)</span>
+                    <input name="quarantine_vlan" value="{{.Settings.QuarantineVLAN}}" inputmode="numeric" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white" {{if not .CanEdit}}disabled{{end}}></label>
+                <label class="text-xs text-slate-400">Remediation VLAN <span class="text-slate-500">(empty = reject non-compliant devices)</span>
+                    <input name="remediation_vlan" value="{{.Settings.RemediationVLAN}}" inputmode="numeric" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white" {{if not .CanEdit}}disabled{{end}}></label>
+                <label class="text-xs text-slate-400">Guest VLAN
+                    <input name="guest_vlan" value="{{.Settings.GuestVLAN}}" inputmode="numeric" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white" {{if not .CanEdit}}disabled{{end}}></label>
+            </div>
+            <div class="text-xs text-slate-300 space-y-2">
+                <label class="flex items-start space-x-2"><input type="checkbox" name="guest_enabled" value="true" {{if .Settings.GuestEnabled}}checked{{end}} {{if not .CanEdit}}disabled{{end}}>
+                    <span>Place unknown devices and devices with UNKNOWN posture in the guest VLAN instead of rejecting them. <strong class="text-amber-300">Off by default, audited.</strong> Never applies to errors, ambiguous matches or a disabled identity type.</span></label>
+                <label class="flex items-start space-x-2"><input type="checkbox" name="allow_weak_identity" value="true" {{if .Settings.AllowWeakIdentity}}checked{{end}} {{if not .CanEdit}}disabled{{end}}>
+                    <span>Accept a MAC address (MAC authentication bypass) as device identity. <strong class="text-amber-300">Off by default, audited.</strong> A MAC can be copied by anyone on the same segment; certificates (EAP-TLS) are the strong identity.</span></label>
+            </div>
+            {{if .CanEdit}}<button type="submit" class="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500">Save mapping</button>{{end}}
+        </form>
+    </section>
+
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234]"><h2 class="text-sm font-semibold text-white">NAS clients (for Disconnect / CoA)</h2>
+            <p class="text-[11px] text-slate-500 mt-0.5">SpireUEM sends Disconnect-Requests (RFC 5176) only to the addresses listed here, when a connected device's posture changes. Shared secrets are sealed with the server key and never shown again. Loopback, link-local and multicast addresses are refused.</p></div>
+        <div class="divide-y divide-[#1a2234]">
+            {{if not .NAS}}<div class="px-4 py-6 text-xs text-slate-500">No NAS clients. Without one, SpireUEM still answers authorization requests but cannot disconnect sessions.</div>{{end}}
+            {{range .NAS}}
+            <details class="group">
+                <summary class="px-4 py-3 flex items-center space-x-3 cursor-pointer list-none">
+                    <span class="text-sm text-white">{{.Name}}</span>
+                    {{if .Enabled}}<span class="text-[10px] text-emerald-400">enabled</span>{{else}}<span class="text-[10px] text-rose-400">disabled</span>{{end}}
+                    <span class="text-[11px] text-slate-500 font-mono">{{.Address}}:{{.CoAPort}}</span>
+                    <span class="text-[10px] text-slate-500">secret set</span>
+                </summary>
+                {{if $.CanEdit}}
+                <div class="px-4 pb-4 space-y-3">
+                    <form method="POST" action="/admin/radius/nas/{{.ID}}" class="space-y-3">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <label class="text-xs text-slate-400">Name<input name="name" value="{{.Name}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                            <label class="text-xs text-slate-400">Address (IP)<input name="address" value="{{.Address}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white font-mono"></label>
+                            <label class="text-xs text-slate-400">CoA port<input name="coa_port" value="{{.CoAPort}}" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                        </div>
+                        <label class="text-xs text-slate-400 block">New shared secret <span class="text-slate-500">(leave empty to keep the current one)</span>
+                            <input name="secret" type="password" autocomplete="new-password" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                        <label class="text-xs text-slate-300 flex items-center space-x-2"><input type="checkbox" name="enabled" value="true" {{if .Enabled}}checked{{end}}><span>Enabled</span></label>
+                        <button type="submit" class="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500">Save</button>
+                    </form>
+                    <form method="POST" action="/admin/radius/nas/{{.ID}}/delete" onsubmit="return confirm('Delete this NAS client?')">
+                        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                        <button type="submit" class="px-3 py-1.5 text-xs rounded bg-rose-600/20 border border-rose-600/40 text-rose-300 hover:bg-rose-600/30">Delete</button>
+                    </form>
+                </div>
+                {{end}}
+            </details>
+            {{end}}
+        </div>
+        {{if .CanEdit}}
+        <form method="POST" action="/admin/radius/nas" class="p-4 border-t border-[#1a2234] space-y-3">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <h3 class="text-xs font-semibold text-white">Add a NAS client</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label class="text-xs text-slate-400">Name<input name="name" required class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+                <label class="text-xs text-slate-400">Address (IP, as in NAS-IP-Address)<input name="address" required class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white font-mono"></label>
+                <label class="text-xs text-slate-400">CoA port<input name="coa_port" value="3799" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+            </div>
+            <label class="text-xs text-slate-400 block">Shared secret <span class="text-slate-500">(leave empty to generate one and show it once)</span>
+                <input name="secret" type="password" autocomplete="new-password" class="mt-1 w-full bg-[#0b111c] border border-[#25334d] rounded px-2 py-1 text-xs text-white"></label>
+            <label class="text-xs text-slate-300 flex items-center space-x-2"><input type="checkbox" name="enabled" value="true" checked><span>Enabled</span></label>
+            <button type="submit" class="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500">Add NAS client</button>
+        </form>
+        {{end}}
+    </section>
+
+    <section class="bg-[#0f1623] border border-[#1a2234] rounded-lg">
+        <div class="px-4 py-3 border-b border-[#1a2234]"><h2 class="text-sm font-semibold text-white">Disconnect delivery log</h2></div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead><tr class="text-left text-slate-500"><th class="px-4 py-2">Time</th><th class="px-4 py-2">Device</th><th class="px-4 py-2">NAS</th><th class="px-4 py-2">MAC</th><th class="px-4 py-2">New posture</th><th class="px-4 py-2">Status</th><th class="px-4 py-2">Detail</th></tr></thead>
+                <tbody class="divide-y divide-[#1a2234] text-slate-300">
+                    {{range .Deliveries}}
+                    <tr><td class="px-4 py-2 whitespace-nowrap">{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+                        <td class="px-4 py-2 font-mono"><a class="text-blue-400" href="/admin/devices/{{.DeviceID}}">{{.DeviceID}}</a></td>
+                        <td class="px-4 py-2 font-mono">{{.NASAddress}}</td><td class="px-4 py-2 font-mono">{{.CallingStationID}}</td>
+                        <td class="px-4 py-2">{{.PostureState}}</td><td class="px-4 py-2">{{.Status}} ({{.Attempts}})</td>
+                        <td class="px-4 py-2 text-slate-500">{{.LastError}}{{if .ErrorCause}} cause {{.ErrorCause}}{{end}}</td></tr>
+                    {{else}}<tr><td colspan="7" class="px-4 py-6 text-slate-500">No disconnects sent yet.</td></tr>{{end}}
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{{end}}

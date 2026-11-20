@@ -30,6 +30,8 @@ type Repository struct {
 	kekMgr     crypto.KeyEnvelopeManager
 	wipeSigner *crypto.WipeSigner
 	deviceCA   crypto.DeviceCA
+	// postureHook recomputes a device's access posture after a quarantine change.
+	postureHook PostureHook
 }
 
 // SetDeviceCA wires the internal device certificate authority used to issue client-auth
@@ -1119,7 +1121,7 @@ func (r *Repository) RecordComplianceReports(ctx context.Context, deviceID strin
 	return nil
 }
 
-const policySelectColumns = `id, name, COALESCE(description, ''), policy_type, payload, target_tags, target_ring, COALESCE(target_group_ids, '{}'), patch_window_id, requires_reboot, is_self_service, COALESCE(assignment_type, 'REQUIRED'), is_active, version, created_at, updated_at`
+const policySelectColumns = `id, name, COALESCE(description, ''), policy_type, payload, target_tags, target_ring, COALESCE(target_group_ids, '{}'), patch_window_id, requires_reboot, is_self_service, COALESCE(assignment_type, 'REQUIRED'), is_active, allowed_in_quarantine, version, created_at, updated_at`
 
 func scanPolicy(row pgx.Row) (*types.Policy, error) {
 	var p types.Policy
@@ -1137,6 +1139,7 @@ func scanPolicy(row pgx.Row) (*types.Policy, error) {
 		&p.IsSelfService,
 		&p.AssignmentType,
 		&p.IsActive,
+		&p.AllowedInQuarantine,
 		&p.Version,
 		&p.CreatedAt,
 		&p.UpdatedAt,
@@ -2760,6 +2763,7 @@ func (r *Repository) ListApplicationPoliciesWithAdoption(ctx context.Context) ([
 			&p.IsSelfService,
 			&p.AssignmentType,
 			&p.IsActive,
+			&p.AllowedInQuarantine,
 			&p.Version,
 			&p.CreatedAt,
 			&p.UpdatedAt,

@@ -37,6 +37,7 @@ const (
 	EventAgentStarted        EventKind = "agent_started"        // first check-in after process start
 	EventActiveSessionChange EventKind = "active_session_changed" // fields: old, new
 	EventPrimaryAddrChange   EventKind = "primary_address_changed" // fields: old, new
+	EventPostureChanged      EventKind = "posture_changed"         // fields: from, to, reasons
 )
 
 // AllEventKinds is the catalog surfaced to the workflow builder as event triggers.
@@ -44,7 +45,7 @@ var AllEventKinds = []EventKind{
 	EventDeviceEnrolled, EventDeviceApproved, EventAttributeChanged, EventComplianceChanged,
 	EventCVEMatched, EventDeviceOffline, EventPatchFailed, EventAgentUpdateFailed,
 	EventAttestationFailed, EventBaselineMismatch, EventAgentStarted,
-	EventActiveSessionChange, EventPrimaryAddrChange,
+	EventActiveSessionChange, EventPrimaryAddrChange, EventPostureChanged,
 }
 
 // Valid reports whether k is an event a WORKFLOW may trigger on. Webhook-only kinds (below)
@@ -78,6 +79,8 @@ const (
 	EventDeviceRevoked        EventKind = "device_revoked"          // fields: hostname
 	EventDeviceMarkedLost     EventKind = "device_marked_lost"      // fields: marked_by
 	EventDeviceWiped          EventKind = "device_wiped"            // fields: request_id, status
+	EventDeviceQuarantined    EventKind = "device_quarantined"      // fields: reason, actor, source
+	EventDeviceReleased       EventKind = "device_released"         // fields: actor, reason
 )
 
 // WebhookOnlyKinds lists the kinds above.
@@ -86,6 +89,7 @@ var WebhookOnlyKinds = []EventKind{
 	EventCampaignStarted, EventCampaignStagePromoted, EventCampaignHalted,
 	EventCampaignCompleted, EventCampaignCancelled,
 	EventDeviceRevoked, EventDeviceMarkedLost, EventDeviceWiped,
+	EventDeviceQuarantined, EventDeviceReleased,
 }
 
 // WebhookKind reports whether k may be delivered through an event webhook: every workflow

@@ -664,6 +664,13 @@ func executePoliciesAndCleanup(
 	dconfNeedsUpdate := cleanupDconfModified
 
 	for _, pol := range policies {
+		// Quarantine: the server keeps the policy in the list (so the orphan cleanup above
+		// does not treat it as removed) but flags it. Do not enforce, remove or report it;
+		// whatever was applied before the quarantine stays exactly as it is.
+		if pol.QuarantineWithheld {
+			log.Printf("[spired] policy id=%s name=%q withheld by server (device quarantined); skipped", pol.ID, pol.Name)
+			continue
+		}
 		log.Printf("[spired] evaluating policy id=%s name=%q type=%s", pol.ID, pol.Name, pol.PolicyType)
 		var item types.PolicyExecutionItem
 		switch pol.PolicyType {

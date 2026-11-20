@@ -184,6 +184,7 @@
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Tags</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">TPM &amp; Secure Boot</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Status</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Access</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Patch Status</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Last Check-in</th>
                     <th scope="col" class="px-4 py-2.5 text-right font-normal">Actions</th>
@@ -196,7 +197,7 @@
                     {{end}}
                 {{else}}
                     <tr>
-                        <td colspan="9" class="px-4 py-8 text-center text-xs text-slate-600">
+                        <td colspan="10" class="px-4 py-8 text-center text-xs text-slate-600">
                             No matching endpoints found.
                         </td>
                     </tr>
@@ -316,6 +317,12 @@
                 {{.Status}}
             </span>
         {{end}}
+    </td>
+    <td class="px-4 py-3 whitespace-nowrap">
+        {{if eq .PostureState "COMPLIANT"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">COMPLIANT</span>
+        {{else if eq .PostureState "NONCOMPLIANT"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">NONCOMPLIANT</span>
+        {{else if eq .PostureState "QUARANTINED"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">QUARANTINED</span>
+        {{else}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-[#141b2a] text-slate-500 border border-[#1a2234]">{{if .PostureState}}{{.PostureState}}{{else}}-{{end}}</span>{{end}}
     </td>
     <td class="px-4 py-3 whitespace-nowrap">
         <div class="flex flex-wrap items-center gap-1 font-mono text-[10px]">
@@ -535,6 +542,8 @@
             </div>
         </div>
     </div>
+
+    {{template "device_posture_panel" .}}
 
     <!-- Lost-Device Actions -->
     <div class="bg-[#0a0e17] border {{if .Device.IsLost}}border-rose-500/40{{else}}border-[#1a2234]{{end}} rounded-lg p-4 space-y-3">

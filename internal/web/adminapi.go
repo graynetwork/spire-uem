@@ -535,6 +535,10 @@ func (h *Handler) registerAdminAPIv1(r chi.Router) {
 			r.With(requireAPI(types.ScopeDevicesActions, types.RoleOperator), h.idempotencyMiddleware).Post("/devices/{id}/lock", h.apiDeviceLock)
 			r.With(requireAPI(types.ScopeDevicesActions, types.RoleOperator), h.idempotencyMiddleware).Post("/devices/{id}/reboot", h.apiDeviceReboot)
 
+			// Quarantine changes device access: SECURITY_ADMIN+ in addition to the scope.
+			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/quarantine", h.apiDeviceQuarantine)
+			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/release", h.apiDeviceRelease)
+
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups", h.apiListGroups)
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups/{id}", h.apiGetGroup)
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups/{id}/members", h.apiGroupMembers)
@@ -551,6 +555,23 @@ func (h *Handler) registerAdminAPIv1(r chi.Router) {
 			}
 
 			r.With(requireAPI(types.ScopeAuditRead, types.RoleAuditor)).Get("/audit/events", h.apiListAudit)
+
+			// Conditional access: read-only posture for connectors (posture:read).
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/devices/{id}/posture", h.apiGetDevicePosture)
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/posture/lookup", h.apiPostureLookup)
+
+			// RADIUS / NAC: FreeRADIUS rlm_rest decision endpoint (posture:read). Not wrapped in
+			// the idempotency middleware on purpose: an access decision must never be replayed.
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Post("/access/radius/authorize", h.apiRadiusAuthorize)
+		})
+
+		// Reverse-proxy forward-auth. Same Bearer authentication and limiter as above, plus the
+		// X-Spire-Connector-Token transport for proxies that cannot set Authorization on the
+		// auth call only (Traefik).
+		r.Group(func(r chi.Router) {
+			r.Use(connectorTokenHeaderMiddleware)
+			r.Use(h.apiAuthMiddleware(limiter))
+			r.With(requireAPI(types.ScopePostureRead, types.RoleAuditor)).Get("/access/forward-auth", h.apiForwardAuth)
 		})
 	})
 }

@@ -145,6 +145,11 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 
 		r.Get("/vulnerabilities", h.VulnerabilitiesPage)
 
+		// Access posture (conditional access): rule set view. AUDITOR+; edit is below.
+		r.Get("/access-posture", h.AccessPosturePage)
+		// RADIUS / NAC connector: settings, NAS clients, CoA delivery log (AUDITOR+ read).
+		r.Get("/radius", h.RadiusPage)
+
 		r.Get("/patch-windows", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/policies", http.StatusFound)
 		})
@@ -198,10 +203,24 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			r.Post("/devices/{id}/luks/reveal", h.RevealLUKSRawRecoveryKey)
 			// Mark / clear LOST device mode (lost-device action). SECURITY_ADMIN+.
 			r.Post("/devices/{id}/lost", h.MarkDeviceLost)
+			// Quarantine / release (SECURITY_ADMIN+, tag-scope aware, reason required, audited).
+			r.Post("/devices/{id}/quarantine", h.QuarantineDevice)
+			r.Post("/devices/{id}/release", h.ReleaseDevice)
+			r.Post("/access-posture", h.SaveAccessPosture)
+			r.Post("/policies/{id}/quarantine-allowed", h.SetPolicyQuarantineAllowed)
 
 			// Approved PCR baselines (SECURITY_ADMIN+, tag-scope aware).
 			r.Get("/baselines", h.ListBaselinesPage)
 			r.Post("/baselines", h.CreateBaseline)
+
+			// Reverse-proxy forward-auth settings (fleet-wide; refused to tag-scoped admins).
+			r.Get("/access-proxy", h.AccessProxyPage)
+			r.Post("/access-proxy", h.SaveAccessProxy)
+			// RADIUS / NAC connector mutations (SECURITY_ADMIN+, refused for tag-scoped admins).
+			r.Post("/radius/settings", h.UpdateRadiusSettings)
+			r.Post("/radius/nas", h.CreateRadiusNAS)
+			r.Post("/radius/nas/{id}", h.UpdateRadiusNAS)
+			r.Post("/radius/nas/{id}/delete", h.DeleteRadiusNAS)
 			r.Post("/baselines/{id}/deactivate", h.DeactivateBaseline)
 			// Per-device attestation exception (reason + mandatory expiry). Scoped via the
 			// /admin/devices/{id}/... path through DeviceScopeMiddleware.

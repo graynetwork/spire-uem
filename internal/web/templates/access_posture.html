@@ -1,0 +1,124 @@
+{{define "access_posture_content"}}
+<div class="space-y-6">
+    <div>
+        <h1 class="text-lg font-semibold text-white">Access Posture</h1>
+        <p class="text-[11px] text-slate-500 mt-0.5">One fleet-wide rule set decides each device's access verdict (COMPLIANT, NONCOMPLIANT, QUARANTINED or UNKNOWN). Connectors (reverse-proxy forward-auth, Authentik, RADIUS) read that verdict; they never decide for themselves. Rule set version <span class="font-mono text-slate-300">{{.Rules.Version}}</span>. Every edit is versioned and audited.</p>
+    </div>
+
+    {{if .Flash}}<div class="p-2.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-300">Saved as version {{.Flash}}. Devices are being re-evaluated.</div>{{end}}
+    {{if not .CanEdit}}<div class="p-2.5 rounded bg-[#0f1420] border border-[#1a2234] text-xs text-slate-400">Read-only. The rule set is fleet-wide: only an unscoped SECURITY_ADMIN or SUPER_ADMIN can edit it.</div>{{end}}
+
+    <form method="POST" action="/admin/access-posture" class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4 space-y-4 text-xs">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <input type="hidden" name="expected_version" value="{{.Rules.Version}}">
+        <fieldset {{if not .CanEdit}}disabled{{end}} class="space-y-4">
+            <div class="flex flex-wrap items-center gap-3">
+                <label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="checkin_enabled" value="1" {{if .Rules.CheckinFresh.Enabled}}checked{{end}}> <code class="text-blue-300">checkin_fresh</code> last check-in within</label>
+                <input type="number" name="checkin_hours" min="1" max="2160" value="{{.Rules.CheckinFresh.MaxAgeHours}}" class="w-20 rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-white"> hours
+            </div>
+            <div><label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="attestation_enabled" value="1" {{if .Rules.AttestationTrusted.Enabled}}checked{{end}}> <code class="text-blue-300">attestation_trusted</code> TPM attestation trusted (latest result, exception and max age, same rule as secret withholding)</label></div>
+            <div><label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="disk_enabled" value="1" {{if .Rules.DiskEncrypted.Enabled}}checked{{end}}> <code class="text-blue-300">disk_encrypted</code> inventory reports every disk encrypted (<code>hw.disk.encrypted_all</code>); a device that does not report it fails</label></div>
+            <div class="flex flex-wrap items-center gap-3">
+                <label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="policies_enabled" value="1" {{if .Rules.PoliciesCompliant.Enabled}}checked{{end}}> <code class="text-blue-300">policies_compliant</code> no assigned policy NON_COMPLIANT or FAILED</label>
+                <label class="flex items-center gap-2 text-slate-400"><input type="checkbox" name="policies_pending_fails" value="1" {{if .Rules.PoliciesCompliant.PendingFails}}checked{{end}}> PENDING also fails</label>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+                <label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="patches_enabled" value="1" {{if .Rules.PatchesCurrent.Enabled}}checked{{end}}> <code class="text-blue-300">patches_current</code> no pending security updates, or patched successfully within</label>
+                <input type="number" name="patches_grace_days" min="0" max="365" value="{{.Rules.PatchesCurrent.GraceDays}}" class="w-20 rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-white"> days (0 = strict)
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+                <label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="cve_enabled" value="1" {{if .Rules.NoCriticalCVEs.Enabled}}checked{{end}}> <code class="text-blue-300">no_critical_cves</code> no open CVE at or above</label>
+                <select name="cve_min_urgency" class="rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-white">
+                    <option value="high" {{if eq .Rules.NoCriticalCVEs.MinUrgency "high"}}selected{{end}}>high</option>
+                    <option value="medium" {{if eq .Rules.NoCriticalCVEs.MinUrgency "medium"}}selected{{end}}>medium</option>
+                    <option value="low" {{if eq .Rules.NoCriticalCVEs.MinUrgency "low"}}selected{{end}}>low</option>
+                </select>
+                <span class="text-slate-500">not covered by an active risk acceptance</span>
+            </div>
+            <div class="space-y-1">
+                <label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="group_enabled" value="1" {{if .Rules.GroupRule.Enabled}}checked{{end}}> <code class="text-blue-300">group_rule</code> device must match this dynamic-group rule (JSON)</label>
+                <textarea name="group_rule" rows="3" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 font-mono text-white">{{.GroupRule}}</textarea>
+            </div>
+        </fieldset>
+        {{if .CanEdit}}<button type="submit" class="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium">Save new version</button>{{end}}
+    </form>
+
+    <div class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4">
+        <h2 class="text-sm font-semibold text-white mb-2">History</h2>
+        <table class="min-w-full text-[11px] font-mono">
+            <thead class="text-slate-400"><tr><th class="text-left py-1">Version</th><th class="text-left py-1">Changed by</th><th class="text-left py-1">When</th></tr></thead>
+            <tbody class="text-slate-300">
+            {{range .History}}<tr><td class="py-1">{{.Version}}</td><td class="py-1">{{.ChangedBy}}</td><td class="py-1">{{.ChangedAt.Format "2006-01-02 15:04:05"}}</td></tr>{{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{end}}
+
+{{define "device_posture_panel"}}
+<div class="bg-[#0a0e17] border {{if eq (printf "%s" .Posture.Effective) "QUARANTINED"}}border-rose-500/40{{else}}border-[#1a2234]{{end}} rounded-lg p-4 space-y-3" id="posture-panel">
+    <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="text-xs font-semibold text-white flex items-center gap-2">
+            Access Posture
+            <span class="px-1.5 py-0.5 rounded text-[10px] font-mono border
+                {{if eq (printf "%s" .Posture.Effective) "COMPLIANT"}}bg-emerald-500/15 text-emerald-300 border-emerald-500/30
+                {{else if eq (printf "%s" .Posture.Effective) "QUARANTINED"}}bg-rose-500/15 text-rose-300 border-rose-500/30
+                {{else if eq (printf "%s" .Posture.Effective) "NONCOMPLIANT"}}bg-amber-500/15 text-amber-300 border-amber-500/30
+                {{else}}bg-[#141b2a] text-slate-400 border-[#1a2234]{{end}}">{{.Posture.Effective}}</span>
+            {{if .Posture.Stale}}<span class="text-[10px] text-slate-500">(verdict expired)</span>{{end}}
+        </h3>
+        {{if .Posture.Posture}}<span class="text-[10px] font-mono text-slate-500">rule set v{{.Posture.Posture.RuleSetVersion}} · evaluated {{.Posture.Posture.EvaluatedAt.Format "2006-01-02 15:04:05"}} · valid until {{.Posture.Posture.ValidUntil.Format "15:04:05"}}</span>{{end}}
+    </div>
+    {{if .Posture.LoadError}}<div class="text-[11px] text-amber-400">Posture could not be fully loaded; treat as not allowed.</div>{{end}}
+    {{if .Posture.Posture}}
+    {{if .Posture.Posture.Reasons}}<ul class="text-[11px] text-slate-300 list-disc pl-5">{{range .Posture.Posture.Reasons}}<li>{{.}}</li>{{end}}</ul>{{end}}
+    <div class="flex flex-wrap gap-1.5">
+        {{range .Posture.Posture.Checks}}
+        <span title="{{.Detail}}" class="px-1.5 py-0.5 rounded text-[10px] font-mono border {{if .Passed}}bg-emerald-500/10 text-emerald-300 border-emerald-500/20{{else}}bg-rose-500/10 text-rose-300 border-rose-500/20{{end}}">{{.ID}}: {{if .Passed}}pass{{else}}fail{{end}}</span>
+        {{end}}
+    </div>
+    {{else}}<div class="text-[11px] text-slate-500">Not evaluated yet.</div>{{end}}
+
+    {{if .Posture.Quarantine}}
+    <div class="p-2.5 rounded bg-rose-500/10 border border-rose-500/30 text-[11px] font-mono text-rose-200">
+        Quarantined by {{.Posture.Quarantine.Actor}} ({{.Posture.Quarantine.Source}}) at {{.Posture.Quarantine.CreatedAt.Format "2006-01-02 15:04"}}: {{.Posture.Quarantine.Reason}}
+    </div>
+    {{end}}
+
+    {{if or (eq .AdminRole "SECURITY_ADMIN") (eq .AdminRole "SUPER_ADMIN")}}
+    <div class="flex flex-wrap items-center gap-2">
+        {{if .Posture.Quarantine}}
+        <details class="inline-block">
+            <summary class="inline-flex items-center px-2.5 py-1 rounded text-xs font-medium bg-[#141b2a] hover:bg-[#1a2234] text-emerald-400 border border-emerald-500/30 cursor-pointer list-none transition">Release from quarantine</summary>
+            <form hx-post="/admin/devices/{{.Device.ID}}/release" hx-target="#device-detail-container" hx-swap="innerHTML" class="mt-2 p-3 rounded-md bg-[#0f1420] border border-emerald-500/30 space-y-2 w-72">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <label class="block text-[11px] font-medium text-emerald-300">Reason (required)</label>
+                <input type="text" name="reason" required maxlength="500" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                <button type="submit" class="w-full px-2.5 py-1 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white transition">Release device</button>
+            </form>
+        </details>
+        {{else}}
+        <details class="inline-block">
+            <summary class="inline-flex items-center px-2.5 py-1 rounded text-xs font-medium bg-rose-700/80 hover:bg-rose-600 text-white cursor-pointer list-none transition">Quarantine…</summary>
+            <form hx-post="/admin/devices/{{.Device.ID}}/quarantine" hx-target="#device-detail-container" hx-swap="innerHTML" class="mt-2 p-3 rounded-md bg-[#0f1420] border border-rose-500/30 space-y-2 w-72">
+                <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                <p class="text-[10px] text-slate-400">The device's access verdict becomes QUARANTINED and only policies marked allowed-in-quarantine are delivered. Sealed network secrets are withheld.</p>
+                <label class="block text-[11px] font-medium text-rose-300">Reason (required)</label>
+                <input type="text" name="reason" required maxlength="500" class="w-full rounded bg-[#0a0e17] border border-[#1a2234] px-2 py-1 text-xs text-white">
+                <button type="submit" class="w-full px-2.5 py-1 rounded text-xs font-medium bg-rose-700 hover:bg-rose-600 text-white transition">Quarantine device</button>
+            </form>
+        </details>
+        {{end}}
+    </div>
+    {{end}}
+
+    {{if .Posture.History}}
+    <details class="text-[11px]">
+        <summary class="cursor-pointer text-slate-400">Quarantine history ({{len .Posture.History}})</summary>
+        <ul class="mt-1 space-y-1 font-mono text-slate-400">
+            {{range .Posture.History}}<li>{{.CreatedAt.Format "2006-01-02 15:04"}} {{.Actor}} ({{.Source}}): {{.Reason}}{{if .ReleasedAt}} → released {{.ReleasedAt.Format "2006-01-02 15:04"}} by {{.ReleasedBy}}{{if .ReleaseReason}}: {{.ReleaseReason}}{{end}}{{else}} (active){{end}}</li>{{end}}
+        </ul>
+    </details>
+    {{end}}
+</div>
+{{end}}
