@@ -457,10 +457,32 @@ Three `kind`s:
 - **`wifi`** — SSID + security:
   - `wpa2-personal` / `wpa3-personal`: pre-shared key (8–63 chars).
   - `wpa2-enterprise` / `wpa3-enterprise` (802.1X): EAP method `peap-mschapv2` (identity + password)
-    or `tls` (client cert + key, optional CA). CA/client certs are supplied as PEM text.
+    or `tls` (client cert + key, optional CA). CA/client certs are supplied as PEM text, or the client
+    certificate is issued by SpireUEM per device (below).
 - **`wired_8021x`** — wired 802.1X, same EAP options as enterprise Wi-Fi.
 - **`wireguard`** — interface address(es), DNS, and one or more peers (peer public key, endpoint,
   allowed IPs, optional preshared key).
+
+**Device-certificate profile (EAP-TLS without pasting a certificate).** Set the policy form's
+*Client certificate* to **Issued by SpireUEM** (JSON: `"client_cert_source": "device"`) on a Wi-Fi
+enterprise or wired 802.1X profile. Requirements: EAP method `tls`; no `client_cert`, `client_key`
+or `password` (the server refuses the policy otherwise); `ca_cert` is the CA of your **RADIUS
+server certificate**, not the device CA. To set it up:
+
+1. Configure FreeRADIUS to trust the device CA and call SpireUEM (`docs/ACCESS_RADIUS.md` section 4a).
+2. Create the `NETWORK_PROFILE` with *Issued by SpireUEM*, paste the RADIUS server CA, leave
+   *Identity* empty (the device id is used) or set the identity your RADIUS policy expects.
+3. Assign it. On the next check-in the agent creates a key on the device, asks for its certificate
+   and then applies the profile. Until then the Host Policy Inspector shows the profile as
+   non-compliant with "device network certificate not ready". The keyfile points at
+   `/etc/spire/network.key` and `/etc/spire/network.crt` (the directory of the agent token) by path.
+4. Check: the device's certificates (purpose `network`) are listed for the device; revoking one makes
+   RADIUS refuse it. Removing the last such profile deletes the key and certificate from the device.
+
+This kind of profile contains no secret, so attestation withholding never applies to it. The
+protection is on the RADIUS side: the certificate is only accepted for a device whose posture is
+good, checked at every connection. The certificate is renewed at about two thirds of its lifetime;
+NetworkManager uses the new files the next time the connection authenticates.
 
 **WireGuard key handling (important):** the server **never** holds a device WireGuard private key.
 The agent generates an X25519 private key **on the device**, writes it into the keyfile, and reports

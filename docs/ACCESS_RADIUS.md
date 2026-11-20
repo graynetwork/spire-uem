@@ -44,7 +44,7 @@ is global. Every change is audited (`RADIUS_SETTINGS_UPDATE`, plus `RADIUS_GUEST
 
 | Identity | Source | Strength |
 |---|---|---|
-| Device-CA certificate serial | `TLS-Client-Cert-Serial` (EAP-TLS) | **strong** |
+| Device-CA **network** certificate serial | `TLS-Client-Cert-Serial` (EAP-TLS) | **strong** |
 | Certificate fingerprint | `TLS-Client-Cert-Fingerprint` if you compute and send one | strong |
 | MAC address | `Calling-Station-Id` (MAC authentication bypass) | **weak**, off by default |
 
@@ -61,14 +61,20 @@ Note for 802.1X without a certificate (PEAP): FreeRADIUS still sends the supplic
 `Calling-Station-Id`, so such requests are judged as weak MAC identities and rejected while that
 switch is off.
 
-**Certificate identity needs per-device certificates.** In this version the EAP-TLS client
-certificate a `NETWORK_PROFILE` policy installs is admin-supplied per policy
-(`types.NetworkProfile.ClientCert/ClientKey`, applied by `internal/engine/network_profile.go`);
-it is not the per-device certificate issued by the SpireUEM device CA. The device-CA certificate
-(`device_certificates`) is the one SpireUEM can map to exactly one device. Until per-device
-certificate profiles exist (roadmap item 2), strong certificate identity applies only when you
-point FreeRADIUS at the device CA and the devices present their device-CA certificates; a shared
-policy certificate identifies a policy, not a device.
+**Certificate identity comes from the device's network certificate.** A `NETWORK_PROFILE` for
+EAP-TLS can use `client_cert_source: device`. The agent then makes its own key (`network.key`,
+root-only, never sent anywhere), asks SpireUEM for a certificate for it, and NetworkManager
+presents that certificate. The certificate is signed by the SpireUEM device CA and names exactly
+one device, so the serial FreeRADIUS reports maps to one device. See section 4a and
+`docs/ADMIN_RUNBOOK.md` section 8.1.
+
+The device CA signs three kinds of certificate per device: **agent** (the agent's own mTLS
+identity), **network** (this connector) and **browser** (the forward-auth connector). FreeRADIUS
+cannot tell them apart, because they chain to the same CA. SpireUEM can: this endpoint accepts a
+serial only if it belongs to a **network** certificate. The agent and browser certificates of the
+same device are refused even though their TLS handshake succeeds. A pasted per-policy certificate
+(`client_cert_source` empty or `inline`) is not a device-CA certificate and identifies a policy,
+not a device; it does not give strong identity here.
 
 ## 3. Credential and request format
 
@@ -108,6 +114,7 @@ Files are in `contrib/freeradius/`:
 | File | Install as |
 |---|---|
 | `mods-available/spire` | `/etc/freeradius/mods-available/spire`, symlink into `mods-enabled/` |
+| `mods-available/spire_eap_tls` | the `eap` module for EAP-TLS with the device CA (section 4a) |
 | `policy.d/spire_nac` | `/etc/freeradius/policy.d/spire_nac` |
 | `spire_token.conf.example` | `/etc/freeradius/spire_token.conf` (mode 0640, `root:freerad`) |
 | `sites-available/spire-nac` | a complete example virtual server; copy its blocks into yours |
@@ -122,8 +129,42 @@ Files are in `contrib/freeradius/`:
      `spire_nac_check` and then `update control { &Auth-Type := Accept }` (Block 1 of the site).
    * **EAP-TLS**: in `post-auth`, after the handshake, copy the serial out of session-state into
      the request and call the policy (Block 2). The certificate is verified by the `eap` module
-     against the `ca_file` you configure there; set that to the SpireUEM device CA only.
+     against its `ca_file`; set that to the SpireUEM device CA only (section 4a).
 4. Add the NAS to FreeRADIUS `clients.conf` as usual, with `require_message_authenticator = yes`.
+
+### 4a. EAP-TLS with device certificates
+
+1. **Trust the device CA, and only it, for client certificates.** The CA certificate is the
+   `device_ca_certificate_pem` every issue response carries, and the file the server loads from
+   `SPIRE_DEVICE_CA_CERT_FILE`. Save it as `/etc/freeradius/certs/device-ca.pem`. Install
+   `mods-available/spire_eap_tls` as the `eap` module (or merge its `tls-config` block): it
+   enables EAP-TLS only and sets `ca_file` to that file. Do not add your corporate CA to
+   `ca_file`: every certificate it signed would pass the handshake and then be refused by
+   SpireUEM as unknown, which is safe but noisy.
+2. **Give FreeRADIUS its own server certificate** (`server.pem`, `server.key`), signed by a RADIUS
+   server CA of yours, not by the device CA. Put that server CA in the `ca_cert` field of the
+   `NETWORK_PROFILE` so the supplicant checks it.
+3. **Pass the serial to SpireUEM.** The site's `post-auth` block already does:
+   `&TLS-Client-Cert-Serial := &session-state:TLS-Client-Cert-Serial`, then `spire_nac_check`. The
+   REST call sends it as `TLS-Client-Cert-Serial`; SpireUEM converts the hex serial to decimal and
+   looks it up among **network** certificates only.
+4. **Revocation.** The device CA publishes no CRL (`check_crl = no`). A revoked, expired or
+   unknown certificate can still finish the TLS handshake; SpireUEM rejects it right after, on
+   every authentication. Revoke a device and all its certificates stop working at the next
+   authentication (existing sessions end through Disconnect, section 5).
+5. **What happens to each certificate** (all verified in section 7):
+
+   | Presented certificate | Result |
+   |---|---|
+   | network certificate, device compliant | accept, compliant VLAN |
+   | network certificate, device non-compliant or quarantined | remediation or quarantine VLAN, or reject when none is set |
+   | network certificate, revoked or expired | reject |
+   | agent or browser certificate of the same device | reject |
+   | certificate from any other CA | reject in the TLS handshake |
+
+The device's network certificate lasts as long as agent certificates (30 days by default). The
+agent renews it at about two thirds of its life with a new key, and keeps the old pair if
+renewal fails.
 
 ### Fail-closed behaviour
 
@@ -213,8 +254,18 @@ MAB accept with VLAN attributes; non-compliant → remediation VLAN or reject; q
 verdict, unknown MAC, disabled MAC identity, mismatching `User-Name`: reject; SpireUEM down: reject.
 FreeRADIUS then acts as the NAS: a posture change makes SpireUEM send a Disconnect-Request that
 FreeRADIUS validates (authenticator and `Message-Authenticator`), exactly one per change, and a wrong
-shared secret is never acknowledged. The EAP-TLS branch is covered at HTTP level (the serial
-attribute FreeRADIUS sends); there was no `eapol_test` to run a real supplicant.
+shared secret is never acknowledged.
+
+The same script then runs EAP-TLS with a real supplicant. It starts a second `spire-server`
+that terminates TLS (the issue endpoint needs the agent certificate in the handshake), enrolls
+devices and obtains their network certificates through the real `POST /api/v1/desktop/cert/issue`
+(`test/eaptls_helper`, which stands in for the agent's request), and authenticates with
+`eapol_test` (Debian package `eapoltest`, built into a small local image) against FreeRADIUS using
+`contrib/freeradius/mods-available/spire_eap_tls`. It shows the results in the table in section 4a:
+compliant device accepted with the compliant VLAN, quarantined device in the quarantine VLAN or
+rejected, remediation VLAN, revoked network certificate rejected, the device's agent certificate
+rejected by SpireUEM (the log shows `unknown_certificate`, so the TLS layer let it through), and a
+certificate from an untrusted CA rejected in the handshake. The test needs `openssl`.
 
 ## 8. Limits
 
