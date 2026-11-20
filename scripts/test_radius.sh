@@ -103,7 +103,7 @@ say "== building spire-server"
 # Both server instances share this device CA (created by the first one to start).
 DEVICE_CA_ENV="SPIRE_DEVICE_CA_CERT_FILE=$WORK/device-ca.crt SPIRE_DEVICE_CA_KEY_FILE=$WORK/device-ca.key"
 start_server() {
-  env $DEVICE_CA_ENV DATABASE_URL="postgres://spire:spirepassword@127.0.0.1:${PG_PORT}/${DB}?sslmode=disable" \
+  env SPIRE_POSTURE_INTERVAL=24h $DEVICE_CA_ENV DATABASE_URL="postgres://spire:spirepassword@127.0.0.1:${PG_PORT}/${DB}?sslmode=disable" \
   SPIRE_LISTEN_ADDR="127.0.0.1:${API_PORT}" SPIRE_MIGRATIONS_PATH="$ROOT/migrations/000001_init_schema.up.sql" \
   SPIRE_SESSION_SECRET="radius-e2e-session-secret-key-32b-fixed" SPIRE_ADMIN_PASSWORD="$ADMINPW" \
   SPIRE_ALLOW_INSECURE_HTTP=1 SPIRE_KEK_PATH="$WORK/kek.pem" SPIRE_APT_REPO_DIR="$WORK/apt" \
@@ -125,7 +125,7 @@ mkdir -p "$WORK/tls"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=spire-e2e" \
   -addext "subjectAltName=IP:127.0.0.1" -keyout "$WORK/tls/server.key" -out "$WORK/tls/server.crt" >/dev/null 2>&1 || exit 2
 start_tls_server() {
-  env $DEVICE_CA_ENV SPIRE_DEVICE_MTLS=optional SPIRE_TLS_CERT_FILE="$WORK/tls/server.crt" SPIRE_TLS_KEY_FILE="$WORK/tls/server.key" \
+  env SPIRE_POSTURE_INTERVAL=24h $DEVICE_CA_ENV SPIRE_DEVICE_MTLS=optional SPIRE_TLS_CERT_FILE="$WORK/tls/server.crt" SPIRE_TLS_KEY_FILE="$WORK/tls/server.key" \
   DATABASE_URL="postgres://spire:spirepassword@127.0.0.1:${PG_PORT}/${DB}?sslmode=disable" \
   SPIRE_LISTEN_ADDR="127.0.0.1:${TLS_PORT}" SPIRE_MIGRATIONS_PATH="$ROOT/migrations/000001_init_schema.up.sql" \
   SPIRE_SESSION_SECRET="radius-e2e-session-secret-key-32b-fixed" SPIRE_ADMIN_PASSWORD="$ADMINPW" \
@@ -336,6 +336,9 @@ if enroll_device ok && enroll_device quar && enroll_device rev; then
     [ "$(sql "SELECT count(*) FROM device_certificates c JOIN devices d ON d.id=c.device_id WHERE d.hardware_uuid='eaptls-$d' AND c.purpose='network'")" = 1 ] || bad "$d: expected one network certificate row"
     [ "$(sql "SELECT count(*) FROM device_certificates c JOIN devices d ON d.id=c.device_id WHERE d.hardware_uuid='eaptls-$d' AND c.purpose='agent'")" -ge 1 ] || bad "$d: expected an agent certificate row"
   done
+  # Approving and enrolling a device makes the posture engine evaluate it in the background.
+  # Let that finish first, or it can overwrite the posture rows written here.
+  sleep 3
   set_posture ok COMPLIANT; set_posture quar QUARANTINED; set_posture rev COMPLIANT
   NET_OK="$(write_eap_conf ok "$WORK/dev-ok/network.crt" "$WORK/dev-ok/network.key")"
   AGENT_OK="$(write_eap_conf ok "$WORK/dev-ok/device.crt" "$WORK/dev-ok/device.key")"

@@ -108,7 +108,7 @@ go build -o "$WORK/seed" ./test/access_proxy_seed
 
 echo "== Start SpireUEM on 127.0.0.1:${SRV_PORT}"
 mkdir -p "$WORK/apt" "$WORK/bundles"
-DATABASE_URL="$DB_URL" SPIRE_LISTEN_ADDR="127.0.0.1:${SRV_PORT}" \
+SPIRE_POSTURE_INTERVAL=24h DATABASE_URL="$DB_URL" SPIRE_LISTEN_ADDR="127.0.0.1:${SRV_PORT}" \
 SPIRE_MIGRATIONS_PATH="$ROOT/migrations/000001_init_schema.up.sql" \
 SPIRE_SESSION_SECRET="ap-e2e-session-secret-key-32b-fixed" SPIRE_ADMIN_PASSWORD="$ADMIN_PW" \
 SPIRE_KEK_PATH="$WORK/kek" SPIRE_WIPE_SIGNING_KEY_PATH="$WORK/wipe.key" \
@@ -310,7 +310,7 @@ eval "$(DATABASE_URL="$DB_URL" "$WORK/bcseed" "$BC" "$WORK/ca.pem" "$WORK/ca.key
 
 # Second SpireUEM instance, same database and device CA, terminating TLS itself so the agent
 # certificate is visible to /cert/issue.
-DATABASE_URL="$DB_URL" SPIRE_LISTEN_ADDR="127.0.0.1:${TLS_SRV_PORT}" \
+SPIRE_POSTURE_INTERVAL=24h DATABASE_URL="$DB_URL" SPIRE_LISTEN_ADDR="127.0.0.1:${TLS_SRV_PORT}" \
 SPIRE_MIGRATIONS_PATH="$ROOT/migrations/000001_init_schema.up.sql" \
 SPIRE_SESSION_SECRET="ap-e2e-session-secret-key-32b-fixed" SPIRE_ADMIN_PASSWORD="$ADMIN_PW" \
 SPIRE_KEK_PATH="$WORK/kek" SPIRE_WIPE_SIGNING_KEY_PATH="$WORK/wipe.key" \
