@@ -31,6 +31,9 @@
   },
   {
    "name": "posture"
+  },
+  {
+   "name": "pki"
   }
  ],
  "paths": {
@@ -1863,6 +1866,340 @@
      }
     }
    }
+  },
+  "/devices/{id}/certificates": {
+   "get": {
+    "operationId": "listDeviceCertificates",
+    "summary": "List a device's certificates",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "active",
+      "in": "query",
+      "description": "true lists only unrevoked, unexpired certificates.",
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    ],
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "200": {
+      "description": "A page of certificates, newest first",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/DeviceCertificate"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Lists agent, network and browser certificates of one device. A device outside the credential's tag scope is reported as not found."
+   }
+  },
+  "/devices/{id}/certificates/{cert_id}/revoke": {
+   "post": {
+    "operationId": "revokeDeviceCertificate",
+    "summary": "Revoke one device certificate",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "name": "cert_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Certificate revoked",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "certificate",
+            "reapproval_required"
+           ],
+           "properties": {
+            "certificate": {
+             "$ref": "#/components/schemas/DeviceCertificate"
+            },
+            "reapproval_required": {
+             "type": "boolean",
+             "description": "True after revoking an agent certificate: the device cannot fetch a new one with its token alone until issuance is re-approved."
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Revokes one certificate. A certificate id that does not belong to this device is reported as not found; an already revoked one returns 409. Revoking an agent certificate also stops the device from minting a replacement with its bearer token until POST /devices/{id}/certificates/reapprove is called. Raises the device_cert_revoked webhook event."
+   }
+  },
+  "/devices/{id}/certificates/reapprove": {
+   "post": {
+    "operationId": "reapproveDeviceCertificates",
+    "summary": "Allow a device to request an agent certificate again",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Issuance re-approved",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "device_id",
+            "was_blocked",
+            "reapproval_required"
+           ],
+           "properties": {
+            "device_id": {
+             "type": "string"
+            },
+            "was_blocked": {
+             "type": "boolean"
+            },
+            "reapproval_required": {
+             "type": "boolean"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Clears the flag set when an agent certificate was revoked. Safe to repeat: was_blocked is false when nothing was blocked."
+   }
+  },
+  "/pki/device-ca": {
+   "get": {
+    "operationId": "getDeviceCA",
+    "summary": "Get the device CA certificate",
+    "tags": [
+     "pki"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "none (any valid credential)",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [],
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "200": {
+      "description": "The device CA certificate",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/DeviceCA"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Returns the CA certificate that signs device certificates, for RADIUS servers and reverse proxies to trust. The certificate is public, so any valid service account or token may read it, with no scope, role or tag check. 404 when no device CA is configured (device mTLS off)."
+   }
   }
  },
  "components": {
@@ -2367,6 +2704,112 @@
       "items": {
        "type": "string"
       }
+     }
+    }
+   },
+   "DeviceCertificate": {
+    "type": "object",
+    "description": "Public metadata of a device certificate. The server never holds a private key.",
+    "required": [
+     "id",
+     "device_id",
+     "purpose",
+     "user",
+     "serial",
+     "fingerprint_sha256",
+     "not_before",
+     "not_after",
+     "revoked_at",
+     "status",
+     "created_at"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "device_id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "purpose": {
+      "type": "string",
+      "enum": [
+       "agent",
+       "network",
+       "browser"
+      ]
+     },
+     "user": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Local account a browser certificate was issued for; null for agent and network certificates."
+     },
+     "serial": {
+      "type": "string"
+     },
+     "fingerprint_sha256": {
+      "type": "string"
+     },
+     "not_before": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "not_after": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "revoked_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "active",
+       "expired",
+       "revoked"
+      ]
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "DeviceCA": {
+    "type": "object",
+    "required": [
+     "subject",
+     "not_before",
+     "not_after",
+     "fingerprint_sha256",
+     "pem"
+    ],
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "not_before": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "not_after": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "fingerprint_sha256": {
+      "type": "string",
+      "description": "SHA-256 of the DER certificate, lowercase hex."
+     },
+     "pem": {
+      "type": "string",
+      "description": "The CA certificate, PEM encoded."
      }
     }
    }

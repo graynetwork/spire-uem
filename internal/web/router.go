@@ -149,6 +149,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 		r.Get("/access-posture", h.AccessPosturePage)
 		// RADIUS / NAC connector: settings, NAS clients, CoA delivery log (AUDITOR+ read).
 		r.Get("/radius", h.RadiusPage)
+		// Device CA certificate: public, so any signed-in admin may view and download it.
+		r.Get("/device-ca", h.DeviceCAPage)
+		r.Get("/device-ca.pem", h.DeviceCADownload)
 
 		r.Get("/patch-windows", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/policies", http.StatusFound)
@@ -206,6 +209,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 			// Quarantine / release (SECURITY_ADMIN+, tag-scope aware, reason required, audited).
 			r.Post("/devices/{id}/quarantine", h.QuarantineDevice)
 			r.Post("/devices/{id}/release", h.ReleaseDevice)
+			// Per-device certificate revoke and re-approval (SECURITY_ADMIN+, tag-scope aware).
+			r.Post("/devices/{id}/certificates/{certID}/revoke", h.RevokeDeviceCert)
+			r.Post("/devices/{id}/certificates/reapprove", h.ReapproveDeviceCertIssuance)
 			r.Post("/access-posture", h.SaveAccessPosture)
 			r.Post("/policies/{id}/quarantine-allowed", h.SetPolicyQuarantineAllowed)
 

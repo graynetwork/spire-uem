@@ -1131,8 +1131,8 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		dev.IsLost, dev.LastSeenIP, dev.LastActiveUser = isLost, seenIP, activeUser
 	}
 
-	// Device client certificate (mTLS): the most recent leaf, for the cert-status panel.
-	deviceCert, _ := h.repo.GetLatestDeviceCertificate(r.Context(), dev.ID)
+	// Device certificates of every purpose, for the certificate table.
+	deviceCerts := h.loadDeviceCertView(r, dev.ID)
 
 	// Rich inventory snapshot + change history for the inventory panel. HasInventory is
 	// false for a device that never reported (old agent / pre-feature); the template then
@@ -1212,7 +1212,7 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"OpenWipe":           openWipe,
 		"LUKSRotations":      luksRotations,
 		"AdminRole":          string(AdminRoleFromContext(r.Context())),
-		"DeviceCert":         deviceCert,
+		"DeviceCerts":        deviceCerts,
 		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
 		"Inventory":          deviceInventory,
 		"Posture":            h.loadPostureView(r.Context(), dev.ID),

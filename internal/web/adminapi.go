@@ -539,6 +539,14 @@ func (h *Handler) registerAdminAPIv1(r chi.Router) {
 			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/quarantine", h.apiDeviceQuarantine)
 			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/release", h.apiDeviceRelease)
 
+			// Device certificates: read (devices:read); revoke and re-approve change what the
+			// device can authenticate as, so SECURITY_ADMIN+ like quarantine.
+			r.With(requireAPI(types.ScopeDevicesRead, types.RoleAuditor)).Get("/devices/{id}/certificates", h.apiListDeviceCerts)
+			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/certificates/{cert_id}/revoke", h.apiRevokeDeviceCert)
+			r.With(requireAPI(types.ScopeDevicesActions, types.RoleSecurityAdmin), h.idempotencyMiddleware).Post("/devices/{id}/certificates/reapprove", h.apiReapproveDeviceCerts)
+			// The device CA certificate is public: any valid credential may read it.
+			r.Get("/pki/device-ca", h.apiDeviceCA)
+
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups", h.apiListGroups)
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups/{id}", h.apiGetGroup)
 			r.With(requireAPI(types.ScopeGroupsRead, types.RoleAuditor)).Get("/groups/{id}/members", h.apiGroupMembers)
