@@ -38,6 +38,11 @@ const (
 	headerDeviceID         = "X-Spire-Device-Id"
 	headerPosture          = "X-Spire-Posture"
 	headerIdentityStrength = "X-Spire-Identity-Strength"
+	// headerUser carries the local account named by a browser certificate. It is always set
+	// on an allow, empty when the identity is not a browser certificate, so a value a client
+	// forged into the same header is overwritten by every proxy that copies auth response
+	// headers. The proxy must still strip X-Spire-* from the incoming request.
+	headerUser = "X-Spire-User"
 
 	maxForwardedCertBytes = 16 << 10
 )
@@ -94,6 +99,7 @@ func (h *Handler) apiForwardAuth(w http.ResponseWriter, r *http.Request) {
 	var (
 		identity types.AccessIdentity
 		certDev  string // device id named by the certificate's URI SAN
+		certUser string // local account named by the certificate's URI SAN
 	)
 	switch certVals := headerValues(r, cfg.CertHeader); {
 	case cfg.CertHeader != "" && len(certVals) > 1:
@@ -109,6 +115,11 @@ func (h *Handler) apiForwardAuth(w http.ResponseWriter, r *http.Request) {
 		// same device but its key is not the desktop user's.
 		identity = types.AccessIdentity{CertSerial: cert.SerialNumber.String(), CertPurposes: []types.CertPurpose{types.CertPurposeBrowser}}
 		certDev = crypto.DeviceIDFromCert(cert)
+		certUser = crypto.UserFromCert(cert)
+		if !crypto.ValidCertUser(certUser) {
+			h.forwardDeny(w, r, "browser certificate names no valid user")
+			return
+		}
 	default:
 		if !cfg.AllowWeakIdentity {
 			h.forwardDeny(w, r, "no client certificate and weak (IP) identity is disabled")
@@ -139,6 +150,17 @@ func (h *Handler) apiForwardAuth(w http.ResponseWriter, r *http.Request) {
 		h.forwardDeny(w, r, "certificate device id does not match the registered certificate")
 		return
 	}
+	if certUser != "" && cfg.RequireSameUser {
+		_, _, activeUser, err := h.repo.GetDeviceLostFacts(r.Context(), res.DeviceID)
+		if err != nil {
+			h.forwardUnavailable(w, r, err)
+			return
+		}
+		if activeUser == "" || activeUser != certUser {
+			h.forwardDeny(w, r, "certificate user is not the device's active user")
+			return
+		}
+	}
 	state, _, _, err := h.postureVerdict(r.Context(), res.DeviceID, now)
 	if err != nil {
 		h.forwardUnavailable(w, r, err)
@@ -151,6 +173,7 @@ func (h *Handler) apiForwardAuth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(headerDeviceID, res.DeviceID)
 	w.Header().Set(headerPosture, string(state))
 	w.Header().Set(headerIdentityStrength, strengthOf(identity))
+	w.Header().Set(headerUser, certUser)
 	writeAPIJSON(w, http.StatusOK, map[string]any{"allowed": true})
 }
 
