@@ -72,6 +72,9 @@ func registerRoutes(r chi.Router, repo *db.Repository, hub *gateway.GatewayHub, 
 		// certificate whenever the device holds an active one). It must sit outside the mTLS
 		// gate so a device with no certificate yet can obtain its first one in required mode.
 		r.Post("/cert/renew", h.RenewDeviceCert)
+		// Network and browser certificates: requires the bearer token AND the agent client
+		// certificate from the TLS handshake (checked in the handler), whatever the mTLS mode.
+		r.Post("/cert/issue", h.IssuePurposeCert)
 
 		// Gated endpoints: an agent below the minimum supported version is refused here with
 		// HTTP 426 (it must update first). Downloads use the public /dist path, so a 426 here

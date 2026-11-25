@@ -147,6 +147,10 @@ func resetDeviceIdentity(tokenPath string) error {
 		wipeKeyPath(tokenPath),
 		filepath.Join(dir, "enrollment-token"), // one-time bootstrap token file
 	}
+	// The network key and certificate belong to this device's identity too.
+	for _, p := range networkCertFiles(tokenPath).all() {
+		targets = append(targets, p)
+	}
 	var firstErr error
 	for _, p := range targets {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {

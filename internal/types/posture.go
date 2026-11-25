@@ -71,6 +71,10 @@ type AccessIdentity struct {
 	MAC             string // any common notation; normalised to aa:bb:cc:dd:ee:ff
 	IP              string // last IP the device checked in from
 	User            string // last active desktop user reported by the agent
+	// CertPurposes limits a certificate lookup to certificates of these purposes. Empty
+	// matches any purpose; a connector should always name its own (RADIUS: network,
+	// forward-auth: browser) so a certificate issued for something else never matches.
+	CertPurposes []CertPurpose
 }
 
 // Weak reports whether the identity rests only on spoofable hints (MAC, IP, user).

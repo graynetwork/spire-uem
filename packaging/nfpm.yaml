@@ -17,6 +17,12 @@ depends:
   - gir1.2-gtk-4.0
   - gir1.2-adw-1
 
+# libnss3-tools provides certutil and pk12util, which spire-hub uses to put the per-user
+# browser certificate in the user's NSS database. Without it browser certificates are not
+# installed and spire-hub says so.
+recommends:
+  - libnss3-tools
+
 contents:
   - src: ./bin/spired
     dst: /usr/local/bin/spired
@@ -48,6 +54,14 @@ contents:
 
   - src: ./packaging/desktop/spire-hub.desktop
     dst: /usr/share/applications/spire-hub.desktop
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  # Starts spire-hub's browser certificate loop (no window) at login.
+  - src: ./packaging/desktop/spire-hub-browser-cert.desktop
+    dst: /etc/xdg/autostart/spire-hub-browser-cert.desktop
     file_info:
       mode: 0644
       owner: root

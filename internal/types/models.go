@@ -37,6 +37,9 @@ const (
 	PolicyTypeNetworkProfile   PolicyType = "NETWORK_PROFILE"
 	PolicyTypeUSBDeviceControl PolicyType = "USB_DEVICE_CONTROL"
 	PolicyTypeAuditdRules      PolicyType = "AUDITD_RULES"
+	// PolicyTypeBrowserCertificate turns on per-user browser certificates and sets the
+	// browsers to present them automatically.
+	PolicyTypeBrowserCertificate PolicyType = "BROWSER_CERTIFICATE"
 )
 
 // DeploymentRing represents the phased patch deployment ring of a device or policy.
@@ -400,6 +403,23 @@ type TrustedCACertificatesPayload struct {
 	Certificates []TrustedCACertificate `json:"certificates"`
 }
 
+// Browser families a BROWSER_CERTIFICATE policy can configure.
+const (
+	BrowserFamilyChromium = "chromium" // Google Chrome, Chromium, Brave, Edge
+	BrowserFamilyFirefox  = "firefox"
+)
+
+// BrowserCertificatePayload defines the payload for BROWSER_CERTIFICATE policies.
+type BrowserCertificatePayload struct {
+	// AutoSelectURLs are Chrome AutoSelectCertificateForUrls URL patterns (for example
+	// "https://apps.example.com" or "[*.]example.com"). Chromium-family browsers present the
+	// browser certificate to these sites without a prompt.
+	AutoSelectURLs []string `json:"auto_select_urls"`
+	// Browsers lists the browser families to configure: "chromium" and/or "firefox".
+	// Empty means both.
+	Browsers []string `json:"browsers,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // policy-types-b: NETWORK_PROFILE / USB_DEVICE_CONTROL / AUDITD_RULES payloads
 // ---------------------------------------------------------------------------
@@ -517,6 +537,19 @@ type NetworkProfilePayload struct {
 	WireGuard *WireGuardProfile  `json:"wireguard,omitempty"`
 }
 
+// ClientCertSource names where a NETWORK_PROFILE's EAP-TLS client certificate comes from.
+type ClientCertSource string
+
+const (
+	// ClientCertSourceInline is today's behaviour: the admin pastes client_cert and client_key.
+	// The empty string means the same.
+	ClientCertSourceInline ClientCertSource = "inline"
+	// ClientCertSourceDevice means the agent uses the device's own network certificate: a
+	// per-device key generated on the endpoint and a certificate issued by the device CA.
+	// client_cert and client_key must be empty and eap must be tls.
+	ClientCertSourceDevice ClientCertSource = "device"
+)
+
 // WifiProfile holds Wi-Fi connection settings.
 type WifiProfile struct {
 	SSID     string       `json:"ssid"`
@@ -531,6 +564,9 @@ type WifiProfile struct {
 	ClientCert string         `json:"client_cert,omitempty"` // PEM text (EAP-TLS)
 	ClientKey  SecretEnvelope `json:"client_key,omitempty"`  // PEM text (EAP-TLS); encrypted at rest via envelope
 	Password   SecretEnvelope `json:"password,omitempty"`    // PEAP-MSCHAPv2 password (and EAP-TLS key passphrase)
+	// ClientCertSource says where the EAP-TLS client certificate comes from: "" or "inline"
+	// (the admin pastes client_cert and client_key) or "device" (SpireUEM issues it).
+	ClientCertSource ClientCertSource `json:"client_cert_source,omitempty"`
 }
 
 // WiredDot1xProfile holds wired 802.1X connection settings.
@@ -541,6 +577,8 @@ type WiredDot1xProfile struct {
 	ClientCert string         `json:"client_cert,omitempty"`
 	ClientKey  SecretEnvelope `json:"client_key,omitempty"` // PEM text (EAP-TLS); encrypted at rest via envelope
 	Password   SecretEnvelope `json:"password,omitempty"`
+	// ClientCertSource: see WifiProfile.ClientCertSource.
+	ClientCertSource ClientCertSource `json:"client_cert_source,omitempty"`
 }
 
 // WireGuardProfile holds a WireGuard VPN interface definition. No private key is ever present.
@@ -733,6 +771,54 @@ type DeviceCertRenewRequest struct {
 type DeviceCertRenewResponse struct {
 	DeviceCertificatePEM string `json:"device_certificate_pem"`
 	DeviceCertNotAfter   string `json:"device_cert_not_after"`
+}
+
+// CertPurpose names what a device-CA certificate may be used for. Every certificate has
+// exactly one purpose and its own private key, and every consumer accepts only its own
+// purpose: the agent API accepts only CertPurposeAgent, RADIUS only CertPurposeNetwork and
+// reverse-proxy forward-auth only CertPurposeBrowser.
+type CertPurpose string
+
+const (
+	// CertPurposeAgent is the agent's REST/WebSocket mTLS identity. Its key is root-only.
+	CertPurposeAgent CertPurpose = "agent"
+	// CertPurposeNetwork is used by NetworkManager for EAP-TLS (802.1X, Wi-Fi, VPN). Its key
+	// is root-only and separate from the agent key.
+	CertPurposeNetwork CertPurpose = "network"
+	// CertPurposeBrowser is a per-user certificate whose key lives in the desktop user's
+	// browser key store, so that user (and only that user) can read it.
+	CertPurposeBrowser CertPurpose = "browser"
+)
+
+// Valid reports whether p is one of the known purposes.
+func (p CertPurpose) Valid() bool {
+	switch p {
+	case CertPurposeAgent, CertPurposeNetwork, CertPurposeBrowser:
+		return true
+	}
+	return false
+}
+
+// DeviceCertIssueRequest is sent by spired to POST /api/v1/desktop/cert/issue to obtain a
+// network or browser certificate. It requires the bearer token AND the device's current agent
+// client certificate. The agent purpose is NOT issued here (use /cert/renew).
+type DeviceCertIssueRequest struct {
+	Purpose CertPurpose `json:"purpose"`
+	// CSRPEM is a PEM PKCS#10 request for a FRESH ECDSA P-256 key used only for this purpose.
+	CSRPEM string `json:"csr_pem"`
+	// User is the local account name a browser certificate is for (spired takes it from the
+	// IPC peer's uid, never from the desktop client). Required for browser, empty otherwise.
+	User string `json:"user,omitempty"`
+}
+
+// DeviceCertIssueResponse carries the issued leaf and the device CA certificate (the CA is
+// what RADIUS servers and proxies must trust; the agent may also show it to the user).
+type DeviceCertIssueResponse struct {
+	Purpose              CertPurpose `json:"purpose"`
+	DeviceCertificatePEM string      `json:"device_certificate_pem"`
+	DeviceCACertPEM      string      `json:"device_ca_certificate_pem"`
+	NotAfter             string      `json:"not_after"`
+	Serial               string      `json:"serial"`
 }
 
 // AssignedPolicy is returned to a device during check-in.

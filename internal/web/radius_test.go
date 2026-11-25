@@ -104,8 +104,8 @@ func (e *radEnv) device(state types.PostureState, tags ...string) radDev {
 	serialHex := fmt.Sprintf("%x", n)
 	e.exec(`INSERT INTO device_attributes (device_id, key, value_type, value, source)
 		VALUES ($1,'net.primary_mac','string',to_jsonb($2::text),'inventory')`, d.ID, mac)
-	e.exec(`INSERT INTO device_certificates (device_id, serial, fingerprint_sha256, not_before, not_after)
-		VALUES ($1,$2,$3,NOW()-interval '1 hour',NOW()+interval '1 day')`, d.ID, fmt.Sprint(n), fmt.Sprintf("%064x", n))
+	e.exec(`INSERT INTO device_certificates (device_id, serial, fingerprint_sha256, purpose, not_before, not_after)
+		VALUES ($1,$2,$3,'network',NOW()-interval '1 hour',NOW()+interval '1 day')`, d.ID, fmt.Sprint(n), fmt.Sprintf("%064x", n))
 	if state != "" {
 		e.posture(d.ID, state, time.Hour)
 	}

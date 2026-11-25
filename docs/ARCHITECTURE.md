@@ -90,6 +90,17 @@ Built-in TLS uses `tls.VerifyClientCertIfGiven` with the device CA pool. Every p
 
 `required` mode is refused in combination with a trusted TLS proxy (`SPIRE_TRUST_PROXY`): SpireUEM reads the client certificate from the TLS handshake it terminates itself and never trusts a forwarded client-certificate header. Agents may additionally pin the control-plane's TLS trust with `server_ca_file` and/or `server_ca_sha256`, replacing the system root store for the server connection; doing so removes the first-contact trust window in the wipe-signing key.
 
+### Network certificate life cycle (EAP-TLS)
+
+The device CA issues each device a second certificate for 802.1X and Wi-Fi, with its own key, so the agent's mTLS key is never given to NetworkManager. Every certificate records a purpose (`agent`, `network`, `browser`) in `device_certificates`. Only an `agent` certificate authenticates the agent API; only a `network` certificate identifies a device to RADIUS.
+
+1. **Need.** A `NETWORK_PROFILE` (Wi-Fi enterprise or wired 802.1X) with `client_cert_source: device` needs the certificate. It must use EAP-TLS and carry no pasted certificate, key or password, so it holds no secret and attestation withholding never applies to it.
+2. **Request.** After each check-in, `spired` tells its network certificate manager whether any assigned profile needs the certificate. While one does, and no valid certificate is held, the agent generates a fresh ECDSA P-256 key, sends only a CSR with purpose `network` to `POST /api/v1/desktop/cert/issue` (bearer token plus the agent certificate in the TLS handshake), and checks the answer: the certificate must be for that key, inside its validity window and name a device. The server never sees the key.
+3. **Storage.** `network.key` (0600), `network.crt` and `device-ca.crt` sit beside the agent key in the root-only token directory. The agent stages the new key and certificate, checks that they match, then swaps both in. A key and certificate that do not match, for example after a crash between the two renames, count as missing and are replaced on the next pass. After a successful request the agent triggers a check-in so the profile is applied at once.
+4. **Use.** The keyfile written for NetworkManager names `client-cert` and `private-key` by absolute path (no inline copy, `private-key-password-flags=4` because the key is an unencrypted PKCS#8 file), and the EAP identity defaults to the device id. Until a valid pair exists the profile is reported non-compliant and no keyfile is written; an existing keyfile is left alone.
+5. **Renewal.** At about two thirds of the lifetime (30 days by default) the agent requests a new certificate with a new key. If that fails, it keeps the current pair and retries with backoff (1 minute, doubling, at most 30 minutes). The server keeps the newest two network certificates per device, so the old one works until the swap.
+6. **Removal.** When no assigned profile uses the device certificate any more, the agent deletes the key, certificate and CA copy. It does nothing until a check-in has told it what is assigned, so a restart never deletes them. `spired --reset-identity` removes them too. Revoking the device, or one certificate, makes RADIUS refuse it at the next authentication.
+
 ## 3. Local IPC
 
 `spired` creates `/run/spire/agent.sock` with mode `0666` so the desktop user can connect. For every accepted socket, it reads Linux peer credentials with `SO_PEERCRED`:
@@ -101,6 +112,8 @@ Built-in TLS uses `tls.VerifyClientCertIfGiven` with the device CA pool. Every p
 This restricts unprivileged cross-user access. It does not defend against root, and it should not be described as a complete local isolation boundary.
 
 The IPC routes are `GET /v1/status`, `POST /v1/sync`, `GET /v1/catalog`, `POST /v1/install`, and `POST /v1/uninstall`.
+
+Two more routes serve browser certificates (section 12c): `GET /v1/browser-cert/config` and `POST /v1/browser-cert/issue`. The issue route takes the account name from the caller's uid, never from the request.
 
 ## 4. TPM attestation
 
@@ -736,7 +749,7 @@ Why this and not the alternatives:
 ### Event kinds and workflows
 
 Policy, campaign and destructive device events (`policy_*`, `campaign_*`, `device_revoked`,
-`device_marked_lost`, `device_wiped`, `device_quarantined`, `device_released`) are webhook-only. They are not in `workflows.AllEventKinds`:
+`device_marked_lost`, `device_wiped`, `device_quarantined`, `device_released`, `device_cert_revoked`) are webhook-only. They are not in `workflows.AllEventKinds`:
 workflow trigger validation rejects them, `EmitEvent` does not write them to `workflow_events`, and
 `Engine.ProcessEvent` ignores any such event that reaches it. Reason: a workflow reacting to an
 admin's own action or to the campaign it started invites loops, and device-less events have nothing
@@ -785,6 +798,45 @@ identity, posture) and measures roughly 0.5 ms per request on a local database, 
 would delay the effect of a quarantine, which is what connectors exist to enforce.
 
 See `docs/ACCESS_PROXY.md` and `docs/ACCESS_AUTHENTIK.md`.
+## 12c. Browser certificates (internal/ipc/browser_cert.go, cmd/spire-hub, internal/engine/browser_cert.go)
+
+Each desktop user can hold one certificate per device from the device CA, so forward-auth can identify the device and the
+user instead of an address. The agent certificate, the network certificate and the browser certificate chain to the same
+CA, but each has its own key and purpose (`device_certificates.purpose`); only a browser certificate is accepted by
+forward-auth.
+
+Flow:
+
+1. An administrator assigns a `BROWSER_CERTIFICATE` policy. The agent (root) writes a managed policy file of its own for
+   Chrome, Chromium, Brave and Edge (`AutoSelectCertificateForUrls`, issuer filter `SpireUEM Device CA`) and merges one
+   preference (`security.default_personal_cert`) into Firefox's `policies.json`, recording what it replaced. Removal
+   deletes exactly those files and restores the preference. A `policies.json` that does not parse is left alone and the
+   policy reports failed.
+2. `spire-hub` runs as the user (a window-less loop started from `/etc/xdg/autostart`, and inside the GTK client). It
+   asks `GET /v1/browser-cert/config` whether the policy is assigned. If so it generates an EC P-256 key **inside**
+   `~/.pki/nssdb` with `certutil -R` and posts only the CSR to `POST /v1/browser-cert/issue`.
+3. `spired` takes the account name from `SO_PEERCRED` (`os/user`). It refuses root, uids below `max(1000, UID_MIN)`,
+   uid 65534 and above, names that fail `crypto.ValidCertUser`, any request while no policy is assigned, a CSR that is
+   not a self-signed ECDSA P-256 request, and more than 6 requests per hour per uid. It forwards the CSR to
+   `POST /api/v1/desktop/cert/issue` with purpose `browser` over its own mTLS client and bearer token.
+4. The server issues a 7-day leaf (`spire://device/<id>`, `spire://user/<name>`, CN `<name>@<id>`), keeps at most two live
+   per device and user, and caps a device at eight users.
+5. `spire-hub` imports the leaf with `certutil -A`, checks that it bound to the key it generated, imports the device CA
+   with no trust, removes older SpireUEM entries and their keys, and renews after two thirds of the lifetime. Firefox
+   profiles (`~/.mozilla/firefox`, snap and flatpak paths) get the same certificate and key through a `pk12util`
+   bundle; the one-time password is passed in a 0600 file on tmpfs, not on a command line. A shared PKCS#11 module was
+   not used because Firefox cannot be pointed at a user database through policy.
+
+Failure behaviour: no `certutil` means one logged line and a short message in the client; a failed renewal keeps the
+current certificate; a failed first enrolment removes the key it generated. Nothing SpireUEM did not add is listed or
+changed in a key store (its entries all start with `SpireUEM Browser Certificate`).
+
+Forward-auth additionally returns the user in `X-Spire-User` and has an optional `access.require_same_user` setting.
+Known gaps: the user can copy their own key; there are no TPM-bound keys; Snap/Flatpak Chromium-family stores are not
+handled; the Chromium and Firefox policy files cover the system packages only.
+
+See `docs/ACCESS_PROXY.md`.
+
 ## 13. RADIUS / NAC connector (internal/radius, internal/db/radius.go)
 
 A connector, not an identity provider: FreeRADIUS calls `POST /api/admin/v1/access/radius/authorize`

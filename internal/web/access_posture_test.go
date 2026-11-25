@@ -501,7 +501,14 @@ type issued struct {
 	fp     string
 }
 
+// issueFrom issues a browser certificate for user "alice", the kind forward-auth accepts.
 func issueFrom(t *testing.T, ca *crypto.FileDeviceCA, deviceID string, validity time.Duration) issued {
+	t.Helper()
+	return issueFor(t, ca, deviceID, crypto.CertPurposeBrowser, "alice", validity)
+}
+
+// issueFor issues a certificate of the given purpose (and user, for a browser certificate).
+func issueFor(t *testing.T, ca *crypto.FileDeviceCA, deviceID, purpose, user string, validity time.Duration) issued {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -511,7 +518,7 @@ func issueFrom(t *testing.T, ca *crypto.FileDeviceCA, deviceID string, validity 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ic, err := ca.IssueFromCSR(csr, deviceID, validity)
+	ic, err := ca.IssueWithOptions(csr, crypto.IssueOptions{DeviceID: deviceID, Purpose: purpose, User: user, Validity: validity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +537,7 @@ func newTestCA(t *testing.T) *crypto.FileDeviceCA {
 }
 
 func (e *apiEnv) register(d *types.Device, c issued) {
-	if _, err := e.repo.StoreDeviceCertificate(context.Background(), d.ID, c.serial, c.fp, time.Now().Add(-time.Minute), time.Now().Add(time.Hour)); err != nil {
+	if _, err := e.repo.StoreDeviceCertificateFor(context.Background(), d.ID, types.CertPurposeBrowser, "alice", c.serial, c.fp, time.Now().Add(-time.Minute), time.Now().Add(time.Hour)); err != nil {
 		e.t.Fatal(err)
 	}
 }

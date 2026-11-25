@@ -33,23 +33,32 @@ func buildNetworkProfilePayload(r *http.Request) (json.RawMessage, error) {
 			w.EAP = types.EAPMethod(strings.TrimSpace(r.FormValue("np_wifi_eap")))
 			w.Identity = strings.TrimSpace(r.FormValue("np_wifi_identity"))
 			w.CACert = r.FormValue("np_wifi_ca_cert")
-			w.ClientCert = r.FormValue("np_wifi_client_cert")
-			w.ClientKey = types.SecretEnvelope{Plaintext: r.FormValue("np_wifi_client_key")}
-			w.Password = types.SecretEnvelope{Plaintext: r.FormValue("np_wifi_password")}
+			w.ClientCertSource = types.ClientCertSource(strings.TrimSpace(r.FormValue("np_wifi_client_cert_source")))
+			// With the SpireUEM-issued certificate the paste fields are hidden in the form;
+			// whatever they still hold is dropped, not stored.
+			if w.ClientCertSource != types.ClientCertSourceDevice {
+				w.ClientCert = r.FormValue("np_wifi_client_cert")
+				w.ClientKey = types.SecretEnvelope{Plaintext: r.FormValue("np_wifi_client_key")}
+				w.Password = types.SecretEnvelope{Plaintext: r.FormValue("np_wifi_password")}
+			}
 		default:
 			return nil, fmt.Errorf("invalid wifi security %q", sec)
 		}
 		payload.Wifi = w
 
 	case types.NetworkProfileWiredDot1x:
-		payload.Wired = &types.WiredDot1xProfile{
-			EAP:        types.EAPMethod(strings.TrimSpace(r.FormValue("np_wired_eap"))),
-			Identity:   strings.TrimSpace(r.FormValue("np_wired_identity")),
-			CACert:     r.FormValue("np_wired_ca_cert"),
-			ClientCert: r.FormValue("np_wired_client_cert"),
-			ClientKey:  types.SecretEnvelope{Plaintext: r.FormValue("np_wired_client_key")},
-			Password:   types.SecretEnvelope{Plaintext: r.FormValue("np_wired_password")},
+		wired := &types.WiredDot1xProfile{
+			EAP:              types.EAPMethod(strings.TrimSpace(r.FormValue("np_wired_eap"))),
+			Identity:         strings.TrimSpace(r.FormValue("np_wired_identity")),
+			CACert:           r.FormValue("np_wired_ca_cert"),
+			ClientCertSource: types.ClientCertSource(strings.TrimSpace(r.FormValue("np_wired_client_cert_source"))),
 		}
+		if wired.ClientCertSource != types.ClientCertSourceDevice {
+			wired.ClientCert = r.FormValue("np_wired_client_cert")
+			wired.ClientKey = types.SecretEnvelope{Plaintext: r.FormValue("np_wired_client_key")}
+			wired.Password = types.SecretEnvelope{Plaintext: r.FormValue("np_wired_password")}
+		}
+		payload.Wired = wired
 
 	case types.NetworkProfileWireGuard:
 		wg := &types.WireGuardProfile{
@@ -181,6 +190,20 @@ func buildAuditdRulesPayload(r *http.Request) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.Marshal(payload)
+}
+
+// checkNetworkProfileCertSource enforces the client_cert_source rules on a NETWORK_PROFILE
+// payload that did not come through buildNetworkProfilePayload (raw JSON bodies and the raw
+// "payload" form field). Other policy types pass.
+func checkNetworkProfileCertSource(policyType types.PolicyType, payload json.RawMessage) error {
+	if policyType != types.PolicyTypeNetworkProfile {
+		return nil
+	}
+	var p types.NetworkProfilePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return fmt.Errorf("invalid NETWORK_PROFILE payload: %v", err)
+	}
+	return engine.ValidateNetworkProfileClientCertSource(p)
 }
 
 // sealPolicyPayloadSecrets seals plaintext secrets in a payload with the server KEK before persist.

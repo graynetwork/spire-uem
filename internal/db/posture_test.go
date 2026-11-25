@@ -169,6 +169,18 @@ func TestResolveAccessIdentity(t *testing.T) {
 	// The strongest field decides: a valid serial wins over a shared IP.
 	one("serial beats ip", types.AccessIdentity{CertSerial: serial, IP: ip}, dev.ID)
 
+	// Purpose filter: the seeded certificate is an agent certificate, so a connector that
+	// asks only for network or browser certificates must not match it.
+	one("serial, agent purpose", types.AccessIdentity{CertSerial: serial, CertPurposes: []types.CertPurpose{types.CertPurposeAgent}}, dev.ID)
+	one("serial, network purpose only", types.AccessIdentity{CertSerial: serial, CertPurposes: []types.CertPurpose{types.CertPurposeNetwork}})
+	one("fingerprint, browser purpose only", types.AccessIdentity{CertFingerprint: fp, CertPurposes: []types.CertPurpose{types.CertPurposeBrowser}})
+	netSerial := "7" + suffix
+	if _, err := repo.StoreDeviceCertificateFor(ctx, dev.ID, types.CertPurposeNetwork, "", netSerial, "ef"+suffix, time.Now().Add(-time.Hour), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	one("network serial, network purpose", types.AccessIdentity{CertSerial: netSerial, CertPurposes: []types.CertPurpose{types.CertPurposeNetwork}}, dev.ID)
+	one("network serial, browser purpose", types.AccessIdentity{CertSerial: netSerial, CertPurposes: []types.CertPurpose{types.CertPurposeBrowser}})
+
 	// Lost and revoked devices never resolve.
 	mustExec(`UPDATE devices SET is_lost = TRUE WHERE id = $1`, other.ID)
 	one("lost device excluded", types.AccessIdentity{IP: ip}, dev.ID)

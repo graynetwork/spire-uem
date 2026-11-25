@@ -40,6 +40,10 @@ func (h *Handler) issueAndStoreCert(ctx context.Context, deviceID, csrPEM, audit
 	if _, err := h.repo.StoreDeviceCertificate(ctx, deviceID, issued.Serial, issued.FingerprintSHA256, issued.NotBefore, issued.NotAfter); err != nil {
 		return "", time.Time{}, err
 	}
+	// Keep only the new agent certificate and its predecessor live, as for other purposes.
+	if _, err := h.repo.PruneDeviceCertificates(ctx, deviceID, types.CertPurposeAgent, "", keepCertsPerSubject); err != nil {
+		log.Printf("[api] warning: prune agent certificates for device %s: %v", deviceID, err)
+	}
 	action := auditAction
 	if action == "" {
 		action = "DEVICE_CERT_ISSUE"
@@ -75,7 +79,8 @@ func (h *Handler) RenewDeviceCert(w http.ResponseWriter, r *http.Request) {
 	// certificate (enrolled before mTLS, issuance failed at claim, or its certificate expired
 	// while offline): it may obtain a first certificate with its bearer token alone, which
 	// grants nothing the token did not already grant. Once it holds an active certificate,
-	// every further issuance requires that certificate.
+	// every further issuance requires that certificate. A device whose agent certificate an
+	// admin revoked is also refused until an admin re-approves issuance (migration 072).
 	presented := clientCertFromRequest(r)
 	auditAction := "DEVICE_CERT_RENEW"
 	if presented == nil {
@@ -86,6 +91,17 @@ func (h *Handler) RenewDeviceCert(w http.ResponseWriter, r *http.Request) {
 		}
 		if active != nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "renewal requires the device's current client certificate"})
+			return
+		}
+		// An admin revoked this device's agent certificate: the bearer token alone must not
+		// replace it. An unreadable flag denies as well.
+		blocked, err := h.repo.DeviceCertReapprovalRequired(r.Context(), dev.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "certificate lookup failed"})
+			return
+		}
+		if blocked {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "certificate issuance for this device was revoked by an administrator and needs re-approval"})
 			return
 		}
 		auditAction = "DEVICE_CERT_ISSUE"
@@ -144,6 +160,12 @@ func (h *Handler) verifyClientCertForDevice(ctx context.Context, cert *x509.Cert
 	}
 	if rec == nil {
 		return http.StatusForbidden, errors.New("client certificate is not recognised")
+	}
+	// Only the agent's own certificate authenticates the agent API. A network or browser
+	// certificate chains to the same CA and names the same device, but its key is held by
+	// NetworkManager or by the desktop user, so it must never stand in for the agent.
+	if rec.Purpose != types.CertPurposeAgent {
+		return http.StatusForbidden, errors.New("client certificate is not an agent certificate")
 	}
 	if rec.Revoked() {
 		return http.StatusForbidden, errors.New("client certificate has been revoked")

@@ -34,16 +34,17 @@ func (h *Handler) AccessProxyPage(w http.ResponseWriter, r *http.Request) {
 		cidrs = append(cidrs, p.String())
 	}
 	data := map[string]any{
-		"Title":      "Access proxy (forward-auth)",
-		"ActiveNav":  "access_proxy",
-		"AdminUser":  AdminUserFromContext(r.Context()),
-		"AdminRole":  string(AdminRoleFromContext(r.Context())),
-		"CSRFToken":  CSRFTokenFromContext(r.Context()),
-		"TrustedCSV": strings.Join(cidrs, "\n"),
-		"IPHeader":   cfg.IPHeader,
-		"CertHeader": cfg.CertHeader,
-		"AllowWeak":  cfg.AllowWeakIdentity,
-		"Saved":      r.URL.Query().Get("saved") == "1",
+		"Title":           "Access proxy (forward-auth)",
+		"ActiveNav":       "access_proxy",
+		"AdminUser":       AdminUserFromContext(r.Context()),
+		"AdminRole":       string(AdminRoleFromContext(r.Context())),
+		"CSRFToken":       CSRFTokenFromContext(r.Context()),
+		"TrustedCSV":      strings.Join(cidrs, "\n"),
+		"IPHeader":        cfg.IPHeader,
+		"CertHeader":      cfg.CertHeader,
+		"AllowWeak":       cfg.AllowWeakIdentity,
+		"RequireSameUser": cfg.RequireSameUser,
+		"Saved":           r.URL.Query().Get("saved") == "1",
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "layout.html", data); err != nil {
@@ -83,6 +84,7 @@ func (h *Handler) SaveAccessProxy(w http.ResponseWriter, r *http.Request) {
 		next.CertHeader = ch
 	}
 	next.AllowWeakIdentity = r.FormValue("allow_weak_identity") == "on"
+	next.RequireSameUser = r.FormValue("require_same_user") == "on"
 
 	prev, err := h.repo.GetAccessProxySettings(r.Context())
 	if err != nil {
@@ -107,6 +109,7 @@ func (h *Handler) SaveAccessProxy(w http.ResponseWriter, r *http.Request) {
 			"ip_header_before": prev.IPHeader, "ip_header_after": next.IPHeader,
 			"cert_header_before": prev.CertHeader, "cert_header_after": next.CertHeader,
 			"allow_weak_identity_before": prev.AllowWeakIdentity, "allow_weak_identity_after": next.AllowWeakIdentity,
+			"require_same_user_before": prev.RequireSameUser, "require_same_user_after": next.RequireSameUser,
 		})
 	}
 	http.Redirect(w, r, "/admin/access-proxy?saved=1", http.StatusSeeOther)

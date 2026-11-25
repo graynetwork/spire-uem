@@ -31,6 +31,9 @@ credential's tag scope. Out-of-scope objects are reported as `404`, not `403`.
 | `POST /campaigns/{id}/start`, `/pause`, `/resume`, `/cancel` | `campaigns:write` | Security Admin |
 | `GET /audit/events` | `audit:read` | Auditor |
 | `GET /devices/{id}/posture`, `GET /posture/lookup`, `GET /access/forward-auth` | `posture:read` | Auditor |
+| `GET /devices/{id}/certificates` | `devices:read` | Auditor |
+| `POST /devices/{id}/certificates/{cert_id}/revoke`, `/certificates/reapprove` | `devices:actions` | Security Admin |
+| `GET /pki/device-ca` | none: any valid credential | Auditor |
 
 `groups:write` exists but no v1 endpoint uses it yet.
 
@@ -156,3 +159,29 @@ Admin-page endpoints (session or Basic auth, CSRF for cookies): `GET /admin/radi
 `POST /admin/radius/nas/{id}`, `POST /admin/radius/nas/{id}/delete`. NAS responses never contain
 the shared secret; a generated one is returned once by create.
 
+## Device certificates
+
+`GET /devices/{id}/certificates` lists a device's agent, network and browser certificates, newest first. It
+is paginated like the other lists. `?active=true` leaves out revoked and expired ones. Each item has `id`,
+`device_id`, `purpose`, `user` (browser certificates only, otherwise `null`), `serial`, `fingerprint_sha256`,
+`not_before`, `not_after`, `revoked_at`, `status` (`active`, `expired` or `revoked`) and `created_at`. It is
+public metadata; the server never holds a private key.
+
+`POST /devices/{id}/certificates/{cert_id}/revoke` revokes one certificate. It needs `devices:actions` and a
+Security Admin role cap, follows the tag scope, accepts an `Idempotency-Key`, is audited as
+`DEVICE_CERT_REVOKE` and raises the `device_cert_revoked` webhook event. A certificate id that does not belong to
+the device in the path is `404`, the same as an unknown id. A certificate that is already revoked is `409`
+(`already_revoked`). The response is `{"data": {"certificate": {...}, "reapproval_required": bool}}`;
+`reapproval_required` is true after an agent certificate was revoked.
+
+`POST /devices/{id}/certificates/reapprove` lets a device whose agent certificate was revoked request a new one
+with its bearer token again. Same scope and role as revoke; audited as `DEVICE_CERT_REAPPROVE`; repeating it is
+harmless (`was_blocked` is `false`). See the runbook for what revoking each purpose does.
+
+`GET /pki/device-ca` returns `{"data": {"subject", "not_before", "not_after", "fingerprint_sha256", "pem"}}`,
+the CA certificate that signs device certificates. It is public, so any valid service account or token may read
+it and no scope, role or tag check applies. It is `404` (`no_device_ca`) when device mTLS is off.
+
+Admin-page equivalents (session or Basic auth, CSRF for cookies): `POST /admin/devices/{id}/certificates/{cert_id}/revoke`,
+`POST /admin/devices/{id}/certificates/reapprove` (Security Admin and up), `GET /admin/device-ca` and
+`GET /admin/device-ca.pem` (any signed-in admin).

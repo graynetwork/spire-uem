@@ -1,0 +1,54 @@
+# EAP module for certificate-only 802.1X (EAP-TLS) with SpireUEM device certificates.
+#
+# Install: copy to /etc/freeradius/mods-available/eap (replacing the stock module, which
+# enables MD5, PEAP and more) or merge the tls-config block into your own eap module.
+#
+# What it does:
+#   * EAP-TLS is the only method. A device that cannot present a certificate has nothing to
+#     fall back to.
+#   * The client certificate must chain to the SpireUEM DEVICE CA (device-ca.pem below), and
+#     only that CA. This is the CA certificate the server returns with every issued
+#     certificate (DeviceCACertPEM) and that the agent stores as device-ca.crt. Do not add
+#     your corporate CA here: any certificate it signed would then pass the TLS handshake.
+#   * The device CA signs three kinds of certificate (agent, network, browser). FreeRADIUS
+#     cannot tell them apart; SpireUEM can. The site policy passes the certificate serial to
+#     SpireUEM, which accepts only a NETWORK certificate of a device in good standing. See
+#     sites-available/spire-nac.
+#   * The server certificate (server.pem / server.key) is the one the supplicant checks. It
+#     is NOT issued by the device CA. Use your own RADIUS server CA, and give its CA
+#     certificate to the devices as the ca_cert of the NETWORK_PROFILE.
+#
+# Tested with FreeRADIUS 3.2.7 and a real supplicant (eapol_test): scripts/test_radius.sh.
+
+eap {
+	default_eap_type = tls
+	timer_expire     = 60
+	ignore_unknown_eap_types = no
+	cisco_accounting_username_bug = no
+	max_sessions = ${max_requests}
+
+	tls-config tls-common {
+		private_key_file = ${certdir}/server.key
+		certificate_file = ${certdir}/server.pem
+
+		# Trust ONLY the SpireUEM device CA for client certificates.
+		ca_file = ${certdir}/device-ca.pem
+
+		tls_min_version = "1.2"
+		tls_max_version = "1.3"
+		cipher_list = "DEFAULT"
+
+		# The device CA does not publish a CRL. Revocation is decided by SpireUEM on every
+		# authorization (a revoked or expired certificate is refused there), so a revoked
+		# certificate that still completes the handshake is rejected right after it.
+		check_crl = no
+
+		# A client certificate is mandatory for EAP-TLS.
+		verify {
+		}
+	}
+
+	tls {
+		tls = tls-common
+	}
+}

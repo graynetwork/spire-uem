@@ -67,6 +67,9 @@ func (h *Handler) apiRadiusAuthorize(w http.ResponseWriter, r *http.Request) {
 	)
 	if req.CertSerialHex != "" || req.CertFingerprint != "" {
 		certID = true
+		// Only a NETWORK certificate counts for 802.1X: the agent and browser keys are not
+		// the ones NetworkManager presents.
+		ident.CertPurposes = []types.CertPurpose{types.CertPurposeNetwork}
 		if req.CertSerialHex != "" {
 			if ident.CertSerial, err = radius.CertSerialDecimal(req.CertSerialHex); err != nil {
 				h.radiusReject(w, r, "bad_cert_serial", "strong")
@@ -162,7 +165,7 @@ func (h *Handler) radiusResolve(r *http.Request, ident types.AccessIdentity, cer
 	}
 	if cert && ident.CertSerial != "" && ident.CertFingerprint != "" {
 		// Both supplied: they must name the same device.
-		other, err := h.repo.ResolveAccessIdentity(ctx, types.AccessIdentity{CertFingerprint: ident.CertFingerprint})
+		other, err := h.repo.ResolveAccessIdentity(ctx, types.AccessIdentity{CertFingerprint: ident.CertFingerprint, CertPurposes: ident.CertPurposes})
 		if err != nil {
 			return nil, err
 		}

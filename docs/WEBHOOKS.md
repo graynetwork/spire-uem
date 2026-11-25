@@ -117,6 +117,7 @@ Event types marked (no device) have `device: null`.
 | `posture_changed` | the device's access posture state changed (not sent for a device's first verdict) | `from`, `to`, `reasons` |
 | `device_quarantined` | an admin or workflow quarantined the device | `reason`, `actor`, `source` |
 | `device_released` | the quarantine was released | `actor`, `reason` |
+| `device_cert_revoked` | an admin revoked one of the device's certificates (page or API) | `purpose` (`agent`, `network`, `browser`), `serial`, `user` (browser certificates only, otherwise empty) |
 | `device_offline` | missed check-ins past the threshold | `offline_minutes` |
 | `agent_started` | first check-in after agent start | `agent_version` |
 | `active_session_changed` | logged-in user changed | `old`, `new` |

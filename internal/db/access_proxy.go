@@ -29,6 +29,9 @@ const (
 	SettingAccessCertHeader = "access.proxy_cert_header"
 	// SettingAccessAllowWeak lets forward-auth accept an IP address as the device identity.
 	SettingAccessAllowWeak = "access.allow_weak_identity"
+	// SettingAccessRequireSameUser makes forward-auth require that the user named by a browser
+	// certificate is the device's last reported active desktop user. Off by default.
+	SettingAccessRequireSameUser = "access.require_same_user"
 
 	// AccessCategory is the system_settings category of the keys above.
 	AccessCategory = "access"
@@ -48,6 +51,9 @@ type AccessProxySettings struct {
 	IPHeader          string // IPHeaderXForwardedFor or IPHeaderXRealIP
 	CertHeader        string // canonical-insensitive header name, "" = disabled
 	AllowWeakIdentity bool
+	// RequireSameUser denies a browser certificate whose user is not the device's last
+	// reported active desktop user.
+	RequireSameUser bool
 }
 
 // IsTrustedProxy reports whether addr belongs to one of the trusted-proxy ranges.
@@ -135,6 +141,11 @@ func (r *Repository) GetAccessProxySettings(ctx context.Context) (AccessProxySet
 			if json.Unmarshal(s.Value, &v) == nil {
 				out.AllowWeakIdentity = v
 			}
+		case SettingAccessRequireSameUser:
+			var v bool
+			if json.Unmarshal(s.Value, &v) == nil {
+				out.RequireSameUser = v
+			}
 		}
 	}
 	return out, nil
@@ -151,10 +162,11 @@ func (r *Repository) SaveAccessProxySettings(ctx context.Context, s AccessProxyS
 		hdr = IPHeaderXRealIP
 	}
 	return r.UpdateSettingsCategory(ctx, AccessCategory, map[string]interface{}{
-		SettingAccessTrustedProxies: cidrs,
-		SettingAccessIPHeader:       hdr,
-		SettingAccessCertHeader:     s.CertHeader,
-		SettingAccessAllowWeak:      s.AllowWeakIdentity,
+		SettingAccessTrustedProxies:  cidrs,
+		SettingAccessIPHeader:        hdr,
+		SettingAccessCertHeader:      s.CertHeader,
+		SettingAccessAllowWeak:       s.AllowWeakIdentity,
+		SettingAccessRequireSameUser: s.RequireSameUser,
 	}, updatedBy)
 }
 

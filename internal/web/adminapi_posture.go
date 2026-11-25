@@ -193,9 +193,10 @@ const lookupParamMax = 256
 func (h *Handler) apiPostureLookup(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var (
-		id    types.AccessIdentity
-		set   int
-		other bool
+		id      types.AccessIdentity
+		set     int
+		other   bool
+		purpose types.CertPurpose
 	)
 	for k, v := range q {
 		if len(v) != 1 || len(v[0]) > lookupParamMax || strings.TrimSpace(v[0]) == "" {
@@ -203,6 +204,13 @@ func (h *Handler) apiPostureLookup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		val := strings.TrimSpace(v[0])
+		if k == "purpose" {
+			// Optional, and only with serial or fingerprint: limits the certificate lookup to
+			// one kind of certificate, so a connector that wants a browser certificate is
+			// never answered for an agent or network certificate.
+			purpose = types.CertPurpose(strings.ToLower(val))
+			continue
+		}
 		switch k {
 		case "serial":
 			id.CertSerial = val
@@ -220,8 +228,21 @@ func (h *Handler) apiPostureLookup(w http.ResponseWriter, r *http.Request) {
 		set++
 	}
 	if other || set != 1 {
-		writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "give exactly one of: serial, fingerprint, mac, ip, user")
+		writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "give exactly one of: serial, fingerprint, mac, ip, user (serial and fingerprint also accept purpose)")
 		return
+	}
+	if purpose != "" {
+		switch purpose {
+		case types.CertPurposeAgent, types.CertPurposeNetwork, types.CertPurposeBrowser:
+		default:
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "purpose must be agent, network or browser")
+			return
+		}
+		if id.CertSerial == "" && id.CertFingerprint == "" {
+			writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "purpose can only be combined with serial or fingerprint")
+			return
+		}
+		id.CertPurposes = []types.CertPurpose{purpose}
 	}
 	if id.MAC != "" && db.NormalizeMAC(id.MAC) == "" {
 		writeAPIError(w, r, http.StatusBadRequest, "invalid_request", "mac is not a valid MAC address")

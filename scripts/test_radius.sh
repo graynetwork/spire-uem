@@ -12,13 +12,24 @@
 # and, for CoA, that a posture change makes SpireUEM send a Disconnect-Request which a real
 # FreeRADIUS (acting as the NAS) validates and ACKs, and that a wrong shared secret is not acked.
 #
-# Usage: scripts/test_radius.sh            (PG_NAME / PG_PORT / API_PORT can be overridden)
+# EAP-TLS with device certificates (needs openssl and builds a small eapol_test image):
+#   - a real spire-server (TLS, device CA) enrolls a device and issues its NETWORK certificate
+#     through the real POST /api/v1/desktop/cert/issue endpoint
+#   - eapol_test (a real 802.1X supplicant) authenticates to real FreeRADIUS with it:
+#       compliant -> accepted with the compliant VLAN; quarantined -> quarantine VLAN, or a
+#       reject when none is configured; revoked network certificate -> rejected;
+#       the device's AGENT certificate (same CA) -> rejected; a certificate from another CA
+#       -> rejected by the TLS handshake
+#
+# Usage: scripts/test_radius.sh            (PG_NAME / PG_PORT / API_PORT / TLS_PORT can be overridden)
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PG_NAME="${PG_NAME:-spire-radius-test-pg}"
 PG_PORT="${PG_PORT:-55453}"
 API_PORT="${API_PORT:-18453}"
+TLS_PORT="${TLS_PORT:-19320}"
+EAPOL_IMAGE="${EAPOL_IMAGE:-spire-eapol-test}"
 FR_PORT=11812
 FR_IMAGE="${FR_IMAGE:-freeradius/freeradius-server:3.2.7}"
 FR_NAME="spire-radius-test-fr"
@@ -26,6 +37,7 @@ DB="radius_e2e_$$"
 WORK="$(mktemp -d "${KIROCREW_SCRATCH:-${TMPDIR:-/tmp}}/radius-e2e.XXXXXX")"
 ADMINPW="radius-e2e-breakglass-pw"
 SERVER_PID=""
+TLS_PID=""
 STARTED_PG=0
 PASS=0
 FAIL=0
@@ -36,6 +48,7 @@ bad() { FAIL=$((FAIL + 1)); say "  FAIL  $*"; }
 
 cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  [ -n "$TLS_PID" ] && kill "$TLS_PID" 2>/dev/null
   docker rm -f "$FR_NAME" >/dev/null 2>&1
   if [ "$STARTED_PG" = 1 ]; then docker rm -f "$PG_NAME" >/dev/null 2>&1; else
     docker exec "$PG_NAME" psql -U spire -d postgres --command="DROP DATABASE IF EXISTS $DB" >/dev/null 2>&1
@@ -70,7 +83,7 @@ admin() { # method path json
 }
 
 # ---------------------------------------------------------------- prerequisites
-for bin in docker go curl python3; do command -v "$bin" >/dev/null || { say "missing: $bin"; exit 2; }; done
+for bin in docker go curl python3 openssl; do command -v "$bin" >/dev/null || { say "missing: $bin"; exit 2; }; done
 BRIDGE_IP="$(ip -4 -o addr show docker0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
 if [ -z "$BRIDGE_IP" ]; then say "no docker0 address; the CoA part needs a private address the server may send to"; exit 2; fi
 say "== workdir $WORK  database $DB  NAS address $BRIDGE_IP"
@@ -86,9 +99,11 @@ docker exec "$PG_NAME" psql -U spire -d postgres --command="CREATE DATABASE $DB"
 
 # ---------------------------------------------------------------- SpireUEM server
 say "== building spire-server"
-( cd "$ROOT" && go build -o "$WORK/spire-server" ./cmd/spire-server ) || exit 2
+( cd "$ROOT" && go build -o "$WORK/spire-server" ./cmd/spire-server && go build -o "$WORK/eaptls_helper" ./test/eaptls_helper ) || exit 2
+# Both server instances share this device CA (created by the first one to start).
+DEVICE_CA_ENV="SPIRE_DEVICE_CA_CERT_FILE=$WORK/device-ca.crt SPIRE_DEVICE_CA_KEY_FILE=$WORK/device-ca.key"
 start_server() {
-  DATABASE_URL="postgres://spire:spirepassword@127.0.0.1:${PG_PORT}/${DB}?sslmode=disable" \
+  env SPIRE_POSTURE_INTERVAL=24h $DEVICE_CA_ENV DATABASE_URL="postgres://spire:spirepassword@127.0.0.1:${PG_PORT}/${DB}?sslmode=disable" \
   SPIRE_LISTEN_ADDR="127.0.0.1:${API_PORT}" SPIRE_MIGRATIONS_PATH="$ROOT/migrations/000001_init_schema.up.sql" \
   SPIRE_SESSION_SECRET="radius-e2e-session-secret-key-32b-fixed" SPIRE_ADMIN_PASSWORD="$ADMINPW" \
   SPIRE_ALLOW_INSECURE_HTTP=1 SPIRE_KEK_PATH="$WORK/kek.pem" SPIRE_APT_REPO_DIR="$WORK/apt" \
@@ -103,6 +118,28 @@ start_server() {
   return 1
 }
 start_server || exit 2
+
+# A second instance that terminates TLS (the issue endpoint needs the agent's client
+# certificate in the handshake). Same database and device CA as the first.
+mkdir -p "$WORK/tls"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=spire-e2e" \
+  -addext "subjectAltName=IP:127.0.0.1" -keyout "$WORK/tls/server.key" -out "$WORK/tls/server.crt" >/dev/null 2>&1 || exit 2
+start_tls_server() {
+  env SPIRE_POSTURE_INTERVAL=24h $DEVICE_CA_ENV SPIRE_DEVICE_MTLS=optional SPIRE_TLS_CERT_FILE="$WORK/tls/server.crt" SPIRE_TLS_KEY_FILE="$WORK/tls/server.key" \
+  DATABASE_URL="postgres://spire:spirepassword@127.0.0.1:${PG_PORT}/${DB}?sslmode=disable" \
+  SPIRE_LISTEN_ADDR="127.0.0.1:${TLS_PORT}" SPIRE_MIGRATIONS_PATH="$ROOT/migrations/000001_init_schema.up.sql" \
+  SPIRE_SESSION_SECRET="radius-e2e-session-secret-key-32b-fixed" SPIRE_ADMIN_PASSWORD="$ADMINPW" \
+  SPIRE_KEK_PATH="$WORK/kek.pem" SPIRE_APT_REPO_DIR="$WORK/apt" \
+  SPIRE_BUNDLE_STORAGE_DIR="$WORK/bundles" SPIRE_WIPE_SIGNING_KEY_PATH="$WORK/wipe.key" \
+  "$WORK/spire-server" >>"$WORK/server-tls.log" 2>&1 &
+  TLS_PID=$!
+  for _ in $(seq 1 60); do
+    curl -fsS --cacert "$WORK/tls/server.crt" "https://127.0.0.1:${TLS_PORT}/api/admin/v1/openapi.json" >/dev/null 2>&1 && return 0
+    kill -0 "$TLS_PID" 2>/dev/null || { say "TLS server exited; log:"; tail -20 "$WORK/server-tls.log"; return 1; }
+    sleep 1
+  done
+  return 1
+}
 
 # Connector credential: a service account with ONLY posture:read.
 SA_JSON="$(admin POST /admin/service-accounts '{"name":"freeradius","role":"AUDITOR","scopes":["posture:read"]}')"
@@ -163,8 +200,25 @@ client coa-sender {
 	secret = coa-e2e-secret
 }
 EOF
+# EAP-TLS material for FreeRADIUS: its own server CA and server certificate (what the
+# supplicant checks) and the SpireUEM DEVICE CA as the only trust anchor for client certificates.
+mkdir -p "$FR/certs"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=radius-e2e-server-ca" \
+  -keyout "$FR/certs/server-ca.key" -out "$FR/certs/server-ca.pem" >/dev/null 2>&1 || exit 2
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=radius.e2e.test" \
+  -keyout "$FR/certs/server.key" -out "$FR/certs/server.csr" >/dev/null 2>&1 || exit 2
+printf 'extendedKeyUsage=serverAuth\nsubjectAltName=DNS:radius.e2e.test\n' >"$FR/certs/server.ext"
+openssl x509 -req -in "$FR/certs/server.csr" -CA "$FR/certs/server-ca.pem" -CAkey "$FR/certs/server-ca.key" -CAcreateserial \
+  -days 2 -extfile "$FR/certs/server.ext" -out "$FR/certs/server.leaf.pem" >/dev/null 2>&1 || exit 2
+cat "$FR/certs/server.leaf.pem" "$FR/certs/server-ca.pem" >"$FR/certs/server.pem"
+cp "$WORK/device-ca.crt" "$FR/certs/device-ca.pem"
+chmod 644 "$FR"/certs/*
 docker rm -f "$FR_NAME" >/dev/null 2>&1
 docker run -d --name "$FR_NAME" --network host \
+  -v "$ROOT/contrib/freeradius/mods-available/spire_eap_tls:/etc/freeradius/mods-available/eap:ro" \
+  -v "$FR/certs/server.pem:/etc/freeradius/certs/server.pem:ro" \
+  -v "$FR/certs/server.key:/etc/freeradius/certs/server.key:ro" \
+  -v "$FR/certs/device-ca.pem:/etc/freeradius/certs/device-ca.pem:ro" \
   -v "$FR/radiusd.conf:/etc/freeradius/radiusd.conf:ro" \
   -v "$FR/spire_token.conf:/etc/freeradius/spire_token.conf:ro" \
   -v "$FR/clients.conf:/etc/freeradius/clients.conf:ro" \
@@ -202,8 +256,8 @@ expect_reject "User-Name that is not a MAC rejected by the policy" 'User-Name = 
 expect_reject "User-Name and Calling-Station-Id disagree" 'User-Name = "02-aa-00-00-00-01", Calling-Station-Id = "02-aa-00-00-00-02"'
 
 say "== certificate identity (HTTP-level: no EAP supplicant available)"
-sql "INSERT INTO device_certificates (device_id, serial, fingerprint_sha256, not_before, not_after)
-     SELECT id, '48879', repeat('ab',32), NOW() - interval '1 hour', NOW() + interval '1 day' FROM devices WHERE hardware_uuid='rad-e2e-ok'" >/dev/null
+sql "INSERT INTO device_certificates (device_id, serial, fingerprint_sha256, purpose, not_before, not_after)
+     SELECT id, '48879', repeat('ab',32), 'network', NOW() - interval '1 hour', NOW() + interval '1 day' FROM devices WHERE hardware_uuid='rad-e2e-ok'" >/dev/null
 CERT_BODY='{"TLS-Client-Cert-Serial":{"type":"string","value":["BEEF"]},"User-Name":{"type":"string","value":["host/x"]}}'
 code="$(curl -sS -o "$WORK/cert.out" -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:${API_PORT}/api/admin/v1/access/radius/authorize" -d "$CERT_BODY")"
@@ -211,6 +265,126 @@ if [ "$code" = 200 ] && grep -q spire-accept "$WORK/cert.out" && grep -q '"contr
 code="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -X POST "http://127.0.0.1:${API_PORT}/api/admin/v1/access/radius/authorize" -d '{"TLS-Client-Cert-Serial":{"value":["DEAD"]},"Calling-Station-Id":{"value":["02-aa-00-00-00-01"]}}')"
 [ "$code" = 403 ] && ok "unknown cert serial is rejected even with a compliant MAC alongside" || bad "unknown cert + good MAC: $code"
+
+# ---------------------------------------------------------------- EAP-TLS, real supplicant
+say "== EAP-TLS with device certificates (eapol_test -> FreeRADIUS -> SpireUEM)"
+if ! docker image inspect "$EAPOL_IMAGE" >/dev/null 2>&1; then
+  printf 'FROM debian:12-slim\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends eapoltest ca-certificates\n' >"$WORK/Dockerfile.eapol"
+  docker build -q -t "$EAPOL_IMAGE" -f "$WORK/Dockerfile.eapol" "$WORK" >/dev/null || { bad "could not build the eapol_test image"; exit 1; }
+fi
+start_tls_server || exit 2
+TLSURL="https://127.0.0.1:${TLS_PORT}"
+HELPER="$WORK/eaptls_helper"
+
+# enroll_device <name>: enroll (pending), approve in the database, enroll again to claim the
+# agent certificate, then ask the real /cert/issue endpoint for a NETWORK certificate.
+enroll_device() {
+  local name="$1" dir="$WORK/dev-$1" hw="eaptls-$1" rc
+  "$HELPER" enroll -server "$TLSURL" -tls-ca "$WORK/tls/server.crt" -hw "$hw" -dir "$dir" >/dev/null 2>&1; rc=$?
+  [ "$rc" = 3 ] || { bad "$name: first enroll should be pending (exit $rc)"; return 1; }
+  local did; did="$(sql "SELECT id FROM devices WHERE hardware_uuid='$hw'")"
+  curl -sS -o /dev/null -u "admin:$ADMINPW" -X POST "http://127.0.0.1:${API_PORT}/admin/devices/${did}/approve"
+  "$HELPER" enroll -server "$TLSURL" -tls-ca "$WORK/tls/server.crt" -hw "$hw" -dir "$dir" >/dev/null || { bad "$name: enroll after approval failed"; return 1; }
+  "$HELPER" issue -server "$TLSURL" -tls-ca "$WORK/tls/server.crt" -dir "$dir" -purpose network >/dev/null || { bad "$name: /cert/issue for a network certificate failed"; return 1; }
+  return 0
+}
+set_posture() { # name state
+  sql "INSERT INTO device_posture (device_id,state,valid_until) SELECT id,'$2',NOW() + interval '1 day' FROM devices WHERE hardware_uuid='eaptls-$1'
+       ON CONFLICT (device_id) DO UPDATE SET state='$2', state_changed_at=NOW(), evaluated_at=NOW(), valid_until=NOW() + interval '1 day'" >/dev/null
+}
+write_eap_conf() { # name cert key -> path of the supplicant config
+  local out="$WORK/dev-$1/eap-$(basename "$2" .crt).conf"
+  cat >"$out" <<EOF
+network={
+	ssid="spire-e2e"
+	key_mgmt=IEEE8021X
+	eap=TLS
+	identity="eaptls-$1"
+	ca_cert="/work/fr/certs/server-ca.pem"
+	client_cert="/work/dev-$1/$(basename "$2")"
+	private_key="/work/dev-$1/$(basename "$3")"
+	eapol_flags=0
+}
+EOF
+  echo "$out"
+}
+# eapol <conf>: print the supplicant's output; it ends with SUCCESS or FAILURE.
+eapol() {
+  docker run --rm --network host -v "$WORK:/work:ro" "$EAPOL_IMAGE" \
+    eapol_test -c "/work/${1#$WORK/}" -a 127.0.0.1 -p "$FR_PORT" -s testing123 -r 0 -t 5 2>&1
+}
+eap_expect_success() { # name conf [vlan]
+  local out ts; sleep 1; ts="$(date +%s)"
+  out="$(eapol "$2")"
+  if ! grep -q '^SUCCESS' <<<"$out"; then bad "$1: expected SUCCESS"; tail -15 <<<"$out" | sed 's/^/        /'; return; fi
+  if [ -n "${3-}" ]; then
+    # Only FreeRADIUS log lines written during this run count.
+    if docker logs --since "$ts" "$FR_NAME" 2>&1 | grep -A40 'Sent Access-Accept' | grep -q "Tunnel-Private-Group-Id:0 = \"$3\""; then ok "$1 (VLAN $3)"; else bad "$1: no VLAN $3 in the Access-Accept"; fi
+  else ok "$1"; fi
+}
+eap_expect_failure() { # name conf
+  local out; out="$(eapol "$2")"
+  if grep -q '^FAILURE' <<<"$out"; then ok "$1"; else bad "$1: expected FAILURE"; tail -15 <<<"$out" | sed 's/^/        /'; fi
+}
+
+EAP_SETTINGS='{"allow_weak_identity":false,"compliant_vlan":"10","quarantine_vlan":"666","remediation_vlan":"20"}'
+admin POST /admin/radius/settings "$EAP_SETTINGS" >/dev/null
+
+if enroll_device ok && enroll_device quar && enroll_device rev; then
+  ok "devices enrolled; each holds an agent certificate and a NETWORK certificate from /cert/issue"
+  for d in ok quar rev; do
+    [ "$(sql "SELECT count(*) FROM device_certificates c JOIN devices d ON d.id=c.device_id WHERE d.hardware_uuid='eaptls-$d' AND c.purpose='network'")" = 1 ] || bad "$d: expected one network certificate row"
+    [ "$(sql "SELECT count(*) FROM device_certificates c JOIN devices d ON d.id=c.device_id WHERE d.hardware_uuid='eaptls-$d' AND c.purpose='agent'")" -ge 1 ] || bad "$d: expected an agent certificate row"
+  done
+  # Approving and enrolling a device makes the posture engine evaluate it in the background.
+  # Let that finish first, or it can overwrite the posture rows written here.
+  sleep 3
+  set_posture ok COMPLIANT; set_posture quar QUARANTINED; set_posture rev COMPLIANT
+  NET_OK="$(write_eap_conf ok "$WORK/dev-ok/network.crt" "$WORK/dev-ok/network.key")"
+  AGENT_OK="$(write_eap_conf ok "$WORK/dev-ok/device.crt" "$WORK/dev-ok/device.key")"
+  NET_QUAR="$(write_eap_conf quar "$WORK/dev-quar/network.crt" "$WORK/dev-quar/network.key")"
+  NET_REV="$(write_eap_conf rev "$WORK/dev-rev/network.crt" "$WORK/dev-rev/network.key")"
+
+  eap_expect_success "compliant device, network certificate: accepted" "$NET_OK" 10
+  eap_expect_success "quarantined device: placed in the quarantine VLAN" "$NET_QUAR" 666
+  admin POST /admin/radius/settings '{"allow_weak_identity":false,"compliant_vlan":"10"}' >/dev/null
+  eap_expect_failure "quarantined device with no quarantine VLAN: rejected" "$NET_QUAR"
+  admin POST /admin/radius/settings "$EAP_SETTINGS" >/dev/null
+
+  # The same CA signed the agent certificate, so the TLS handshake succeeds; SpireUEM refuses it.
+  before="$(grep -c 'reject class=unknown_certificate' "$WORK/server.log")"
+  eap_expect_failure "the device's AGENT certificate (same CA): rejected" "$AGENT_OK"
+  after="$(grep -c 'reject class=unknown_certificate' "$WORK/server.log")"
+  [ "$after" -gt "$before" ] && ok "the agent certificate was refused by SpireUEM (purpose), not by the TLS layer" || bad "no SpireUEM rejection was logged for the agent certificate"
+
+  # Revocation: the certificate still completes the handshake, SpireUEM refuses it.
+  eap_expect_success "device 'rev' accepted before revocation" "$NET_REV" 10
+  sql "UPDATE device_certificates SET revoked_at=NOW() WHERE purpose='network' AND device_id=(SELECT id FROM devices WHERE hardware_uuid='eaptls-rev')" >/dev/null
+  eap_expect_failure "revoked network certificate: rejected" "$NET_REV"
+
+  # Posture drives the verdict, not the certificate.
+  set_posture ok NONCOMPLIANT
+  eap_expect_success "non-compliant device: remediation VLAN" "$NET_OK" 20
+  set_posture ok COMPLIANT
+  eap_expect_success "device compliant again: accepted" "$NET_OK" 10
+
+  # A certificate from a CA FreeRADIUS does not trust never reaches SpireUEM.
+  mkdir -p "$WORK/dev-rogue"
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 2 -subj "/CN=rogue" \
+    -keyout "$WORK/dev-rogue/network.key" -out "$WORK/dev-rogue/network.crt" >/dev/null 2>&1
+  ROGUE="$(write_eap_conf rogue "$WORK/dev-rogue/network.crt" "$WORK/dev-rogue/network.key")"
+  eap_expect_failure "certificate from another CA: rejected in the TLS handshake" "$ROGUE"
+fi
+# Back to the settings the CoA section below expects.
+admin POST /admin/radius/settings '{"allow_weak_identity":true,"compliant_vlan":"10","quarantine_vlan":"666"}' >/dev/null
+# Approving devices makes the server's posture engine re-evaluate and overwrite the rows the
+# MAB devices were given by hand; put them back.
+sql "UPDATE device_posture SET
+       state = CASE (SELECT hardware_uuid FROM devices WHERE id = device_id)
+               WHEN 'rad-e2e-bad' THEN 'NONCOMPLIANT' WHEN 'rad-e2e-quar' THEN 'QUARANTINED' ELSE 'COMPLIANT' END,
+       valid_until = CASE (SELECT hardware_uuid FROM devices WHERE id = device_id)
+               WHEN 'rad-e2e-stale' THEN NOW() - interval '1 minute' ELSE NOW() + interval '1 day' END
+     WHERE device_id IN (SELECT id FROM devices WHERE hardware_uuid LIKE 'rad-e2e-%')" >/dev/null
 
 say "== CoA / Disconnect (FreeRADIUS plays the NAS on ${BRIDGE_IP}:3799)"
 NAS_JSON="$(admin POST /admin/radius/nas "{\"name\":\"e2e-nas\",\"address\":\"${BRIDGE_IP}\",\"secret\":\"coa-e2e-secret\"}")"

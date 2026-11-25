@@ -1131,8 +1131,8 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		dev.IsLost, dev.LastSeenIP, dev.LastActiveUser = isLost, seenIP, activeUser
 	}
 
-	// Device client certificate (mTLS): the most recent leaf, for the cert-status panel.
-	deviceCert, _ := h.repo.GetLatestDeviceCertificate(r.Context(), dev.ID)
+	// Device certificates of every purpose, for the certificate table.
+	deviceCerts := h.loadDeviceCertView(r, dev.ID)
 
 	// Rich inventory snapshot + change history for the inventory panel. HasInventory is
 	// false for a device that never reported (old agent / pre-feature); the template then
@@ -1212,7 +1212,7 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"OpenWipe":           openWipe,
 		"LUKSRotations":      luksRotations,
 		"AdminRole":          string(AdminRoleFromContext(r.Context())),
-		"DeviceCert":         deviceCert,
+		"DeviceCerts":        deviceCerts,
 		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
 		"Inventory":          deviceInventory,
 		"Posture":            h.loadPostureView(r.Context(), dev.ID),
@@ -2282,6 +2282,24 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A raw JSON payload skips the form builder, so check the NETWORK_PROFILE client
+	// certificate source here before anything is stored.
+	if err := checkNetworkProfileCertSource(policyType, payloadRaw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// A BROWSER_CERTIFICATE payload is validated whichever way it arrived (form fields, the
+	// raw "payload" form value or a JSON body).
+	if policyType == types.PolicyTypeBrowserCertificate {
+		valid, verr := validateBrowserCertificateJSON(payloadRaw)
+		if verr != nil {
+			http.Error(w, verr.Error(), http.StatusBadRequest)
+			return
+		}
+		payloadRaw = valid
+	}
+
 	// policy-types-b: seal any plaintext secrets in the payload (e.g. NETWORK_PROFILE PSK / EAP
 	// password) with the server KEK before persistence, so the stored payload and the admin UI
 	// never hold plaintext. No-op for policy types without secrets.
@@ -2582,6 +2600,8 @@ func buildStructuredPolicyPayload(r *http.Request, policyType types.PolicyType) 
 		return buildTrustedCACertificatesPayload(r)
 	case types.PolicyTypeNetworkProfile:
 		return buildNetworkProfilePayload(r)
+	case types.PolicyTypeBrowserCertificate:
+		return buildBrowserCertificatePayload(r)
 	case types.PolicyTypeUSBDeviceControl:
 		return buildUSBDeviceControlPayload(r)
 	case types.PolicyTypeAuditdRules:

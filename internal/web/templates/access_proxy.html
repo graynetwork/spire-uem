@@ -32,6 +32,13 @@
             </label>
             <p class="text-[11px] text-amber-400/90 mt-1">An IP address can be spoofed or shared on a LAN. Enable it only where the address is bound to a device, for example a WireGuard or NetBird overlay. Several devices on one address are denied.</p>
         </div>
+        <div>
+            <label class="inline-flex items-center gap-2 text-xs text-slate-200">
+                <input type="checkbox" name="require_same_user" {{if .RequireSameUser}}checked{{end}}>
+                Require the browser certificate's user to be the device's active desktop user
+            </label>
+            <p class="text-[11px] text-slate-400 mt-1">Off by default. When on, a browser certificate is accepted only while its user is the user the device last reported as signed in at the console. The report is as old as the device's last check-in, and a device that reported no user is denied.</p>
+        </div>
         <button type="submit" class="px-3 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white">Save</button>
     </form>
 </div>

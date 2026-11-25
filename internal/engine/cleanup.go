@@ -274,6 +274,20 @@ func CleanupOrphanedPolicies(
 				ExecutionOutput:  meta,
 			})
 
+		case types.PolicyTypeBrowserCertificate:
+			_ = RemoveBrowserCertificate(ctx)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "browser_certificate_revoked_cleaned",
+				"policy_id":  polID,
+				"note":       "removed spire browser policy files and restored the Firefox preference",
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			results = append(results, types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			})
+
 		case types.PolicyTypeNetworkProfile:
 			_ = RemoveNetworkProfile(ctx, polID)
 			meta, _ := json.Marshal(map[string]any{
