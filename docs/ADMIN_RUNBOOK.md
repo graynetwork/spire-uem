@@ -1547,3 +1547,62 @@ The user can copy their own key out of their key store, so a browser certificate
 at most. It is short-lived and posture is checked per request for that reason. There are no TPM-bound keys. Snap and
 Flatpak Chromium-family browsers are not configured. The proxy must terminate TLS itself. Removing the policy stops
 auto-selection at once but leaves the certificates in the key stores until they expire.
+
+
+## 21. Browser settings (`BROWSER_POLICY`)
+
+Sets enterprise policies for Chrome, Chromium, Brave and Edge, and for Firefox: homepage, telemetry, extensions, Safe
+Browsing, and anything else the browsers accept as a managed policy. The policy names and values are the browsers' own;
+see the [Chrome Enterprise policy list](https://chromeenterprise.google/policies/) and the
+[Firefox policy templates](https://mozilla.github.io/policy-templates/).
+
+### 21.1 Create one
+
+On the Policies page choose `BROWSER_POLICY` and fill in either box, or send a JSON payload:
+
+```json
+{
+  "chromium": {"HomepageLocation": "https://intranet.example.com", "MetricsReportingEnabled": false},
+  "firefox": {
+    "DisableTelemetry": true,
+    "Preferences": {"browser.startup.homepage": {"Value": "https://intranet.example.com", "Status": "locked"}}
+  }
+}
+```
+
+The template "Browser Telemetry Off, Safe Browsing On" is a starting point.
+
+What the server checks before storing it:
+
+* Policy names are PascalCase identifiers (`^[A-Z][A-Za-z0-9]{0,99}$`); Firefox preference names are about:config names.
+* Every value is valid, non-null JSON. At most 200 names per browser and 64 KiB in total.
+* `AutoSelectCertificateForUrls` (Chromium) and the Firefox preference `security.default_personal_cert` are refused,
+  because `BROWSER_CERTIFICATE` sets them.
+
+The server does **not** check that a name is one the browser knows. A misspelt name is stored, written, reported
+COMPLIANT and ignored by the browser. Check `chrome://policy` or `about:policies` on one device after the first rollout.
+
+Values are stored in plain text, readable by auditors, and written to world-readable files on the device. Never put a
+password or other secret in a browser policy.
+
+### 21.2 What the agent writes
+
+| Where | What | When the policy is revoked |
+|---|---|---|
+| `/etc/opt/chrome/policies/managed/spire-policy-<policy id>.json`, and the same file under `/etc/chromium`, `/etc/brave`, `/etc/opt/edge` | the `chromium` object as it is | the file is deleted |
+| `/etc/firefox/policies/policies.json` (and `distribution/policies.json` of installed Firefox builds) | each top-level name, and each preference inside `Preferences`, merged one at a time; what each held before is recorded | each name the policy still holds is put back; a name someone changed since is left alone; a file the agent created is deleted once it is empty |
+| `/var/lib/spire/browser-policy/state.json` | what was written, for removal | updated |
+
+A `policies.json` that is not valid JSON is not touched and the policy reports FAILED. A policy that is unassigned while
+the device is offline is cleaned up at the next check-in.
+
+### 21.3 Two policies on one device
+
+Two `BROWSER_POLICY` policies may set different names. If they set the same name, the one applied second reports FAILED
+with `conflict: ... is already set by policy <id>` and writes nothing, so the result never depends on the order policies
+were applied in. Merge the settings into one policy, or remove the name from one of them.
+
+### 21.4 Limits
+
+Snap and Flatpak browsers read their policies from inside their sandbox and are not configured. Chrome applies a change
+within a few minutes or on restart; Firefox only on restart.

@@ -719,6 +719,8 @@ func executePoliciesAndCleanup(
 			item = engine.EnforceNetworkProfilePolicy(ctx, pol)
 		case types.PolicyTypeBrowserCertificate:
 			item = engine.EnforceBrowserCertificatePolicy(ctx, pol)
+		case types.PolicyTypeBrowserPolicy:
+			item = engine.EnforceBrowserPolicy(ctx, pol)
 		case types.PolicyTypeUSBDeviceControl:
 			item = engine.ReconcileUSBDeviceControl(ctx, pol)
 		case types.PolicyTypeAuditdRules:
