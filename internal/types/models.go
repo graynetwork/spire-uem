@@ -40,6 +40,8 @@ const (
 	// PolicyTypeBrowserCertificate turns on per-user browser certificates and sets the
 	// browsers to present them automatically.
 	PolicyTypeBrowserCertificate PolicyType = "BROWSER_CERTIFICATE"
+	// PolicyTypeBrowserPolicy sets enterprise policies for Chromium-family browsers and Firefox.
+	PolicyTypeBrowserPolicy PolicyType = "BROWSER_POLICY"
 )
 
 // DeploymentRing represents the phased patch deployment ring of a device or policy.
@@ -418,6 +420,15 @@ type BrowserCertificatePayload struct {
 	// Browsers lists the browser families to configure: "chromium" and/or "firefox".
 	// Empty means both.
 	Browsers []string `json:"browsers,omitempty"`
+}
+
+// BrowserPolicyPayload defines the payload for BROWSER_POLICY policies: enterprise policy
+// settings for the Chromium-family browsers and for Firefox, keyed by each browser's own
+// policy name (for example "HomepageLocation" or "DisableTelemetry"). Values are passed
+// through as JSON. For Firefox, a "Preferences" object is merged one preference at a time.
+type BrowserPolicyPayload struct {
+	Chromium map[string]json.RawMessage `json:"chromium,omitempty"`
+	Firefox  map[string]json.RawMessage `json:"firefox,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

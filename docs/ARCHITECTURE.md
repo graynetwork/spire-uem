@@ -798,6 +798,18 @@ identity, posture) and measures roughly 0.5 ms per request on a local database, 
 would delay the effect of a quarantine, which is what connectors exist to enforce.
 
 See `docs/ACCESS_PROXY.md` and `docs/ACCESS_AUTHENTIK.md`.
+## 12d. Browser settings (internal/engine/browser_policy.go)
+
+`BROWSER_POLICY` writes enterprise policies for the Chromium family and Firefox, on the same paths as `BROWSER_CERTIFICATE`.
+Chromium gets one managed file per policy (`spire-policy-<id>.json`), which Chrome merges with every other file in its
+managed directory. Firefox has one `policies.json` per installation, shared with `BROWSER_CERTIFICATE` and with anything
+else on the host, so each top-level name and each `Preferences` entry is a separate slot. For each slot the agent records
+the prior value and what it wrote (`/var/lib/spire/browser-policy/state.json`); removal restores the prior value only while
+the slot still holds the written one. A slot already owned by another `BROWSER_POLICY` makes the second policy fail with a
+conflict before anything is written. The names `BROWSER_CERTIFICATE` owns are refused at creation. Policies no longer in
+the assigned list are removed by `CleanupOrphanedBrowserPolicies`, which `CleanupOrphanedPolicies` calls on every check-in.
+Quarantine-withheld policies stay in that list, so quarantine does not remove browser settings.
+
 ## 12c. Browser certificates (internal/ipc/browser_cert.go, cmd/spire-hub, internal/engine/browser_cert.go)
 
 Each desktop user can hold one certificate per device from the device CA, so forward-auth can identify the device and the

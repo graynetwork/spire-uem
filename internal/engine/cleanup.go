@@ -28,7 +28,11 @@ func CleanupOrphanedPolicies(
 	activeDconfFiles := make(map[string]bool, len(activePolicies))
 	activeSysctlIDs := make(map[string]bool, len(activePolicies))
 	activeBundleHashes := make(map[string]bool, len(activePolicies))
+	activeBrowserPolicyIDs := make(map[string]bool)
 	for _, p := range activePolicies {
+		if p.PolicyType == types.PolicyTypeBrowserPolicy {
+			activeBrowserPolicyIDs[strings.TrimSpace(p.ID)] = true
+		}
 		if p.PolicyType == types.PolicyTypeDconfSetting {
 			pid := strings.TrimSpace(p.ID)
 			activeDconfIDs[pid] = true
@@ -288,6 +292,24 @@ func CleanupOrphanedPolicies(
 				ExecutionOutput:  meta,
 			})
 
+		case types.PolicyTypeBrowserPolicy:
+			rerr := RemoveBrowserPolicy(ctx, polID)
+			meta, _ := json.Marshal(map[string]any{
+				"action":     "browser_policy_revoked_cleaned",
+				"policy_id":  polID,
+				"note":       "removed spire browser policy files and restored the Firefox keys spire wrote",
+				"cleaned_at": time.Now().UTC().Format(time.RFC3339),
+			})
+			item := types.PolicyExecutionItem{
+				PolicyID:         polID,
+				ComplianceStatus: types.ComplianceRevoked,
+				ExecutionOutput:  meta,
+			}
+			if rerr != nil {
+				item.ErrorMessage = rerr.Error()
+			}
+			results = append(results, item)
+
 		case types.PolicyTypeNetworkProfile:
 			_ = RemoveNetworkProfile(ctx, polID)
 			meta, _ := json.Marshal(map[string]any{
@@ -403,6 +425,10 @@ func CleanupOrphanedPolicies(
 			})
 		}
 	}
+
+	// A BROWSER_POLICY that is no longer assigned and was not reported revoked (for example
+	// one deleted while the device was offline) is removed too.
+	_ = CleanupOrphanedBrowserPolicies(ctx, activeBrowserPolicyIDs)
 
 	return results, dconfModified
 }

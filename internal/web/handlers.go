@@ -2299,6 +2299,14 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		payloadRaw = valid
 	}
+	if policyType == types.PolicyTypeBrowserPolicy {
+		valid, verr := validateBrowserPolicyJSON(payloadRaw)
+		if verr != nil {
+			http.Error(w, verr.Error(), http.StatusBadRequest)
+			return
+		}
+		payloadRaw = valid
+	}
 
 	// policy-types-b: seal any plaintext secrets in the payload (e.g. NETWORK_PROFILE PSK / EAP
 	// password) with the server KEK before persistence, so the stored payload and the admin UI
@@ -2602,6 +2610,8 @@ func buildStructuredPolicyPayload(r *http.Request, policyType types.PolicyType) 
 		return buildNetworkProfilePayload(r)
 	case types.PolicyTypeBrowserCertificate:
 		return buildBrowserCertificatePayload(r)
+	case types.PolicyTypeBrowserPolicy:
+		return buildBrowserPolicyPayload(r)
 	case types.PolicyTypeUSBDeviceControl:
 		return buildUSBDeviceControlPayload(r)
 	case types.PolicyTypeAuditdRules:
