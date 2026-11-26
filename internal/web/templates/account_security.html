@@ -31,7 +31,7 @@
         <div id="mfa-enroll">
             <button id="mfa-begin" class="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-500 text-white">Set up authenticator</button>
             <div id="mfa-setup" class="hidden mt-4 space-y-3">
-                <img id="mfa-qr" alt="TOTP QR code" width="200" height="200" class="bg-white p-2 rounded"/>
+                <img id="mfa-qr" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3C/svg%3E" alt="TOTP QR code" width="200" height="200" class="bg-white p-2 rounded"/>
                 <p class="text-xs text-slate-400">Secret (manual entry): <code id="mfa-secret" class="font-mono text-slate-300"></code></p>
                 <form id="mfa-confirm-form" class="flex items-center gap-2">
                     <input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code" class="px-2 py-1 text-sm rounded bg-[#0a0e17] border border-[#1a2234] text-white font-mono w-32"/>
