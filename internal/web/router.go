@@ -46,6 +46,16 @@ func (h *Handler) RegisterRoutes(r chi.Router, adminUser, adminPass string) {
 
 	// Vendored front-end libraries, served from the binary so the CSP needs no CDN origins.
 	r.Handle("/static/*", http.StripPrefix("/static/", staticHandler()))
+	r.Get("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		icoData, err := staticFS.ReadFile("static/favicon.svg")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(icoData)
+	})
 
 	// Publicly accessible single-command onboarding endpoints (no Basic/Session Auth required)
 	r.Get("/install.sh", h.ServeBootstrapScript)

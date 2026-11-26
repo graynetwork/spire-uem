@@ -39,7 +39,8 @@ services:
       SPIRE_ALLOW_INSECURE_HTTP: "1"
       SPIRE_APT_REPO_DIR: "/var/www/apt/spire"
     ports:
-      - "127.0.0.1:18080:8080"
+      - "8080:8080"
+      - "18080:8080"
     volumes:
       - ./bin/spire-server:/app/spire-server:ro
       - ./migrations:/app/migrations:ro
