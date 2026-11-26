@@ -37,7 +37,7 @@
             {{if .SelectedDevicePolicyDetails}}
                 {{template "host_policies_partial" (dict "Device" .SelectedDevice "PolicyDetails" .SelectedDevicePolicyDetails "CompliantCount" .SelectedCompliantCount "PendingCount" .SelectedPendingCount "FailedCount" .SelectedFailedCount)}}
             {{else}}
-                <div class="py-6 text-center text-xs text-slate-600 font-mono">
+                <div class="py-6 text-center text-xs text-slate-400 font-mono">
                     Select an endpoint above to inspect its active policy convergence state.
                 </div>
             {{end}}
@@ -68,7 +68,7 @@
                         {{end}}
                     {{else}}
                         <tr>
-                            <td colspan="9" class="px-4 py-8 text-center text-xs text-slate-600">
+                            <td colspan="9" class="px-4 py-8 text-center text-xs text-slate-400">
                                 No active baseline policies configured yet.
                             </td>
                         </tr>
@@ -92,7 +92,7 @@
                         <span class="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-mono bg-[#141b2a] text-blue-400 border border-[#1a2234]">
                             {{.PolicyType}}
                         </span>
-                        <span class="text-[10px] font-mono text-slate-500">{{.ID}}</span>
+                        <span class="text-[10px] font-mono text-slate-400">{{.ID}}</span>
                     </div>
                     <h3 class="text-xs font-medium text-white">{{.Name}}</h3>
                     <p class="text-[11px] text-slate-400 leading-normal">{{.Description}}</p>
@@ -424,14 +424,30 @@
                             class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white focus:outline-none focus:border-blue-500"></textarea>
                     </div>
                 </div>
-                <p class="text-[10px] text-slate-500">For multiple CAs, use the Raw JSON Payload Override below with <code class="text-slate-400 font-mono">{"certificates":[{"name":"...","pem":"..."}]}</code>.</p>
+                <p class="text-[10px] text-slate-400">For multiple CAs, use the Raw JSON Payload Override below with <code class="text-slate-400 font-mono">{"certificates":[{"name":"...","pem":"..."}]}</code>.</p>
+            </div>
+
+            <!-- Network Profile (NetworkManager) Fields -->
+            <div id="fields-network" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Profile Kind</label>
+                        <select name="np_kind" onchange="toggleNetworkKind(this.value)"
+                            class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                            <option value="wifi">Wi-Fi</option>
+                            <option value="wired_8021x">Wired 802.1X</option>
+                            <option value="wireguard">WireGuard VPN</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end pb-1.5">
+                        <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer">
                             <input type="checkbox" name="np_autoconnect" value="true" checked
                                 class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600 focus:ring-blue-500">
                             <span>Autoconnect</span>
                         </label>
                     </div>
                 </div>
-                <p class="text-[10px] text-slate-500">Secrets (Wi-Fi PSK, 802.1X password) are sealed with the server KEK at save and never shown again. The agent writes keyfiles to <code class="font-mono text-slate-400">/etc/NetworkManager/system-connections/spire-&lt;id&gt;.nmconnection</code> (0600, root).</p>
+                <p class="text-[10px] text-slate-400">Secrets (Wi-Fi PSK, 802.1X password) are sealed with the server KEK at save and never shown again. The agent writes keyfiles to <code class="font-mono text-slate-400">/etc/NetworkManager/system-connections/spire-&lt;id&gt;.nmconnection</code> (0600, root).</p>
 
                 <!-- Wi-Fi sub-form -->
                 <div id="np-wifi" class="space-y-3 border-t border-[#1a2234] pt-3">

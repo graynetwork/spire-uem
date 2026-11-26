@@ -2,11 +2,11 @@
 <div class="space-y-6">
     <div>
         <h1 class="text-lg font-semibold text-white">Access Posture</h1>
-        <p class="text-[11px] text-slate-500 mt-0.5">One fleet-wide rule set decides each device's access verdict (COMPLIANT, NONCOMPLIANT, QUARANTINED or UNKNOWN). Connectors (reverse-proxy forward-auth, Authentik, RADIUS) read that verdict; they never decide for themselves. Rule set version <span class="font-mono text-slate-300">{{.Rules.Version}}</span>. Every edit is versioned and audited.</p>
+        <p class="text-[11px] text-slate-400 mt-0.5">One fleet-wide rule set decides each device's access verdict (COMPLIANT, NONCOMPLIANT, QUARANTINED or UNKNOWN). Connectors (reverse-proxy forward-auth, Authentik, RADIUS) read that verdict; they never decide for themselves. Rule set version <span class="font-mono text-slate-300">{{.Rules.Version}}</span>. Every edit is versioned and audited.</p>
     </div>
 
-    {{if .Flash}}<div class="p-2.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-xs text-emerald-300">Saved as version {{.Flash}}. Devices are being re-evaluated.</div>{{end}}
-    {{if not .CanEdit}}<div class="p-2.5 rounded bg-[#0f1420] border border-[#1a2234] text-xs text-slate-400">Read-only. The rule set is fleet-wide: only an unscoped SECURITY_ADMIN or SUPER_ADMIN can edit it.</div>{{end}}
+    {{if .Flash}}<div class="py-2 px-3 border-l-2 border-emerald-500 bg-emerald-500/10 text-xs text-emerald-300">Saved as version {{.Flash}}. Devices are being re-evaluated.</div>{{end}}
+    {{if not .CanEdit}}<div class="py-2 px-3 border-l-2 border-blue-500 bg-blue-500/10 text-xs text-slate-300">Read-only. The rule set is fleet-wide: only an unscoped SECURITY_ADMIN or SUPER_ADMIN can edit it.</div>{{end}}
 
     <form method="POST" action="/admin/access-posture" class="bg-[#0f1420] border border-[#1a2234] rounded-md p-4 space-y-4 text-xs">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
@@ -33,7 +33,7 @@
                     <option value="medium" {{if eq .Rules.NoCriticalCVEs.MinUrgency "medium"}}selected{{end}}>medium</option>
                     <option value="low" {{if eq .Rules.NoCriticalCVEs.MinUrgency "low"}}selected{{end}}>low</option>
                 </select>
-                <span class="text-slate-500">not covered by an active risk acceptance</span>
+                <span class="text-slate-400">not covered by an active risk acceptance</span>
             </div>
             <div class="space-y-1">
                 <label class="flex items-center gap-2 text-slate-200"><input type="checkbox" name="group_enabled" value="1" {{if .Rules.GroupRule.Enabled}}checked{{end}}> <code class="text-blue-300">group_rule</code> device must match this dynamic-group rule (JSON)</label>
@@ -65,9 +65,9 @@
                 {{else if eq (printf "%s" .Posture.Effective) "QUARANTINED"}}bg-rose-500/15 text-rose-300 border-rose-500/30
                 {{else if eq (printf "%s" .Posture.Effective) "NONCOMPLIANT"}}bg-amber-500/15 text-amber-300 border-amber-500/30
                 {{else}}bg-[#141b2a] text-slate-400 border-[#1a2234]{{end}}">{{.Posture.Effective}}</span>
-            {{if .Posture.Stale}}<span class="text-[10px] text-slate-500">(verdict expired)</span>{{end}}
+            {{if .Posture.Stale}}<span class="text-[10px] text-slate-400">(verdict expired)</span>{{end}}
         </h3>
-        {{if .Posture.Posture}}<span class="text-[10px] font-mono text-slate-500">rule set v{{.Posture.Posture.RuleSetVersion}} · evaluated {{.Posture.Posture.EvaluatedAt.Format "2006-01-02 15:04:05"}} · valid until {{.Posture.Posture.ValidUntil.Format "15:04:05"}}</span>{{end}}
+        {{if .Posture.Posture}}<span class="text-[10px] font-mono text-slate-400">rule set v{{.Posture.Posture.RuleSetVersion}} · evaluated {{.Posture.Posture.EvaluatedAt.Format "2006-01-02 15:04:05"}} · valid until {{.Posture.Posture.ValidUntil.Format "15:04:05"}}</span>{{end}}
     </div>
     {{if .Posture.LoadError}}<div class="text-[11px] text-amber-400">Posture could not be fully loaded; treat as not allowed.</div>{{end}}
     {{if .Posture.Posture}}
@@ -77,10 +77,10 @@
         <span title="{{.Detail}}" class="px-1.5 py-0.5 rounded text-[10px] font-mono border {{if .Passed}}bg-emerald-500/10 text-emerald-300 border-emerald-500/20{{else}}bg-rose-500/10 text-rose-300 border-rose-500/20{{end}}">{{.ID}}: {{if .Passed}}pass{{else}}fail{{end}}</span>
         {{end}}
     </div>
-    {{else}}<div class="text-[11px] text-slate-500">Not evaluated yet.</div>{{end}}
+    {{else}}<div class="text-[11px] text-slate-400">Not evaluated yet.</div>{{end}}
 
     {{if .Posture.Quarantine}}
-    <div class="p-2.5 rounded bg-rose-500/10 border border-rose-500/30 text-[11px] font-mono text-rose-200">
+    <div class="py-2 px-3 border-l-2 border-rose-500 bg-rose-500/10 text-[11px] font-mono text-rose-200">
         Quarantined by {{.Posture.Quarantine.Actor}} ({{.Posture.Quarantine.Source}}) at {{.Posture.Quarantine.CreatedAt.Format "2006-01-02 15:04"}}: {{.Posture.Quarantine.Reason}}
     </div>
     {{end}}
