@@ -138,3 +138,37 @@ func TestCampaignDefer_AgentLearnsOnlyServerGrantedDeferrals(t *testing.T) {
 		t.Fatal("pending campaign should be cleared")
 	}
 }
+
+func TestPendingCampaign_RichFields(t *testing.T) {
+	srv := ipc.NewServer("/tmp/rich.sock", "http://localhost:1", "", "hw", "host", nil, nil, nil)
+	srv.SetPendingCampaign(ipc.PendingCampaign{
+		CampaignID: "camp-rich",
+		Name:       "Security Updates: OpenSSL & Curl",
+		Packages: []ipc.PendingPackageItem{
+			{Package: "openssl", Target: "3.0.2-1", FromCVE: "CVE-2024-0001"},
+			{Package: "curl", Target: "8.5.0-1"},
+		},
+		PackageNames:   []string{"openssl", "curl"},
+		MayDefer:       true,
+		DeferralsLeft:  3,
+		DeadlinePassed: false,
+		GraceSeconds:   60,
+	})
+
+	snap := srv.PendingCampaignSnapshot()
+	if snap == nil {
+		t.Fatal("expected pending campaign snapshot, got nil")
+	}
+	if snap.CampaignID != "camp-rich" || snap.Name != "Security Updates: OpenSSL & Curl" {
+		t.Fatalf("unexpected campaign details: %+v", snap)
+	}
+	if len(snap.Packages) != 2 || snap.Packages[0].Package != "openssl" || snap.Packages[0].FromCVE != "CVE-2024-0001" {
+		t.Fatalf("unexpected packages: %+v", snap.Packages)
+	}
+	if len(snap.PackageNames) != 2 || snap.PackageNames[1] != "curl" {
+		t.Fatalf("unexpected package names: %+v", snap.PackageNames)
+	}
+	if snap.GraceSeconds != 60 || snap.DeferralsLeft != 3 {
+		t.Fatalf("unexpected grace/deferrals: %+v", snap)
+	}
+}
