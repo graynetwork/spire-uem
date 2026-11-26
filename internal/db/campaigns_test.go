@@ -226,7 +226,7 @@ func TestCampaign_TallyDeferralsUnsupportedAndResult(t *testing.T) {
 	}
 
 	// Report + MTTR.
-	rep, err := repo.CampaignReport(ctx, c.ID)
+	rep, err := repo.CampaignReport(ctx, c.ID, db.Unscoped)
 	if err != nil {
 		t.Fatalf("report: %v", err)
 	}

@@ -30,6 +30,8 @@ type Repository struct {
 	kekMgr     crypto.KeyEnvelopeManager
 	wipeSigner *crypto.WipeSigner
 	deviceCA   crypto.DeviceCA
+	// postureHook recomputes a device's access posture after a quarantine change.
+	postureHook PostureHook
 }
 
 // SetDeviceCA wires the internal device certificate authority used to issue client-auth
@@ -175,7 +177,11 @@ func (r *Repository) RevokeDevice(ctx context.Context, id string) (*types.Device
 	if _, err := r.RevokeDeviceCertificates(ctx, id); err != nil {
 		return nil, err
 	}
-	return r.UpdateDeviceStatus(ctx, id, types.StatusRevoked, nil)
+	d, err := r.UpdateDeviceStatus(ctx, id, types.StatusRevoked, nil)
+	if err == nil && d != nil {
+		r.EmitEvent(ctx, workflows.EventDeviceRevoked, d.ID, map[string]any{"hostname": d.Hostname}, false)
+	}
+	return d, err
 }
 
 // Pool returns the underlying pgxpool.Pool.
@@ -1115,7 +1121,7 @@ func (r *Repository) RecordComplianceReports(ctx context.Context, deviceID strin
 	return nil
 }
 
-const policySelectColumns = `id, name, COALESCE(description, ''), policy_type, payload, target_tags, target_ring, COALESCE(target_group_ids, '{}'), patch_window_id, requires_reboot, is_self_service, COALESCE(assignment_type, 'REQUIRED'), is_active, version, created_at, updated_at`
+const policySelectColumns = `id, name, COALESCE(description, ''), policy_type, payload, target_tags, target_ring, COALESCE(target_group_ids, '{}'), patch_window_id, requires_reboot, is_self_service, COALESCE(assignment_type, 'REQUIRED'), is_active, allowed_in_quarantine, version, created_at, updated_at`
 
 func scanPolicy(row pgx.Row) (*types.Policy, error) {
 	var p types.Policy
@@ -1133,6 +1139,7 @@ func scanPolicy(row pgx.Row) (*types.Policy, error) {
 		&p.IsSelfService,
 		&p.AssignmentType,
 		&p.IsActive,
+		&p.AllowedInQuarantine,
 		&p.Version,
 		&p.CreatedAt,
 		&p.UpdatedAt,
@@ -1234,6 +1241,7 @@ func (r *Repository) CreatePolicyWithAssignment(
 	if err != nil {
 		return nil, fmt.Errorf("create policy: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyCreated, p, map[string]any{"policy_type": string(p.PolicyType)})
 	return p, nil
 }
 
@@ -1275,6 +1283,7 @@ func (r *Repository) TogglePolicyActive(ctx context.Context, policyID string) (*
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit toggle policy tx: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyToggled, p, map[string]any{"is_active": p.IsActive})
 	return p, nil
 }
 
@@ -1957,6 +1966,7 @@ func (r *Repository) TogglePolicySelfService(ctx context.Context, policyID strin
 	if err != nil {
 		return nil, fmt.Errorf("toggle policy self-service: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyUpdated, p, map[string]any{"change": "self_service"})
 	return p, nil
 }
 
@@ -1980,6 +1990,7 @@ func (r *Repository) SetPolicySelfService(ctx context.Context, policyID string, 
 	if err != nil {
 		return nil, fmt.Errorf("set policy self-service: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyUpdated, p, map[string]any{"change": "self_service"})
 	return p, nil
 }
 
@@ -2752,6 +2763,7 @@ func (r *Repository) ListApplicationPoliciesWithAdoption(ctx context.Context) ([
 			&p.IsSelfService,
 			&p.AssignmentType,
 			&p.IsActive,
+			&p.AllowedInQuarantine,
 			&p.Version,
 			&p.CreatedAt,
 			&p.UpdatedAt,
@@ -2989,6 +3001,7 @@ func (r *Repository) UpdateApplicationPolicy(
 		_, _ = r.StagePolicyForTargetedDevices(ctx, updated)
 	}
 
+	r.emitPolicyEvent(ctx, workflows.EventPolicyUpdated, updated, map[string]any{"change": "definition"})
 	return updated, nil
 }
 
@@ -3026,6 +3039,7 @@ func (r *Repository) RevokeApplicationPolicy(ctx context.Context, policyID strin
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit revoke application policy tx: %w", err)
 	}
+	r.emitPolicyEvent(ctx, workflows.EventPolicyToggled, pol, map[string]any{"is_active": false, "via": "revoke"})
 	return pol, nil
 }
 

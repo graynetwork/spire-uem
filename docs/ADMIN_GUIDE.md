@@ -277,8 +277,29 @@ without writing a blank credential or disturbing a working profile. The dashboar
 
 ## Reusable scripts, custom sensors, and script-based policies
 
-These features are managed through the admin JSON API (routes under `/admin`); there is no
-dedicated HTML page yet. Role requirements and tag scoping are enforced by the server.
+These features have an admin page (**Scripts** in the sidebar, with a **Sensors** tab) built on
+the same routes as the JSON API (under `/admin`). Role requirements and tag scoping are enforced
+by the server; the page only hides controls your role cannot use.
+
+**The Scripts page.** `GET /admin/scripts`, `/admin/scripts/{id}` and `/admin/sensors` return the
+HTML page when the request's `Accept` header contains `text/html` (every browser) and the same
+JSON as before for any other client (curl, tokens, scripts). The list shows name, interpreter,
+run-as, current version and last update. A script's page shows its metadata, every version with
+its content and SHA-256, its parameters (a secret parameter shows only that it is secret and
+whether a default is set, never the value), and recent runs with status, exit code and output.
+Device output is untrusted text and is always shown escaped.
+
+- `AUDITOR`: read-only; no buttons or forms are shown.
+- `OPERATOR`: also gets the **Run script** panel: pick a version, a target (devices, tags, a
+  ring, or a device group) and parameter values. A tag-scoped operator sees and can target only
+  devices in scope. Secret parameter values are typed into a password field and stored sealed.
+- `SECURITY_ADMIN`+: create scripts, edit metadata, add a version (always a new immutable
+  version), set the current version, delete (with a confirmation), and create, edit,
+  enable/disable and delete sensors. The Sensors tab shows each sensor's script, return type,
+  interval and targeting, and links to a device's readings (`/admin/devices/{id}/sensors/{name}`).
+
+The page's forms and buttons call the routes listed below, so everything it does is also
+available through the API.
 
 ### Scripts
 
@@ -286,6 +307,10 @@ A script has a fixed interpreter (`bash` or `python3` only), a run-as identity (
 `active_user`), a timeout (default 300 s, max 3600 s), an output cap (default 64 KiB, max
 1 MiB), and a parameter schema. Parameter names must match `^[A-Z][A-Z0-9_]{0,31}$`; a
 parameter may be `string`, `integer` or `boolean`, required, defaulted, and marked `secret`.
+API responses never include a secret parameter's default: it is removed and
+`"default_set": true` marks that one exists. Runs still receive it, sealed like any secret
+value. The default is stored in the version's parameter schema, so for a value that should
+live only in sealed storage, leave the default empty and supply it with each run.
 
 - `GET /admin/scripts`, `GET /admin/scripts/{id}` — list / inspect (any role that can read).
 - `POST /admin/scripts` — create (SECURITY_ADMIN+). Body: `name`, `interpreter`, `run_as`,
@@ -302,8 +327,8 @@ the agent verifies before running.
 
 ### Running a script
 
-`POST /admin/scripts/{id}/run` (OPERATOR+). Body selects a target — `device_ids`, `tags`, or
-`ring` — with `params` and an optional `version_id` (defaults to the current version). A
+`POST /admin/scripts/{id}/run` (OPERATOR+). Body selects a target — `device_ids`, `tags`,
+`ring`, or `group_id` — with `params` and an optional `version_id` (defaults to the current version). A
 tag-scoped operator's target is intersected with their allowed tags, and only APPROVED devices
 run. The run is reported per device with status, exit code, capped stdout/stderr and duration;
 `GET /admin/devices/{id}/script-runs` shows recent runs for a device. Secret parameter values
@@ -374,6 +399,13 @@ the run with the `scheduled` trigger; on an "agent started" workflow it uses the
 trigger. This is how you run a script on every device in a group each night, or once each time an
 agent restarts.
 
+A `run_script` action can't set a secret script parameter, because workflow definitions are
+stored as plain JSON and auditors can read them. Saving one is refused with a 400. Give the
+parameter a default on the script instead: runs receive it sealed, and responses never show it.
+A parameter counts as secret if any version of the script marks it secret. Values saved before
+this check are hidden in every workflow and approval response, and are dropped if the workflow
+is edited and saved again.
+
 **Safety.** Workflows are deterministic and bounded. A change a workflow makes never triggers
 another workflow (loop suppression). Each workflow is rate-limited per device by a **cooldown**
 (default 1 hour) and the whole fleet is bounded by a **global per-minute action budget**. Turn on
@@ -384,7 +416,20 @@ A device that is revoked between the event and the action is skipped; a run_scri
 script version was deleted fails and is recorded (it never leaves the device in an unknown
 state).
 
-The admin surface is a JSON API: `GET/POST /admin/workflows`, `POST /admin/workflows/{id}`,
+**Workflows page.** *Workflows* in the sidebar opens `/admin/workflows` with three tabs: the
+workflow list (trigger, enabled, dry-run, last run, enable/disable, edit, delete), **Run history**
+(per run: event fields, device, condition result, every action's outcome, a dry-run marker;
+filter by workflow) and **Pending approvals** (what each approval will run, with Approve and
+Reject; `SECURITY_ADMIN`+). The editor builds the trigger (event dropdown with the fields each
+event carries, or a cron schedule over a ring, group or tags), the condition (a row builder over
+the same fields as the Groups page, or raw rule JSON), and ordered then/else action lists with
+the right fields for every action type. Server-side validation errors appear above the Save
+button. `AUDITOR` sees the list and run history only. Event fields and hostnames come from
+devices and are always shown escaped. A tag-scoped admin sees only runs of their own
+workflows on devices in their scope, and only their own approvals.
+
+The same URLs return the page when the request asks for `text/html` and the JSON below otherwise.
+The admin surface is also a JSON API: `GET/POST /admin/workflows`, `POST /admin/workflows/{id}`,
 `POST /admin/workflows/{id}/toggle`, `DELETE /admin/workflows/{id}`, `GET /admin/workflows/runs`,
 `GET /admin/workflows/approvals`, and `POST /admin/workflows/approvals/{id}/approve|reject`.
 
@@ -470,3 +515,162 @@ header counts open and accepted CVEs. The page only counts your own devices if y
 An acceptance stops applying the moment it expires and the finding is open again. A tag-scoped admin may only accept risk within
 their own tags and may not create a fleet-wide acceptance. Every create, control action and
 deletion is audited with the acting admin.
+
+**Admin pages.** Campaigns and risk acceptances have pages as well as the JSON API: open
+**Campaigns** in the sidebar (`/admin/campaigns`, `/admin/campaigns/{id}`,
+`/admin/risk-acceptances`). The same URLs return the JSON described above unless the client sends
+`Accept: text/html`, which browsers do. The list shows target, state, current stage, device
+progress (pending, succeeded, failed, deferred) and created/started times, with a form to create a
+campaign (target, stages, thresholds, blackout, deadline, deferrals, reboot policy; validation
+errors appear next to the form). A campaign page shows the stage timeline with per-stage counts and
+the halt reason, the per-device results (status, failure class, package versions before and after,
+device-reported output shown as plain text), the history, CSV/JSON export, and Start, Pause, Resume
+and Cancel buttons that appear only where the server's state machine allows them. The server still
+decides: a refused action is shown as an error on the page. A tag-scoped admin sees the same
+campaigns, devices and counts as in the JSON API. The risk acceptance page lists every acceptance,
+including expired ones, and creates (reason and expiry of 1 to 180 days required) and deletes them.
+A tag-scoped admin can only delete acceptances within their own tags. A blackout cron that is not
+five fields is rejected at creation, in the API too, because the dispatcher treats a malformed one
+as always blacked out.
+
+## Event webhooks
+
+SUPER_ADMIN only: **Webhooks** in the sidebar (`/admin/webhooks`). A webhook sends signed JSON
+events to your SIEM or automation. Payload, event list and verification code are in
+`docs/WEBHOOKS.md`.
+
+- **Create**: name, https URL, at least one event type, optional device tag scope, enabled. The
+  signing secret is shown once after create; copy it then. **Rotate secret** issues a new one at
+  once (update receivers first or accept a short failure window; pending retries use the new secret).
+- **Tag scope**: only events for devices carrying one of the tags are sent. Events with no device
+  (policy and campaign events) are not sent to a scoped webhook. Leave the scope empty to receive them.
+- **Allow private network**: needed for targets in RFC1918, CGNAT or similar ranges, and the only
+  way to use plain http. Loopback and link-local addresses are always blocked. Turning this on is
+  audited (`WEBHOOK_ALLOW_PRIVATE_NETWORK`).
+- **Send test event** queues a `webhook.test` delivery. **Delivery log** shows each delivery, its
+  attempts (status code, error, duration, response snippet) and a **Redeliver** button, which resends
+  the same event id.
+- A webhook whose deliveries are dead 10 times in a row is disabled automatically and a
+  `webhook_disabled` alert is raised (enable that kind on an alert channel to be told). Fix the
+  receiver, tick Enabled and save.
+- The same functions are available as JSON (any request without `Accept: text/html` gets JSON).
+
+## Admin API and service accounts
+
+The versioned admin API lives at `/api/admin/v1/` (reference: `docs/API.md`; machine-readable spec:
+`GET /api/admin/v1/openapi.json`, no authentication needed). It is for scripts, CI and other systems.
+It accepts **Bearer tokens only**. Your browser session cookie and Basic Auth do not work there, which is
+also why CSRF does not apply to it.
+
+**Service accounts** (menu: *API Access*, Super Administrators only) are non-human identities. Each has:
+
+- a **role cap** (Auditor, Operator, Security Admin or Super Admin). The account can never do more than
+  that role could do in the web UI;
+- a list of **API scopes**: `devices:read`, `devices:actions`, `groups:read`, `groups:write` (reserved, no
+  v1 endpoint uses it yet), `policies:read`, `campaigns:read`, `campaigns:write`, `audit:read`;
+- an optional **tag scope**. With tags set, the account sees and acts on only devices carrying one of
+  those tags (and the groups, policies, campaigns and audit events that follow from them), whatever its
+  role cap. Leave it empty for fleet-wide access;
+- an enabled switch and an optional expiry date.
+
+A request succeeds only when **the scope, the role cap and the tag scope all allow it**. Giving an account
+the `devices:actions` scope does nothing if its cap is Auditor.
+
+**Tokens.** An account can hold several tokens, shaped `spire_sa_<id>_<secret>` (256 bits of randomness).
+The token is shown **once**, when you create or rotate it; only a hash is stored, so a lost token cannot be
+recovered, only replaced. Per token you can:
+
+- **Rotate**: issues a new token and lets the old one keep working for an overlap you choose (default 24
+  hours, up to 168, `0` = the old token stops immediately). Use the overlap to roll the new secret out to
+  every consumer. Rotating never extends a token that was already set to expire sooner.
+- **Revoke**: the token stops working at once.
+- Disable or delete the **account** to stop every one of its tokens at once.
+
+A request with an unknown, revoked, expired or disabled credential gets the same `401` whatever the reason.
+Repeated failed attempts from one IP are throttled with `429` (5 per minute, like personal access tokens).
+
+**Personal access tokens** also work on the API. They get the scopes implied by their effective role (Auditor:
+read scopes; Operator: plus `devices:actions`; Security Admin and above: everything), and the owner's tag
+scope applies.
+
+**Audit.** Every change a service account makes is audited with the actor `sa:<name>` (a personal access
+token's changes are audited as its owner). Creating, editing, deleting accounts and creating, rotating and
+revoking tokens are audited with the administrator who did it. Token secrets are never written to the audit log.
+
+**Retries.** Send an `Idempotency-Key` header on POST requests so a retry cannot repeat an action (a
+second lock or reboot, a second campaign start). See `docs/API.md`.
+
+## Access posture and quarantine
+
+SpireUEM computes one access verdict per device, shown as **Access** in the device list and as the
+**Access Posture** panel on the device page: `COMPLIANT`, `NONCOMPLIANT`, `QUARANTINED` or `UNKNOWN`.
+Connectors (reverse proxies, Authentik, RADIUS) read that verdict. They never compute their own.
+
+**Rule set (Access Posture page).** One fleet-wide rule set, versioned and audited. Auditors can view it;
+SUPER_ADMIN and SECURITY_ADMIN can edit it. A tag-scoped admin cannot, because a fleet-wide edit would change
+the verdict of devices outside their tags. Checks (all off except the first on a fresh install, so enabling a
+connector does not lock everyone out):
+
+| Check | Passes when |
+|---|---|
+| `checkin_fresh` | last check-in is within N hours (default 24) |
+| `attestation_trusted` | TPM attestation is trusted (same decision as secret withholding; enabling the check applies it even when attestation enforcement is `off`) |
+| `disk_encrypted` | inventory reports `hw.disk.encrypted_all` true; a device that does not report it fails |
+| `policies_compliant` | no assigned policy is NON_COMPLIANT or FAILED (PENDING fails only if you tick "PENDING also fails"; REVOKED history is ignored) |
+| `patches_current` | no pending security updates, or (grace days > 0) the last patch run succeeded within the grace period; a device that never reported patch status fails |
+| `no_critical_cves` | no open CVE at or above the chosen urgency, except those covered by an active risk acceptance |
+| `group_rule` | the device matches the given dynamic-group rule |
+
+A device that is not approved or is marked lost is never COMPLIANT (built-in check `device_active`).
+
+**When it is evaluated.** After each check-in (in the background; it never delays the check-in), on a periodic
+sweep every 5 minutes (`SPIRE_POSTURE_INTERVAL`, minimum 30s), immediately on quarantine or release, and for
+the whole fleet after a rule-set edit. A verdict is valid for 15 minutes; after that it reads as `UNKNOWN`, so a
+stopped server cannot leave a device COMPLIANT. An evaluation error stores `UNKNOWN` with the error class.
+
+**Quarantine.** SECURITY_ADMIN or SUPER_ADMIN (within tag scope) can quarantine a device from its page with a
+required reason, and release it with a required reason. Both are audited. The workflow `quarantine` action also
+creates a quarantine record (source `workflow`) and still adds the quarantine tag. Releasing is admin-only.
+While quarantined: the posture is `QUARANTINED` whatever else is true; the device receives only policies marked
+**Allowed in quarantine** (a checkbox on the policy form, default off); sealed network-profile secrets are never
+sent; script policy bodies are not sent. Withheld policies stay in the list flagged `quarantine_withheld` so
+the agent does not remove their configuration; the agent skips them and reports nothing for them. If the
+quarantine state cannot be read at check-in the device is treated as quarantined.
+
+Webhook events: `posture_changed`, `device_quarantined`, `device_released` (see `docs/WEBHOOKS.md`).
+
+## Access proxy and Authentik (device posture for other systems)
+
+SpireUEM can tell a reverse proxy or Authentik whether the device behind a request is compliant. This is a read-only
+view of the device's posture verdict; blocking happens in the other system.
+
+1. Create a service account (role cap Auditor, scope `posture:read` only, tags if you want to limit it) and keep its
+   token for the proxy. Never give it to the application you protect.
+2. Open **Access Proxy** in the sidebar (Super Admin or an unscoped Security Admin). Add the addresses of the
+   proxies that call SpireUEM, and nothing else, as trusted proxies. Choose the header that carries the client
+   address. Turn on "accept a source IP address" only where the address is bound to the device (a WireGuard or
+   NetBird overlay); on a LAN it can be spoofed or shared. Every save is audited with before and after values.
+3. Configure the proxy as shown in `docs/ACCESS_PROXY.md` (Traefik, Pangolin, nginx, Caddy). The proxy must
+   overwrite or strip any client-supplied `X-Forwarded-For` and certificate header.
+4. For login-time checks in Authentik see `docs/ACCESS_AUTHENTIK.md`.
+
+Defaults deny: with no trusted proxy configured, forward-auth refuses every request. A device with no verdict, an
+expired verdict, or an address shared by several devices is refused too. A `403` carries no reason; the SpireUEM log
+line `[forward-auth] deny` says why.
+## RADIUS / NAC (network access control and VPN)
+
+**Admin → RADIUS / NAC** configures how FreeRADIUS access decisions follow device posture. SpireUEM
+does not replace FreeRADIUS; FreeRADIUS asks SpireUEM. Setup, the FreeRADIUS files and VPN notes are in
+[ACCESS_RADIUS.md](ACCESS_RADIUS.md).
+
+* **Decision mapping** (SUPER_ADMIN, SECURITY_ADMIN; AUDITOR reads): VLAN ids for compliant,
+  quarantined and non-compliant devices. An empty quarantine or remediation VLAN means reject.
+  Unknown devices and UNKNOWN posture are rejected unless you enable the **guest VLAN**.
+* **Accept MAC identity** (off by default): lets MAC authentication bypass work. A MAC address can be
+  copied by anyone on the segment, so prefer certificates. Both switches are audited.
+* **NAS clients**: the switches, APs and VPN gateways SpireUEM may send Disconnect-Requests to (IP,
+  CoA port, shared secret). The secret is write-only: leave it empty to have one generated and shown
+  once. Tag-scoped administrators can read this page but not change it.
+* **Delivery log**: the last 50 disconnects with their status (`ACKED`, `NAKED`, `FAILED`).
+* The connector credential is a service account with only `posture:read` (Admin → API Access).
+

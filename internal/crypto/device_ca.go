@@ -50,6 +50,11 @@ type DeviceCA interface {
 	// extension it requests, and issues a client-auth-only leaf whose single URI SAN is
 	// spire://device/<deviceID>. validity<=0 uses DefaultDeviceCertValidity.
 	IssueFromCSR(csrDER []byte, deviceID string, validity time.Duration) (*IssuedCert, error)
+	// IssueWithOptions is IssueFromCSR with an explicit purpose. Every leaf is client-auth
+	// only and carries spire://device/<deviceID>. A browser leaf additionally carries
+	// spire://user/<user> and the subject CN "<user>@<deviceID>"; other purposes must not
+	// name a user. The purpose itself is recorded server-side, not trusted from the leaf.
+	IssueWithOptions(csrDER []byte, opts IssueOptions) (*IssuedCert, error)
 	// CACertPEM returns the PEM-encoded CA certificate (for the client-cert verification pool).
 	CACertPEM() []byte
 	// CertPool returns an *x509.CertPool containing the CA certificate.
@@ -198,7 +203,63 @@ func (ca *FileDeviceCA) generate() error {
 // subject, SANs and extensions are deliberately ignored: only the CSR public key is used, and
 // the only SAN placed on the leaf is spire://device/<deviceID>.
 func (ca *FileDeviceCA) IssueFromCSR(csrDER []byte, deviceID string, validity time.Duration) (*IssuedCert, error) {
-	deviceID = strings.TrimSpace(deviceID)
+	return ca.IssueWithOptions(csrDER, IssueOptions{DeviceID: deviceID, Purpose: CertPurposeAgent, Validity: validity})
+}
+
+// Certificate purposes as the CA sees them. They mirror types.CertPurpose; the crypto
+// package does not import types.
+const (
+	CertPurposeAgent   = "agent"
+	CertPurposeNetwork = "network"
+	CertPurposeBrowser = "browser"
+)
+
+// DeviceCAUserHost is the host part of the user URI SAN on browser leaves:
+// spire://user/<name>.
+const DeviceCAUserHost = "user"
+
+// IssueOptions selects what the device CA puts on a leaf.
+type IssueOptions struct {
+	DeviceID string
+	Purpose  string // CertPurposeAgent, CertPurposeNetwork or CertPurposeBrowser
+	User     string // browser only: the local account name (see ValidCertUser)
+	Validity time.Duration
+}
+
+// ValidCertUser reports whether name is acceptable as a browser certificate's user: a POSIX
+// portable user name (letters, digits, '.', '_', '-', not starting with '-'), 1-64 bytes.
+// It is deliberately strict because the name ends up in a URI SAN and a subject CN.
+func ValidCertUser(name string) bool {
+	if name == "" || len(name) > 64 || name[0] == '-' || name == "." || name == ".." {
+		return false
+	}
+	for _, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// IssueWithOptions verifies the CSR signature and issues a client-auth leaf for the given
+// purpose. As with IssueFromCSR, only the CSR's public key is used.
+func (ca *FileDeviceCA) IssueWithOptions(csrDER []byte, opts IssueOptions) (*IssuedCert, error) {
+	deviceID := strings.TrimSpace(opts.DeviceID)
+	validity := opts.Validity
+	switch opts.Purpose {
+	case CertPurposeAgent, CertPurposeNetwork:
+		if opts.User != "" {
+			return nil, fmt.Errorf("a %s certificate must not name a user", opts.Purpose)
+		}
+	case CertPurposeBrowser:
+		if !ValidCertUser(opts.User) {
+			return nil, errors.New("a browser certificate needs a valid local user name")
+		}
+	default:
+		return nil, fmt.Errorf("unknown certificate purpose %q", opts.Purpose)
+	}
 	if deviceID == "" {
 		return nil, errors.New("device id is required to issue a certificate")
 	}
@@ -229,10 +290,16 @@ func (ca *FileDeviceCA) IssueFromCSR(csrDER []byte, deviceID string, validity ti
 		return nil, err
 	}
 	spiffeURI := &url.URL{Scheme: DeviceCAURIScheme, Host: "device", Path: "/" + deviceID}
+	uris := []*url.URL{spiffeURI}
+	cn := deviceID
+	if opts.Purpose == CertPurposeBrowser {
+		uris = append(uris, &url.URL{Scheme: DeviceCAURIScheme, Host: DeviceCAUserHost, Path: "/" + opts.User})
+		cn = opts.User + "@" + deviceID
+	}
 	now := time.Now().UTC()
 	leaf := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: deviceID},
+		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    now.Add(-2 * time.Minute),
 		NotAfter:     now.Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -240,7 +307,7 @@ func (ca *FileDeviceCA) IssueFromCSR(csrDER []byte, deviceID string, validity ti
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  false,
-		URIs:                  []*url.URL{spiffeURI},
+		URIs:                  uris,
 	}
 
 	ca.mu.Lock()
@@ -287,6 +354,20 @@ func DeviceIDFromCert(cert *x509.Certificate) string {
 			continue
 		}
 		if u.Scheme == DeviceCAURIScheme && strings.EqualFold(u.Host, "device") {
+			return strings.TrimPrefix(u.Path, "/")
+		}
+	}
+	return ""
+}
+
+// UserFromCert returns the user named by a browser leaf's spire://user/<name> URI SAN, or ""
+// when the certificate carries none.
+func UserFromCert(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	for _, u := range cert.URIs {
+		if u != nil && u.Scheme == DeviceCAURIScheme && strings.EqualFold(u.Host, DeviceCAUserHost) {
 			return strings.TrimPrefix(u.Path, "/")
 		}
 	}

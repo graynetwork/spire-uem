@@ -106,6 +106,16 @@ func main() {
 	}
 	backoffAttempt := 0
 	triggerCheckinCh := make(chan struct{}, 1)
+
+	// Network (EAP-TLS) certificate: separate key, requested only while an assigned
+	// NETWORK_PROFILE uses client_cert_source "device".
+	engine.SetNetworkCertPaths(networkCertFiles(cfg.Agent.TokenPath).NetworkCertPaths)
+	netCert := newNetworkCertManager(client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, func() {
+		select {
+		case triggerCheckinCh <- struct{}{}:
+		default:
+		}
+	})
 	var checkinMu sync.Mutex
 	var ipcSrv *ipc.Server
 
@@ -134,6 +144,9 @@ func main() {
 			_ = engine.SavePolicyCache(engine.DefaultPolicyCachePath, checkinResp)
 			pendingReports, _ := engine.LoadPendingReports(engine.DefaultPendingReportsPath)
 			results := executePoliciesAndCleanup(syncCtx, checkinResp.Policies, checkinResp.RevokedPolicies, installedPkgs)
+			// After the keyfiles are applied or removed: tells the manager whether to hold,
+			// request or delete the network key and certificate.
+			netCert.setNeeded(networkCertNeeded(checkinResp.Policies))
 			allResults := engine.MergeReports(pendingReports, results)
 			if len(allResults) > 0 {
 				if repErr := reportPolicyResults(syncCtx, client, cfg.Agent.ServerURL, token, hwUUID, allResults); repErr != nil {
@@ -164,6 +177,7 @@ func main() {
 
 	if !*once {
 		go runWebSocketStream(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, triggerCheckinCh, ipcSrv)
+		go netCert.run(ctx)
 		go runCertRenewalLoop(ctx, client, cfg.Agent.ServerURL, cfg.Agent.TokenPath, hwUUID, deviceKey, certPaths)
 		go func() {
 			if err := ipcSrv.Run(ctx); err != nil {
@@ -664,6 +678,13 @@ func executePoliciesAndCleanup(
 	dconfNeedsUpdate := cleanupDconfModified
 
 	for _, pol := range policies {
+		// Quarantine: the server keeps the policy in the list (so the orphan cleanup above
+		// does not treat it as removed) but flags it. Do not enforce, remove or report it;
+		// whatever was applied before the quarantine stays exactly as it is.
+		if pol.QuarantineWithheld {
+			log.Printf("[spired] policy id=%s name=%q withheld by server (device quarantined); skipped", pol.ID, pol.Name)
+			continue
+		}
 		log.Printf("[spired] evaluating policy id=%s name=%q type=%s", pol.ID, pol.Name, pol.PolicyType)
 		var item types.PolicyExecutionItem
 		switch pol.PolicyType {
@@ -696,6 +717,10 @@ func executePoliciesAndCleanup(
 			item = engine.EnforceTrustedCACertificates(ctx, pol)
 		case types.PolicyTypeNetworkProfile:
 			item = engine.EnforceNetworkProfilePolicy(ctx, pol)
+		case types.PolicyTypeBrowserCertificate:
+			item = engine.EnforceBrowserCertificatePolicy(ctx, pol)
+		case types.PolicyTypeBrowserPolicy:
+			item = engine.EnforceBrowserPolicy(ctx, pol)
 		case types.PolicyTypeUSBDeviceControl:
 			item = engine.ReconcileUSBDeviceControl(ctx, pol)
 		case types.PolicyTypeAuditdRules:

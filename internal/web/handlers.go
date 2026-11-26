@@ -55,6 +55,8 @@ type Handler struct {
 	wfEngine *workflows.Engine
 	// deviceMTLSMode is shown read-only on the Settings page (off | optional | required).
 	deviceMTLSMode string
+	// posture re-evaluates the fleet's access posture after a rule-set edit.
+	posture FleetPostureEvaluator
 }
 
 // SetWorkflowEngine wires the workflow engine used by the workflow admin + approval handlers.
@@ -121,6 +123,7 @@ func NewHandler(repo *db.Repository, hub *gateway.GatewayHub, auditor *audit.For
 			b, err := json.Marshal(v)
 			return string(b), err
 		},
+		"add1": func(i int) int { return i + 1 },
 		"joinTags": func(tags []string) string {
 			return strings.Join(tags, ", ")
 		},
@@ -976,6 +979,17 @@ func (h *Handler) ListDevicesPage(w http.ResponseWriter, r *http.Request) {
 		devices = kept
 	}
 
+	h.annotatePosture(r.Context(), devices)
+	if pf := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("posture"))); pf != "" {
+		kept := devices[:0]
+		for _, d := range devices {
+			if d.PostureState == pf {
+				kept = append(kept, d)
+			}
+		}
+		devices = kept
+	}
+
 	if strings.Contains(r.Header.Get("Accept"), "application/json") {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(devices)
@@ -1117,8 +1131,8 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		dev.IsLost, dev.LastSeenIP, dev.LastActiveUser = isLost, seenIP, activeUser
 	}
 
-	// Device client certificate (mTLS): the most recent leaf, for the cert-status panel.
-	deviceCert, _ := h.repo.GetLatestDeviceCertificate(r.Context(), dev.ID)
+	// Device certificates of every purpose, for the certificate table.
+	deviceCerts := h.loadDeviceCertView(r, dev.ID)
 
 	// Rich inventory snapshot + change history for the inventory panel. HasInventory is
 	// false for a device that never reported (old agent / pre-feature); the template then
@@ -1198,9 +1212,10 @@ func (h *Handler) renderDeviceDetailWithReveal(w http.ResponseWriter, r *http.Re
 		"OpenWipe":           openWipe,
 		"LUKSRotations":      luksRotations,
 		"AdminRole":          string(AdminRoleFromContext(r.Context())),
-		"DeviceCert":         deviceCert,
+		"DeviceCerts":        deviceCerts,
 		"DeviceMTLSMode":     h.deviceMTLSModeOrDefault(),
 		"Inventory":          deviceInventory,
+		"Posture":            h.loadPostureView(r.Context(), dev.ID),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -2177,6 +2192,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		patchWindowID  *string
 		requiresReboot bool
 		assignmentType types.ApplicationAssignmentType
+		quarOK         bool
 	)
 
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
@@ -2191,6 +2207,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 			TargetGroupIDs []string                        `json:"target_group_ids"`
 			PatchWindowID  string                          `json:"patch_window_id"`
 			RequiresReboot bool                            `json:"requires_reboot"`
+			QuarantineOK   bool                            `json:"allowed_in_quarantine"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
@@ -2208,6 +2225,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 			patchWindowID = &pw
 		}
 		requiresReboot = body.RequiresReboot
+		quarOK = body.QuarantineOK
 	} else {
 		if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
 			_ = r.ParseMultipartForm(25 << 20)
@@ -2227,6 +2245,7 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		rebStr := strings.ToLower(strings.TrimSpace(r.FormValue("requires_reboot")))
 		requiresReboot = rebStr == "true" || rebStr == "1" || rebStr == "on"
+		quarOK = pFormBool(r.FormValue("allowed_in_quarantine"))
 
 		rawField := strings.TrimSpace(r.FormValue("payload"))
 		if rawField != "" {
@@ -2261,6 +2280,32 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 	if name == "" || policyType == "" || len(payloadRaw) == 0 || !json.Valid(payloadRaw) {
 		http.Error(w, "name, policy_type, and valid policy fields/JSON payload are required", http.StatusBadRequest)
 		return
+	}
+
+	// A raw JSON payload skips the form builder, so check the NETWORK_PROFILE client
+	// certificate source here before anything is stored.
+	if err := checkNetworkProfileCertSource(policyType, payloadRaw); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// A BROWSER_CERTIFICATE payload is validated whichever way it arrived (form fields, the
+	// raw "payload" form value or a JSON body).
+	if policyType == types.PolicyTypeBrowserCertificate {
+		valid, verr := validateBrowserCertificateJSON(payloadRaw)
+		if verr != nil {
+			http.Error(w, verr.Error(), http.StatusBadRequest)
+			return
+		}
+		payloadRaw = valid
+	}
+	if policyType == types.PolicyTypeBrowserPolicy {
+		valid, verr := validateBrowserPolicyJSON(payloadRaw)
+		if verr != nil {
+			http.Error(w, verr.Error(), http.StatusBadRequest)
+			return
+		}
+		payloadRaw = valid
 	}
 
 	// policy-types-b: seal any plaintext secrets in the payload (e.g. NETWORK_PROFILE PSK / EAP
@@ -2308,6 +2353,14 @@ func (h *Handler) CreatePolicy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pol.TargetGroupIDs = targetGroupIDs
+	}
+
+	if quarOK {
+		if _, err := h.repo.SetPolicyAllowedInQuarantine(r.Context(), pol.ID, true); err != nil {
+			log.Printf("[web] set policy allowed_in_quarantine error: %v", err)
+		} else {
+			pol.AllowedInQuarantine = true
+		}
 	}
 
 	h.dispatchPolicyCheckin(r.Context(), pol)
@@ -2555,6 +2608,10 @@ func buildStructuredPolicyPayload(r *http.Request, policyType types.PolicyType) 
 		return buildTrustedCACertificatesPayload(r)
 	case types.PolicyTypeNetworkProfile:
 		return buildNetworkProfilePayload(r)
+	case types.PolicyTypeBrowserCertificate:
+		return buildBrowserCertificatePayload(r)
+	case types.PolicyTypeBrowserPolicy:
+		return buildBrowserPolicyPayload(r)
 	case types.PolicyTypeUSBDeviceControl:
 		return buildUSBDeviceControlPayload(r)
 	case types.PolicyTypeAuditdRules:

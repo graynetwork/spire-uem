@@ -40,6 +40,7 @@ type patAuthResult struct {
 	effectiveRole types.AdminRole
 	userObj       *types.AdminUser
 	tokenID       string
+	ownerUserID   string
 }
 
 // authenticatePATRequest resolves a bearer PAT to an authenticated principal, applying all
@@ -64,33 +65,50 @@ func authenticatePATRequest(
 		return patAuthResult{}, true
 	}
 
-	fail := func() patAuthResult {
+	res, countFailure := evaluatePAT(r, repo, auditor, raw, ip)
+	if countFailure {
 		limiter.RecordFailure(ip)
-		return patAuthResult{}
 	}
+	if res.authenticated {
+		limiter.Reset(ip)
+	}
+	return res, false
+}
 
+// evaluatePAT is the credential check shared by the /admin middleware and the versioned
+// admin API: the token must exist, not be revoked or expired, and its owner must be active.
+// The effective role is min(token role, owner's current role). countFailure is true when
+// the failure is a rejected credential (it counts toward the per-IP limit); an
+// infrastructure error fails closed without counting. First successful use is audited once.
+func evaluatePAT(r *http.Request, repo *db.Repository, auditor *audit.Forwarder, raw, ip string) (res patAuthResult, countFailure bool) {
 	tok, err := repo.AuthenticatePAT(r.Context(), HashPAT(raw))
 	if err != nil {
 		if errors.Is(err, db.ErrPATNotFound) {
-			return fail(), false
+			return patAuthResult{}, true
 		}
-		// Treat an infra error as auth failure (fail closed) but do not count it against
-		// the IP, since it is not a guess.
 		return patAuthResult{}, false
 	}
 
-	// Revoked, expired, or owner disabled: refuse. These are real rejections of a
-	// presented credential, so count them toward the rate limit.
 	if tok.IsRevoked() || time.Now().After(tok.ExpiresAt) || !tok.OwnerActive {
-		return fail(), false
+		return patAuthResult{}, true
 	}
 
 	effective := MinRole(tok.Role, tok.OwnerRole)
 	if roleRank(effective) == 0 {
-		return fail(), false
+		return patAuthResult{}, true
 	}
 
-	limiter.Reset(ip)
+	// Load the owner's account: tag scoping and every other per-user check read it from the
+	// request context, so without it a scoped admin's token would act fleet-wide. A failed
+	// lookup is refused (fail closed) but not counted against the IP, since it is not a guess.
+	owner, oerr := repo.GetAdminUserByID(r.Context(), tok.OwnerUserID)
+	if oerr != nil || owner == nil {
+		return patAuthResult{}, false
+	}
+	ownerCopy := *owner
+	// The token may carry a lower role than its owner; the context object must not let
+	// anything read the owner's higher role back out.
+	ownerCopy.Role = effective
 
 	// Record usage; audit first use exactly once.
 	firstUse, touchErr := repo.TouchPersonalAccessToken(r.Context(), tok.ID, ip)
@@ -105,7 +123,9 @@ func authenticatePATRequest(
 		authenticated: true,
 		username:      ownerUsername(tok),
 		effectiveRole: effective,
+		userObj:       &ownerCopy,
 		tokenID:       tok.ID,
+		ownerUserID:   tok.OwnerUserID,
 	}, false
 }
 
@@ -124,6 +144,9 @@ func ownerUsername(tok *types.PersonalAccessToken) string {
 func patContext(ctx context.Context, res patAuthResult) context.Context {
 	ctx = context.WithValue(ctx, AdminUserCtxKey, res.username)
 	ctx = context.WithValue(ctx, AdminRoleCtxKey, res.effectiveRole)
+	if res.userObj != nil {
+		ctx = context.WithValue(ctx, AdminUserObjCtxKey, res.userObj)
+	}
 	ctx = context.WithValue(ctx, PATIDCtxKey, res.tokenID)
 	ctx = context.WithValue(ctx, AuthMethodCtxKey, AuthMethodTokenID)
 	return ctx

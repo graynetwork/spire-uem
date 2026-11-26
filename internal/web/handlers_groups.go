@@ -37,7 +37,7 @@ func (h *Handler) ListGroupsPage(w http.ResponseWriter, r *http.Request) {
 		"Title":     "Groups",
 		"ActiveNav": "groups",
 		"CSRFToken": CSRFTokenFromContext(r.Context()),
-		"AdminUser": AdminUserObjFromContext(r.Context()),
+		"AdminUser": AdminUserFromContext(r.Context()),
 		"Groups":    groups,
 		"Devices":   devices,
 		"Fields":    grouprule.Fields(),

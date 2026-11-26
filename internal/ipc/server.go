@@ -83,6 +83,8 @@ type Server struct {
 	campaignMu       sync.Mutex
 	pendingCampaign  *PendingCampaign
 	campaignDeferred map[string]bool
+	bcOnce           sync.Once
+	bc               *browserCertState
 }
 
 // SetEngineMutex binds the daemon's policy execution mutex so IPC install/uninstall operations serialize with check-in cycles.
@@ -248,6 +250,8 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/v1/install", s.handleInstall)
 	mux.HandleFunc("/v1/uninstall", s.handleUninstall)
 	mux.HandleFunc("/v1/campaign/defer", s.handleCampaignDefer)
+	mux.HandleFunc("/v1/browser-cert/config", s.handleBrowserCertConfig)
+	mux.HandleFunc("/v1/browser-cert/issue", s.handleBrowserCertIssue)
 
 	srv := &http.Server{
 		Handler:           s.peerCredMiddleware(mux),

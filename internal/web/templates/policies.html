@@ -138,7 +138,7 @@
     <div class="bg-[#0f1420] border border-[#1a2234] rounded-lg p-5">
         <div class="mb-4">
             <h2 class="text-xs font-semibold text-white">Custom Baseline Policy Creator</h2>
-            <p class="text-[11px] text-slate-400 mt-0.5">Author declarative PACKAGE_PRESENCE, PACKAGE_ABSENCE, DCONF_SETTING, SYSTEMD_SERVICE, FLATPAK_APP, NETWORK_PROFILE, USB_DEVICE_CONTROL, or AUDITD_RULES policies.</p>
+            <p class="text-[11px] text-slate-400 mt-0.5">Author declarative PACKAGE_PRESENCE, PACKAGE_ABSENCE, DCONF_SETTING, SYSTEMD_SERVICE, FLATPAK_APP, NETWORK_PROFILE, USB_DEVICE_CONTROL, AUDITD_RULES, BROWSER_CERTIFICATE, or BROWSER_POLICY policies.</p>
         </div>
 
         <form action="/admin/policies" method="POST" enctype="multipart/form-data" class="space-y-4">
@@ -167,6 +167,8 @@
                         <option value="NETWORK_PROFILE">NETWORK_PROFILE (NetworkManager Wi-Fi / 802.1X / WireGuard)</option>
                         <option value="USB_DEVICE_CONTROL">USB_DEVICE_CONTROL (usbguard)</option>
                         <option value="AUDITD_RULES">AUDITD_RULES (auditd / augenrules)</option>
+                        <option value="BROWSER_CERTIFICATE">BROWSER_CERTIFICATE (per-user browser certificates)</option>
+                        <option value="BROWSER_POLICY">BROWSER_POLICY (Chrome, Chromium, Brave, Edge and Firefox settings)</option>
                     </select>
                 </div>
                 <div>
@@ -208,6 +210,13 @@
                         <input type="checkbox" name="requires_reboot" value="true"
                             class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600 focus:ring-blue-500">
                         <span>Requires Reboot (<code class="text-[10px] font-mono text-rose-400">requires_reboot=true</code>)</span>
+                    </label>
+                </div>
+                <div class="flex items-end pb-1.5">
+                    <label class="inline-flex items-center space-x-2 text-xs text-slate-300 cursor-pointer" title="Delivered to a quarantined device. Default off.">
+                        <input type="checkbox" name="allowed_in_quarantine" value="true"
+                            class="rounded bg-[#0f1420] border-[#1a2234] text-blue-600 focus:ring-blue-500">
+                        <span>Allowed in quarantine</span>
                     </label>
                 </div>
             </div>
@@ -480,7 +489,15 @@
                             <input type="password" name="np_wifi_password" autocomplete="new-password" placeholder="PEAP-MSCHAPv2 password (sealed)"
                                 class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
                         </div>
-                        <div class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="sm:col-span-2">
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Client certificate (EAP-TLS)</label>
+                            <select name="np_wifi_client_cert_source" onchange="toggleClientCertSource('np-wifi-paste', this.value)" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                                <option value="">Pasted certificate and key</option>
+                                <option value="device">Issued by SpireUEM (per-device key, no paste)</option>
+                            </select>
+                            <p class="text-[10px] text-slate-500 mt-1">Issued by SpireUEM needs EAP-TLS. The device makes its own key; RADIUS must trust the device CA (see ACCESS_RADIUS).</p>
+                        </div>
+                        <div id="np-wifi-paste" class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
                                 <label class="block text-[11px] font-medium text-slate-300 mb-1">Client Cert (PEM, EAP-TLS)</label>
                                 <textarea name="np_wifi_client_cert" rows="2" placeholder="-----BEGIN CERTIFICATE-----"
@@ -520,6 +537,15 @@
                             <input type="password" name="np_wired_password" autocomplete="new-password" placeholder="sealed at save"
                                 class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
                         </div>
+                        <div class="sm:col-span-2">
+                            <label class="block text-[11px] font-medium text-slate-300 mb-1">Client certificate (EAP-TLS)</label>
+                            <select name="np_wired_client_cert_source" onchange="toggleClientCertSource('np-wired-paste', this.value)" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                                <option value="">Pasted certificate and key</option>
+                                <option value="device">Issued by SpireUEM (per-device key, no paste)</option>
+                            </select>
+                            <p class="text-[10px] text-slate-500 mt-1">Issued by SpireUEM needs EAP-TLS. The device makes its own key; RADIUS must trust the device CA (see ACCESS_RADIUS).</p>
+                        </div>
+                        <div id="np-wired-paste" class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
                             <label class="block text-[11px] font-medium text-slate-300 mb-1">Client Cert (PEM, EAP-TLS)</label>
                             <textarea name="np_wired_client_cert" rows="2"
@@ -529,6 +555,7 @@
                             <label class="block text-[11px] font-medium text-slate-300 mb-1">Client Key (PEM, EAP-TLS, sealed)</label>
                             <textarea name="np_wired_client_key" rows="2"
                                 class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -595,6 +622,39 @@
                     <textarea name="usb_allow_list" rows="4" placeholder="046d:c52b  # Logitech receiver&#10;0781:*&#10;class:08  # mass storage"
                         class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
                     <p class="text-[10px] text-slate-500 mt-1">On first apply in block-new mode, devices currently plugged in are grandfathered so nothing already connected breaks.</p>
+                </div>
+            </div>
+
+            <!-- Browser Certificate Fields -->
+            <div id="fields-browser-cert" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Sites that get the certificate automatically (one per line: <code class="font-mono text-slate-400">https://apps.example.com</code> or <code class="font-mono text-slate-400">[*.]example.com</code>)</label>
+                    <textarea name="bc_urls" rows="3" placeholder="https://apps.example.com&#10;[*.]corp.example.com"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Browsers to configure</label>
+                    <select name="bc_browsers" class="w-full rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-xs text-white">
+                        <option value="both">Chromium family and Firefox</option>
+                        <option value="chromium">Chromium family only (Chrome, Chromium, Brave, Edge)</option>
+                        <option value="firefox">Firefox only</option>
+                    </select>
+                    <p class="text-[10px] text-slate-500 mt-1">Each desktop user gets their own 7-day certificate from the device CA. Chromium-family browsers present it only to the sites above and only to servers that ask for a certificate from <code class="font-mono text-slate-400">SpireUEM Device CA</code>. Firefox has no per-site list, so it is set to pick automatically for any site that asks. The proxy must terminate TLS itself; see docs/ACCESS_PROXY.md.</p>
+                </div>
+            </div>
+
+            <!-- Auditd Rules Fields -->
+            <div id="fields-browser-policy" class="hidden p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-3">
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Chrome, Chromium, Brave and Edge policies (JSON object of <a class="underline" href="https://chromeenterprise.google/policies/" target="_blank" rel="noopener">Chrome policy names</a>)</label>
+                    <textarea name="bp_chromium" rows="4" placeholder="{&quot;HomepageLocation&quot;: &quot;https://intranet.example.com&quot;, &quot;MetricsReportingEnabled&quot;: false}"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Firefox policies (JSON object of <a class="underline" href="https://mozilla.github.io/policy-templates/" target="_blank" rel="noopener">Firefox policy names</a>)</label>
+                    <textarea name="bp_firefox" rows="4" placeholder="{&quot;DisableTelemetry&quot;: true, &quot;Preferences&quot;: {&quot;browser.startup.homepage&quot;: {&quot;Value&quot;: &quot;https://intranet.example.com&quot;, &quot;Status&quot;: &quot;locked&quot;}}}"
+                        class="w-full font-mono rounded-md bg-[#0f1420] border border-[#1a2234] px-2.5 py-1.5 text-[11px] text-white"></textarea>
+                    <p class="text-[10px] text-slate-500 mt-1">Leave either box empty to skip that browser. SpireUEM checks the shape of each policy name and value, not whether the browser knows the name: a misspelt name is accepted and ignored by the browser, so check chrome://policy or about:policies after applying. Values are stored in plain text and are readable by auditors and by every user on the device, so never put passwords here. Two policies may not set the same name.</p>
                 </div>
             </div>
 
@@ -727,7 +787,9 @@ function togglePolicyFields(policyType) {
     const net = document.getElementById('fields-network');
     const usb = document.getElementById('fields-usb');
     const auditd = document.getElementById('fields-auditd');
-    [pkg, flatpak, dconf, sysd, net, usb, auditd].forEach(function (el) { if (el) el.classList.add('hidden'); });
+    const browserCert = document.getElementById('fields-browser-cert');
+    const browserPolicy = document.getElementById('fields-browser-policy');
+    [pkg, flatpak, dconf, sysd, net, usb, auditd, browserCert, browserPolicy].forEach(function (el) { if (el) el.classList.add('hidden'); });
 
     if (policyType === 'PACKAGE_ABSENCE' || policyType === 'PACKAGE_PRESENCE') {
         pkg.classList.remove('hidden');
@@ -750,6 +812,10 @@ function togglePolicyFields(policyType) {
         usb.classList.remove('hidden');
     } else if (policyType === 'AUDITD_RULES') {
         auditd.classList.remove('hidden');
+    } else if (policyType === 'BROWSER_CERTIFICATE') {
+        browserCert.classList.remove('hidden');
+    } else if (policyType === 'BROWSER_POLICY') {
+        browserPolicy.classList.remove('hidden');
     }
 }
 
@@ -769,6 +835,12 @@ function toggleWifiSecurity(sec) {
     const isEnt = (sec === 'wpa2-enterprise' || sec === 'wpa3-enterprise');
     if (personal) personal.classList.toggle('hidden', isEnt);
     if (enterprise) enterprise.classList.toggle('hidden', !isEnt);
+}
+
+// Hide the paste fields while the certificate is issued by SpireUEM.
+function toggleClientCertSource(pasteId, src) {
+    const paste = document.getElementById(pasteId);
+    if (paste) paste.classList.toggle('hidden', src === 'device');
 }
 
 function warnHIDRemoval(cb) {

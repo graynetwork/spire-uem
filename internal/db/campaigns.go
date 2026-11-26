@@ -180,6 +180,9 @@ func (r *Repository) RecordCampaignEvent(ctx context.Context, campaignID, kind, 
 		INSERT INTO campaign_events (campaign_id, kind, actor, detail, stage)
 		VALUES ($1,$2,$3,$4,$5)`,
 		campaignID, kind, strings.TrimSpace(actor), detail, stage)
+	if err == nil {
+		r.emitCampaignLifecycle(ctx, campaignID, kind, strings.TrimSpace(actor), detail, stage)
+	}
 	return err
 }
 

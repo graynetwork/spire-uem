@@ -197,7 +197,25 @@ A device with **no active certificate** (enrolled before mTLS was enabled, issua
 | `optional` (default) | A presented certificate is validated and must match the device's bearer token; a device without one still authenticates on the token alone. |
 | `required` | Device REST and WebSocket endpoints refuse any request without a valid certificate matching the bearer token. Enroll and claim stay reachable; admin browser routes never need a client certificate. |
 
-The device detail page shows each device's certificate status (short serial, expiry, revoked), and **Settings → Security** shows the active mode read-only. Revoking a device revokes all of its certificates immediately.
+The device detail page lists the device's certificates of every purpose (agent, network and browser): purpose, user (browser only), short serial, fingerprint, issued, expires and status (active, expired or revoked). It shows active certificates by default; **Show all** adds revoked and expired ones. **Settings → Security** shows the active mode read-only. Revoking a device revokes all of its certificates immediately.
+
+### 4.1 Viewing and revoking certificates
+
+SECURITY_ADMIN and SUPER_ADMIN see a **Revoke** button on each active certificate and confirm before it runs. AUDITORs see the table without buttons. A tag-scoped admin sees and revokes certificates only on devices carrying one of their tags. Each revoke is audited as `DEVICE_CERT_REVOKE` (purpose, serial, user) and raises the `device_cert_revoked` webhook event. The same actions are in the admin API (`GET /devices/{id}/certificates`, `POST /devices/{id}/certificates/{cert_id}/revoke`); see `docs/API.md`.
+
+What revoking each purpose does:
+
+| Purpose | Effect of revoking one certificate |
+|---|---|
+| `network` | RADIUS refuses it at the next authorization. The device keeps working otherwise and can request a new network certificate. |
+| `browser` | Forward-auth refuses it at the next request. The user can request a new one while the device's agent certificate is valid. |
+| `agent` | The device's agent API refuses it. Because a device with no active agent certificate could otherwise fetch a new one with its bearer token alone, revoking an agent certificate also sets a flag on the device: **bearer-only issuance is refused until an administrator re-approves it.** The device page then shows a notice and a **Re-approve issuance** button (API: `POST /devices/{id}/certificates/reapprove`). Network and browser certificates need a live agent certificate to be issued, so they cannot be renewed in the meantime either. |
+
+A device that never held a certificate, or whose certificate only expired, is not flagged and keeps the first-issue behaviour described above. Revoking a network or browser certificate never sets the flag. To cut a compromised device off completely, revoke the device itself rather than one certificate: a device whose token is exposed can still use that token until the device is revoked. Re-approving a device does not clear the flag; use the button or API call. Issuance at enrollment (token claim or token enroll) is a separate path and is not affected by the flag.
+
+### 4.2 Downloading the device CA
+
+**Device CA** in the sidebar shows the CA subject, validity dates and SHA-256 fingerprint, with a PEM download, for any signed-in admin. The same data is at `GET /admin/device-ca.pem` and, for automation, `GET /api/admin/v1/pki/device-ca`. Install this certificate as the trust anchor on the FreeRADIUS server (EAP-TLS `ca_file`) and on a TLS-terminating reverse proxy that asks browsers for a client certificate, and check the fingerprint against the one shown. The CA certificate is public. The page says so when no device CA is configured (`SPIRE_DEVICE_MTLS=off`).
 
 **Proxy limitation.** `required` mode cannot be combined with a trusted TLS proxy (`SPIRE_TRUST_PROXY`): SpireUEM verifies the client certificate from the TLS handshake it terminates itself and never trusts a forwarded client-certificate header, which anything behind the proxy could spoof. To use `required` mode, terminate TLS in `spire-server` with `SPIRE_TLS_CERT_FILE` / `SPIRE_TLS_KEY_FILE`. The server refuses to start if `required` is set alongside `SPIRE_TRUST_PROXY`.
 
@@ -457,10 +475,32 @@ Three `kind`s:
 - **`wifi`** — SSID + security:
   - `wpa2-personal` / `wpa3-personal`: pre-shared key (8–63 chars).
   - `wpa2-enterprise` / `wpa3-enterprise` (802.1X): EAP method `peap-mschapv2` (identity + password)
-    or `tls` (client cert + key, optional CA). CA/client certs are supplied as PEM text.
+    or `tls` (client cert + key, optional CA). CA/client certs are supplied as PEM text, or the client
+    certificate is issued by SpireUEM per device (below).
 - **`wired_8021x`** — wired 802.1X, same EAP options as enterprise Wi-Fi.
 - **`wireguard`** — interface address(es), DNS, and one or more peers (peer public key, endpoint,
   allowed IPs, optional preshared key).
+
+**Device-certificate profile (EAP-TLS without pasting a certificate).** Set the policy form's
+*Client certificate* to **Issued by SpireUEM** (JSON: `"client_cert_source": "device"`) on a Wi-Fi
+enterprise or wired 802.1X profile. Requirements: EAP method `tls`; no `client_cert`, `client_key`
+or `password` (the server refuses the policy otherwise); `ca_cert` is the CA of your **RADIUS
+server certificate**, not the device CA. To set it up:
+
+1. Configure FreeRADIUS to trust the device CA and call SpireUEM (`docs/ACCESS_RADIUS.md` section 4a).
+2. Create the `NETWORK_PROFILE` with *Issued by SpireUEM*, paste the RADIUS server CA, leave
+   *Identity* empty (the device id is used) or set the identity your RADIUS policy expects.
+3. Assign it. On the next check-in the agent creates a key on the device, asks for its certificate
+   and then applies the profile. Until then the Host Policy Inspector shows the profile as
+   non-compliant with "device network certificate not ready". The keyfile points at
+   `/etc/spire/network.key` and `/etc/spire/network.crt` (the directory of the agent token) by path.
+4. Check: the device's certificates (purpose `network`) are listed for the device; revoking one makes
+   RADIUS refuse it. Removing the last such profile deletes the key and certificate from the device.
+
+This kind of profile contains no secret, so attestation withholding never applies to it. The
+protection is on the RADIUS side: the certificate is only accepted for a device whose posture is
+good, checked at every connection. The certificate is renewed at about two thirds of its lifetime;
+NetworkManager uses the new files the next time the connection authenticates.
 
 **WireGuard key handling (important):** the server **never** holds a device WireGuard private key.
 The agent generates an X25519 private key **on the device**, writes it into the keyfile, and reports
@@ -1201,9 +1241,8 @@ WireGuard PSK). Roll it out gradually (PCR Baselines page, SUPER_ADMIN):
    (re)written. Before flipping to enforce, drive the untrusted count to zero (or cover the
    remainder with scoped exceptions).
 
-   Enforcement withholds only sealed secrets. An EAP-TLS client private key is not sealed and
-   is still delivered to an untrusted device. Until it is, prefer password-based EAP or
-   WireGuard for networks that must depend on attestation.
+   Enforcement withholds every network-profile secret, including EAP-TLS client private keys.
+   A client key stored before keys were sealed at rest is withheld too.
 
 **Rollback.** Set enforcement back to `warn` or `off` at any time; the next check-in of each
 device delivers secrets again. No data is lost — withholding only omits plaintext from the
@@ -1450,3 +1489,122 @@ for that minute misses it (there is no catch-up). Only one instance fires each m
 **Tuning.** The engine's defaults (event batch 50, action budget 200/min, approval TTL 24h, event
 retention 7 days, quarantine tag `quarantine`) are compiled in via `workflows.DefaultConfig()`;
 adjust in `cmd/spire-server/main.go` if a deployment needs different bounds.
+
+
+## 20. Browser certificates (`BROWSER_CERTIFICATE`)
+
+Gives every desktop user a 7-day certificate for this device, held in their own browser key store, so a TLS-terminating
+proxy and forward-auth can identify the device and the user. Read `docs/ACCESS_PROXY.md` for the proxy side.
+
+### 20.1 Turn it on
+
+1. The device CA must be configured (`SPIRE_DEVICE_CA_CERT_FILE`/`_KEY_FILE`) and agents must hold their agent
+   certificates (section 4). A browser certificate is issued only to a device that presents its agent certificate
+   in the TLS handshake, so the control plane must terminate TLS itself (`SPIRE_TLS_CERT_FILE`); a TLS-terminating
+   proxy in front of it hides the agent certificate and issuing fails.
+2. Create a `BROWSER_CERTIFICATE` policy (Policies page, or a JSON payload such as
+   `{"auto_select_urls":["https://apps.example.com","[*.]corp.example.com"],"browsers":["chromium","firefox"]}`).
+   `auto_select_urls` are Chrome `AutoSelectCertificateForUrls` patterns: `https://host[:port]`, `host`, `[*.]host`. A bare
+   `*`, plain `http://` and paths are refused. `browsers` may be `chromium`, `firefox` or both (empty means both);
+   `auto_select_urls` is required when Chromium is included.
+3. Install the package `libnss3-tools` on the endpoints (the SpireUEM package recommends it). Without `certutil`, Spire Hub
+   shows a message and no certificate is installed.
+4. On the Access Proxy page name the certificate header and trust the proxy. Optionally turn on "Require the browser
+   certificate's user to be the device's active desktop user".
+
+### 20.2 What the agent writes
+
+| Where | What | When the policy is revoked |
+|---|---|---|
+| `/etc/opt/chrome/policies/managed/spire-browser-cert.json`, and the same file under `/etc/chromium`, `/etc/brave`, `/etc/opt/edge` | `AutoSelectCertificateForUrls` limited to issuer `CN=SpireUEM Device CA` | the file is deleted |
+| `/etc/firefox/policies/policies.json` (and `distribution/policies.json` of installed Firefox builds) | one preference, `security.default_personal_cert = Select Automatically`; the previous value, if any, is recorded | the preference is put back; a file the agent created is deleted; every other key is kept |
+| `/var/lib/spire/browser-cert/state.json` | what was written, for removal | the file is deleted |
+
+A `policies.json` that is not valid JSON is not touched and the policy reports FAILED. Firefox has no per-site list: it
+picks the certificate automatically for any site that asks for one from the device CA. If you change the preference by hand
+after the agent set it, removal leaves your value.
+
+### 20.3 Operating it
+
+* Each user's certificate is requested by `spire-hub` when they sign in and renewed after about 5 days. The user is the
+  account that owns the process; it cannot be chosen. Root and system accounts are refused.
+* A device may hold certificates for at most 8 users and 2 live certificates per user.
+* Revoke a device (or its certificates) to cut access; posture is also checked on every request.
+* Audit: each issue is a `DEVICE_CERT_ISSUE` event with purpose `browser` and the user.
+* `GET /api/admin/v1/posture/lookup?serial=...&purpose=browser` (or `fingerprint=`) limits a certificate lookup to one purpose.
+
+### 20.4 Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Spire Hub row says `certutil` is missing | Install `libnss3-tools`. |
+| No row at all | The policy is not assigned or has not been enforced yet (`spire-ctl sync`). |
+| `403` for the user | `[forward-auth] deny` in the server log. Agent and network certificates, a user-less certificate, a revoked one and a non-compliant device are each denied. |
+| Browser prompts for a certificate | The site is not in `auto_select_urls`, or the Chromium policy file is missing (`chrome://policy`). |
+| Firefox shows no certificate | Restart Firefox; check for a primary password; check `about:policies`. |
+
+### 20.5 Limits
+
+The user can copy their own key out of their key store, so a browser certificate proves "this device and this account"
+at most. It is short-lived and posture is checked per request for that reason. There are no TPM-bound keys. Snap and
+Flatpak Chromium-family browsers are not configured. The proxy must terminate TLS itself. Removing the policy stops
+auto-selection at once but leaves the certificates in the key stores until they expire.
+
+
+## 21. Browser settings (`BROWSER_POLICY`)
+
+Sets enterprise policies for Chrome, Chromium, Brave and Edge, and for Firefox: homepage, telemetry, extensions, Safe
+Browsing, and anything else the browsers accept as a managed policy. The policy names and values are the browsers' own;
+see the [Chrome Enterprise policy list](https://chromeenterprise.google/policies/) and the
+[Firefox policy templates](https://mozilla.github.io/policy-templates/).
+
+### 21.1 Create one
+
+On the Policies page choose `BROWSER_POLICY` and fill in either box, or send a JSON payload:
+
+```json
+{
+  "chromium": {"HomepageLocation": "https://intranet.example.com", "MetricsReportingEnabled": false},
+  "firefox": {
+    "DisableTelemetry": true,
+    "Preferences": {"browser.startup.homepage": {"Value": "https://intranet.example.com", "Status": "locked"}}
+  }
+}
+```
+
+The template "Browser Telemetry Off, Safe Browsing On" is a starting point.
+
+What the server checks before storing it:
+
+* Policy names are PascalCase identifiers (`^[A-Z][A-Za-z0-9]{0,99}$`); Firefox preference names are about:config names.
+* Every value is valid, non-null JSON. At most 200 names per browser and 64 KiB in total.
+* `AutoSelectCertificateForUrls` (Chromium) and the Firefox preference `security.default_personal_cert` are refused,
+  because `BROWSER_CERTIFICATE` sets them.
+
+The server does **not** check that a name is one the browser knows. A misspelt name is stored, written, reported
+COMPLIANT and ignored by the browser. Check `chrome://policy` or `about:policies` on one device after the first rollout.
+
+Values are stored in plain text, readable by auditors, and written to world-readable files on the device. Never put a
+password or other secret in a browser policy.
+
+### 21.2 What the agent writes
+
+| Where | What | When the policy is revoked |
+|---|---|---|
+| `/etc/opt/chrome/policies/managed/spire-policy-<policy id>.json`, and the same file under `/etc/chromium`, `/etc/brave`, `/etc/opt/edge` | the `chromium` object as it is | the file is deleted |
+| `/etc/firefox/policies/policies.json` (and `distribution/policies.json` of installed Firefox builds) | each top-level name, and each preference inside `Preferences`, merged one at a time; what each held before is recorded | each name the policy still holds is put back; a name someone changed since is left alone; a file the agent created is deleted once it is empty |
+| `/var/lib/spire/browser-policy/state.json` | what was written, for removal | updated |
+
+A `policies.json` that is not valid JSON is not touched and the policy reports FAILED. A policy that is unassigned while
+the device is offline is cleaned up at the next check-in.
+
+### 21.3 Two policies on one device
+
+Two `BROWSER_POLICY` policies may set different names. If they set the same name, the one applied second reports FAILED
+with `conflict: ... is already set by policy <id>` and writes nothing, so the result never depends on the order policies
+were applied in. Merge the settings into one policy, or remove the name from one of them.
+
+### 21.4 Limits
+
+Snap and Flatpak browsers read their policies from inside their sandbox and are not configured. Chrome applies a change
+within a few minutes or on restart; Firefox only on restart.

@@ -15,23 +15,42 @@ import (
 // call crypto.EvaluateTrust with an explicit clock).
 func nowUTC() time.Time { return time.Now().UTC() }
 
-// policyCarriesSealedSecret reports whether a NETWORK_PROFILE payload contains at least one
-// sealed SecretEnvelope. Only such policies are affected by attestation enforcement; a
-// profile with no secrets (e.g. EAP-TLS with inline certs only, or an open network) is
-// delivered unchanged even to an untrusted device.
-func policyCarriesSealedSecret(p *types.NetworkProfilePayload) bool {
+// payloadSecrets returns a pointer to every secret field of a NETWORK_PROFILE payload: Wi-Fi
+// PSK, EAP password and EAP-TLS client key, wired 802.1X password and client key, and
+// WireGuard peer PSKs. Detection and withholding both walk this one list, so a new Wi-Fi or
+// wired secret field added here is covered by both. WireGuard peer PSKs live in a map and are
+// handled separately by each caller.
+func payloadSecrets(p *types.NetworkProfilePayload) []*types.SecretEnvelope {
+	if p == nil {
+		return nil
+	}
+	var out []*types.SecretEnvelope
+	if p.Wifi != nil {
+		out = append(out, &p.Wifi.PSK, &p.Wifi.Password, &p.Wifi.ClientKey)
+	}
+	if p.Wired != nil {
+		out = append(out, &p.Wired.Password, &p.Wired.ClientKey)
+	}
+	return out
+}
+
+// policyCarriesSecret reports whether a NETWORK_PROFILE payload contains at least one secret,
+// sealed or legacy plaintext. A client key stored before keys were sealed at rest loads as
+// plaintext, so checking only sealed envelopes would deliver it to an untrusted device. Only
+// carrying policies are affected by attestation enforcement; a profile with no secrets (an
+// open network, or EAP with certificates only) is delivered unchanged even to an untrusted device.
+func policyCarriesSecret(p *types.NetworkProfilePayload) bool {
 	if p == nil {
 		return false
 	}
-	if p.Wifi != nil && (p.Wifi.PSK.IsSealed() || p.Wifi.Password.IsSealed()) {
-		return true
-	}
-	if p.Wired != nil && p.Wired.Password.IsSealed() {
-		return true
+	for _, env := range payloadSecrets(p) {
+		if env.HasValue() {
+			return true
+		}
 	}
 	if p.WireGuard != nil {
 		for _, env := range p.WireGuard.PeerPSKs {
-			if env.IsSealed() {
+			if env.HasValue() {
 				return true
 			}
 		}
@@ -95,15 +114,11 @@ func (h *Handler) withholdPolicySecrets(policies []types.AssignedPolicy, reason 
 			log.Printf("[api] withhold: parse NETWORK_PROFILE payload for policy=%s failed: %v", policies[i].ID, err)
 			continue
 		}
-		if !policyCarriesSealedSecret(&p) {
+		if !policyCarriesSecret(&p) {
 			continue
 		}
-		if p.Wifi != nil {
-			p.Wifi.PSK = types.SecretEnvelope{}
-			p.Wifi.Password = types.SecretEnvelope{}
-		}
-		if p.Wired != nil {
-			p.Wired.Password = types.SecretEnvelope{}
+		for _, env := range payloadSecrets(&p) {
+			*env = types.SecretEnvelope{}
 		}
 		if p.WireGuard != nil {
 			for idx := range p.WireGuard.PeerPSKs {

@@ -23,8 +23,11 @@ import (
 	"github.com/spire-uem/spire-uem/internal/cvefeed"
 	"github.com/spire-uem/spire-uem/internal/db"
 	"github.com/spire-uem/spire-uem/internal/gateway"
+	"github.com/spire-uem/spire-uem/internal/posture"
 	"github.com/spire-uem/spire-uem/internal/groupsync"
+	"github.com/spire-uem/spire-uem/internal/radius"
 	"github.com/spire-uem/spire-uem/internal/web"
+	"github.com/spire-uem/spire-uem/internal/webhooks"
 	"github.com/spire-uem/spire-uem/internal/workflows"
 )
 
@@ -140,12 +143,35 @@ func main() {
 	repo.NewWorkflowActions(alertMgr, wfEngine.Config().QuarantineTag).RegisterBuiltins(wfEngine.Registry())
 	// Patch campaigns join workflows through the action registry (start_campaign).
 	repo.RegisterCampaignWorkflowAction(wfEngine.Registry())
+	// Signed event webhooks: delivery worker over the durable outbox. Safe on every server
+	// instance (claims use FOR UPDATE SKIP LOCKED). A subscription auto-disabled after a long
+	// dead streak raises an alert through the existing channels.
+	whWorker := webhooks.NewWorker(repo.WebhookStore(), webhooks.NewSender())
+	whWorker.OnAutoDisable = func(c context.Context, name, reason string) {
+		alertMgr.Notify(c, alerts.Event{
+			Kind:     alerts.EventWebhookDisabled,
+			Severity: alerts.SeverityWarning,
+			Subject:  "Event webhook \"" + name + "\" was disabled: " + reason,
+			Details:  map[string]any{"webhook": name, "dedupe": "webhook:" + name},
+		})
+	}
+	go whWorker.Run(ctx)
+	// RADIUS / NAC: push Disconnect-Requests when a connected device's posture changes. Safe on
+	// every instance: one advisory lock serialises the scan and a unique key dedupes deliveries.
+	go radius.NewLoop(repo.RadiusStore(), radius.NewSender()).Run(ctx)
 	// Forward offline-device detections from the alerts ticker into the workflow event log.
 	alertMgr.SetOfflineHook(func(c context.Context, deviceID, hostname string, minutes int) {
 		repo.EmitEvent(c, workflows.EventDeviceOffline, deviceID,
 			map[string]any{"hostname": hostname, "offline_minutes": minutes}, false)
 	})
 	go wfEngine.RunWorkers(ctx)
+
+	// Access posture: the only writer of device_posture. Evaluated at every check-in, on a
+	// quarantine/release, after a rule-set edit and by this periodic sweep (default every 5
+	// minutes, SPIRE_POSTURE_INTERVAL). The sweep is claim-in-DB so both instances may run it.
+	postureSvc := posture.New(repo, posture.Config{Interval: postureInterval()})
+	repo.SetPostureHook(postureSvc.Hook())
+	go postureSvc.Run(ctx)
 
 	r := chi.NewRouter()
 	r.Use(web.TrustedProxyRealIPMiddleware)
@@ -172,6 +198,7 @@ func main() {
 	webHandler.SetBundleStorageDir(cfg.Server.BundleStorageDir)
 	webHandler.SetAlerting(alertStore, alertMgr)
 	webHandler.SetWorkflowEngine(wfEngine)
+	webHandler.SetPosture(postureSvc)
 	webHandler.SetDeviceMTLSMode(mtlsMode)
 	webHandler.RegisterRoutes(r, cfg.Server.AdminUsername, cfg.Server.AdminPassword)
 
@@ -224,9 +251,35 @@ func main() {
 	// the lock make it safe to run on both instances. Halts raise a patch_failed alert.
 	go campaignsync.New(repo, alertMgr).Run(ctx)
 
+	// Admin API idempotency keys are kept 24h. Expired rows are removed hourly; the DELETE is
+	// idempotent, so both instances may run it.
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				repo.PurgeExpiredIdempotencyKeys(ctx)
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	log.Printf("[spire-server] shutting down...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// postureInterval reads SPIRE_POSTURE_INTERVAL (a Go duration, at least 30s); default 5m.
+func postureInterval() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("SPIRE_POSTURE_INTERVAL")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 30*time.Second {
+			return d
+		}
+		log.Printf("[spire-server] ignoring invalid SPIRE_POSTURE_INTERVAL %q (need a duration of at least 30s)", v)
+	}
+	return 5 * time.Minute
 }

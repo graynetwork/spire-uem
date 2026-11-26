@@ -6,13 +6,20 @@ Strictly separates Security Compliance (System & Security Baseline + Mandatory A
 from the non-evaluative Self-Service App Catalog.
 """
 
+import base64
+import hashlib
 import http.client
 import json
 import os
+import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
+import time
+from datetime import datetime, timezone
 
 DEFAULT_SOCKET_PATH = os.environ.get("SPIRE_SOCKET_PATH", "/run/spire/agent.sock")
 APP_ID = "org.spire.hub"
@@ -81,6 +88,423 @@ class SpireIPCClient:
 
     def defer_campaign(self, campaign_id: str) -> dict:
         return self._request("POST", "/v1/campaign/defer", {"campaign_id": campaign_id})
+
+    def browser_cert_config(self) -> dict:
+        return self._request("GET", "/v1/browser-cert/config")
+
+    def browser_cert_issue(self, csr_pem: str) -> dict:
+        # Only the CSR is sent. spired takes the account name from this process's uid.
+        return self._request("POST", "/v1/browser-cert/issue", {"csr_pem": csr_pem}, timeout=60.0)
+
+
+# ---------------------------------------------------------------------------
+# Browser certificates
+#
+# When the device has a BROWSER_CERTIFICATE policy, this user gets a short-lived certificate
+# from the device CA. The key is generated INSIDE the user's NSS database (~/.pki/nssdb, the
+# store Chrome, Chromium and GNOME Web read) with certutil and never leaves it, except for the
+# copy into this user's own Firefox profiles. Only the CSR goes to spired. Certificates that
+# SpireUEM did not add are never touched: every SpireUEM entry has a nickname starting with
+# NICK_PREFIX and nothing else is listed, deleted or exported.
+# ---------------------------------------------------------------------------
+
+NICK_PREFIX = "SpireUEM Browser Certificate"
+CA_NICK_PREFIX = "SpireUEM Device CA"
+MIN_VALID_SECONDS = 600  # a certificate with less left than this is treated as expired
+BROWSER_CERT_INTERVAL = 3 * 3600  # how often the client re-checks, in seconds
+BROWSER_CERT_RETRY = 600
+BROWSER_CERT_POLL = 900
+
+
+class BrowserCertError(Exception):
+    pass
+
+
+class CertutilMissing(BrowserCertError):
+    pass
+
+
+def _nick_for(der_b64_pem: str, prefix: str = NICK_PREFIX) -> str:
+    """Return the nickname for a PEM certificate: the fixed prefix plus the first 12 hex
+    digits of its SHA-256 fingerprint, so each certificate has its own nickname and can be
+    removed on its own."""
+    body = "".join(
+        ln for ln in der_b64_pem.strip().splitlines() if not ln.startswith("-----")
+    )
+    der = base64.b64decode(body)
+    return f"{prefix} {hashlib.sha256(der).hexdigest()[:12]}"
+
+
+def _parse_nss_time(text: str) -> datetime:
+    return datetime.strptime(text.strip(), "%a %b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+
+
+class BrowserCertManager:
+    """Keeps a current SpireUEM browser certificate in the user's NSS database and Firefox
+    profiles. All state-changing work goes through certutil/pk12util, run with a private
+    environment so output is parseable."""
+
+    def __init__(self, ipc, home=None, certutil=None, pk12util=None, now=None, runtime_dir=None):
+        self.ipc = ipc
+        self.home = home or os.path.expanduser("~")
+        self._certutil = certutil
+        self._pk12util = pk12util
+        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.runtime_dir = runtime_dir
+        self.nssdb = os.path.join(self.home, ".pki", "nssdb")
+        state_home = os.environ.get("XDG_STATE_HOME") or os.path.join(self.home, ".local", "state")
+        self.state_path = os.path.join(state_home, "spire", "browser-cert.json")
+        self.lock_path = os.path.join(state_home, "spire", "browser-cert.lock")
+        self._warned_missing = False
+
+    # ---- tools -----------------------------------------------------------------------
+
+    def certutil_path(self) -> str:
+        path = self._certutil or shutil.which("certutil")
+        if not path or not os.access(path, os.X_OK):
+            raise CertutilMissing(
+                "Browser certificates need the 'certutil' tool. Ask your administrator to "
+                "install the libnss3-tools package."
+            )
+        return path
+
+    def _run(self, argv, check=True, input_text=None):
+        env = dict(os.environ, LC_ALL="C", LANG="C", HOME=self.home)
+        res = subprocess.run(
+            argv, capture_output=True, text=True, env=env, input=input_text, timeout=120
+        )
+        if check and res.returncode != 0:
+            raise BrowserCertError(f"{os.path.basename(argv[0])} failed: {res.stderr.strip() or res.stdout.strip()}")
+        return res
+
+    def _certutil_run(self, dbdir, *args, check=True):
+        return self._run([self.certutil_path(), *args, "-d", f"sql:{dbdir}"], check=check)
+
+    # ---- NSS database ----------------------------------------------------------------
+
+    def ensure_db(self, dbdir=None):
+        dbdir = dbdir or self.nssdb
+        if os.path.exists(os.path.join(dbdir, "cert9.db")):
+            return
+        os.makedirs(dbdir, mode=0o700, exist_ok=True)
+        self._certutil_run(dbdir, "-N", "--empty-password")
+
+    def list_nicks(self, dbdir, prefix):
+        """Nicknames in the database that start with prefix (and only those)."""
+        res = self._certutil_run(dbdir, "-L", check=False)
+        nicks = []
+        for line in res.stdout.splitlines():
+            line = line.rstrip()
+            m = re.match(r"^(.*?)\s{2,}[A-Za-z]*,[A-Za-z]*,[A-Za-z]*\s*$", line)
+            name = (m.group(1) if m else line).strip()
+            if name.startswith(prefix):
+                nicks.append(name)
+        return nicks
+
+    def key_ids(self, dbdir):
+        """Map of key id -> nickname ('' for an orphan key) for every key in the database."""
+        res = self._certutil_run(dbdir, "-K", check=False)
+        out = {}
+        for line in res.stdout.splitlines():
+            m = re.match(r"^<\s*\d+>\s+\S+\s+([0-9a-f]{8,})\s+(.*)$", line.strip())
+            if not m:
+                continue
+            label = m.group(2).strip()
+            if label == "(orphan)":
+                nick = ""
+            else:
+                nick = label.split(":", 1)[1] if ":" in label else label
+            out[m.group(1)] = nick
+        return out
+
+    def cert_window(self, dbdir, nick):
+        """(not_before, not_after, subject) of the certificate with this nickname."""
+        res = self._certutil_run(dbdir, "-L", "-n", nick)
+        nb = re.search(r"Not Before:\s*(.+)", res.stdout)
+        na = re.search(r"Not After\s*:\s*(.+)", res.stdout)
+        subj = re.search(r'Subject:\s*"([^"]*)"', res.stdout)
+        if not (nb and na):
+            raise BrowserCertError(f"cannot read the validity of {nick}")
+        return _parse_nss_time(nb.group(1)), _parse_nss_time(na.group(1)), (subj.group(1) if subj else "")
+
+    def cert_pem(self, dbdir, nick) -> str:
+        return self._certutil_run(dbdir, "-L", "-n", nick, "-a").stdout
+
+    # ---- selection -------------------------------------------------------------------
+
+    def current_cert(self):
+        """The newest usable SpireUEM certificate in the main database (with its private key),
+        as (nick, not_before, not_after), or None."""
+        keys = set(self.key_ids(self.nssdb).values())
+        best = None
+        for nick in self.list_nicks(self.nssdb, NICK_PREFIX):
+            if nick not in keys:
+                continue  # no private key in this database: unusable
+            try:
+                nb, na, _ = self.cert_window(self.nssdb, nick)
+            except BrowserCertError:
+                continue
+            if (na - self.now()).total_seconds() < MIN_VALID_SECONDS or nb > self.now():
+                continue
+            if best is None or nb > best[1]:
+                best = (nick, nb, na)
+        return best
+
+    def due(self, nb: datetime, na: datetime) -> bool:
+        """True once two thirds of the lifetime have passed."""
+        return self.now() >= nb + (na - nb) * 2 / 3
+
+    # ---- enrolment -------------------------------------------------------------------
+
+    def _private_dir(self):
+        base = self.runtime_dir or os.environ.get("XDG_RUNTIME_DIR")
+        if not base or not os.path.isdir(base):
+            base = "/dev/shm" if os.path.isdir("/dev/shm") else None
+        if not base:
+            raise BrowserCertError("no private temporary directory (XDG_RUNTIME_DIR) is available")
+        return tempfile.mkdtemp(prefix="spire-bc-", dir=base)
+
+    def enroll(self):
+        """Generate a key in the NSS database, get it certified through spired, import the
+        certificate. Returns the new nickname. On failure the new key is removed again."""
+        before = set(self.key_ids(self.nssdb))
+        work = self._private_dir()
+        new_key = None
+        try:
+            noise = os.path.join(work, "noise")
+            with open(noise, "wb") as fh:
+                fh.write(os.urandom(128))
+            csr_path = os.path.join(work, "csr.pem")
+            self._certutil_run(
+                self.nssdb, "-R", "-s", "CN=SpireUEM browser certificate", "-k", "ec", "-q", "nistp256",
+                "-Z", "SHA256", "-a", "-o", csr_path, "-z", noise,
+            )
+            added = set(self.key_ids(self.nssdb)) - before
+            if len(added) != 1:
+                raise BrowserCertError("could not find the new key in the database")
+            new_key = next(iter(added))
+            with open(csr_path) as fh:
+                csr_pem = fh.read()
+            resp = self.ipc.browser_cert_issue(csr_pem)
+            leaf = (resp.get("certificate_pem") or "").strip()
+            if "BEGIN CERTIFICATE" not in leaf:
+                raise BrowserCertError("spired returned no certificate")
+            nick = _nick_for(leaf)
+            leaf_path = os.path.join(work, "leaf.pem")
+            with open(leaf_path, "w") as fh:
+                fh.write(leaf + "\n")
+            self._certutil_run(self.nssdb, "-A", "-n", nick, "-t", "u,u,u", "-i", leaf_path)
+            if self.key_ids(self.nssdb).get(new_key) != nick:
+                # The certificate did not bind to the key we generated.
+                self._certutil_run(self.nssdb, "-D", "-n", nick, check=False)
+                raise BrowserCertError("the issued certificate does not match the generated key")
+            ca = (resp.get("device_ca_pem") or "").strip()
+            if "BEGIN CERTIFICATE" in ca:
+                self.import_ca(self.nssdb, ca, work)
+            return nick
+        except BaseException:
+            if new_key and self.key_ids(self.nssdb).get(new_key) == "":
+                self._certutil_run(self.nssdb, "-F", "-k", new_key, check=False)
+            raise
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def import_ca(self, dbdir, ca_pem, work):
+        """Import the device CA with no trust, so the chain can be built. A browser does not
+        start trusting servers because of it."""
+        nick = _nick_for(ca_pem, CA_NICK_PREFIX)
+        if nick in self.list_nicks(dbdir, CA_NICK_PREFIX):
+            return
+        path = os.path.join(work, "ca.pem")
+        with open(path, "w") as fh:
+            fh.write(ca_pem + "\n")
+        self._certutil_run(dbdir, "-A", "-n", nick, "-t", ",,", "-i", path)
+        for other in self.list_nicks(dbdir, CA_NICK_PREFIX):
+            if other != nick:
+                self._certutil_run(dbdir, "-D", "-n", other, check=False)
+
+    def remove_other_certs(self, dbdir, keep):
+        """Delete every SpireUEM browser certificate (and its key) except keep."""
+        keys = self.key_ids(dbdir)
+        by_nick = {}
+        for kid, nick in keys.items():
+            by_nick.setdefault(nick, []).append(kid)
+        for nick in self.list_nicks(dbdir, NICK_PREFIX):
+            if nick == keep:
+                continue
+            self._certutil_run(dbdir, "-D", "-n", nick, check=False)
+            for kid in by_nick.get(nick, []):
+                self._certutil_run(dbdir, "-F", "-k", kid, check=False)
+
+    # ---- Firefox ---------------------------------------------------------------------
+
+    def firefox_profiles(self):
+        roots = [
+            os.path.join(self.home, ".mozilla", "firefox"),
+            os.path.join(self.home, "snap", "firefox", "common", ".mozilla", "firefox"),
+            os.path.join(self.home, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox"),
+        ]
+        out = []
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+            for name in sorted(os.listdir(root)):
+                d = os.path.join(root, name)
+                if os.path.isfile(os.path.join(d, "cert9.db")):
+                    out.append(d)
+        return out
+
+    def sync_firefox(self, nick):
+        """Give each Firefox profile the same certificate and key. The key travels in a PKCS#12
+        file protected by a random one-time password. The password and the file live in a
+        private directory on tmpfs ($XDG_RUNTIME_DIR) and are deleted straight after, and the
+        password is passed in a file, not on the command line."""
+        profiles = [p for p in self.firefox_profiles() if nick not in self.list_nicks(p, NICK_PREFIX)]
+        results = {}
+        pk12util = self._pk12util or shutil.which("pk12util")
+        for prof in self.firefox_profiles():
+            if prof not in profiles:
+                self.remove_other_certs(prof, nick)
+        if not profiles:
+            return results
+        if not pk12util:
+            for prof in profiles:
+                results[prof] = "pk12util is missing (libnss3-tools)"
+            return results
+        work = self._private_dir()
+        try:
+            pw_file = os.path.join(work, "pw")
+            fd = os.open(pw_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(base64.b64encode(os.urandom(24)).decode())
+            p12 = os.path.join(work, "bundle.p12")
+            self._run([pk12util, "-o", p12, "-n", nick, "-d", f"sql:{self.nssdb}", "-w", pw_file])
+            for prof in profiles:
+                # Older SpireUEM entries go first: when a certificate with the same subject is
+                # already there, pk12util gives the new one the old nickname, which would make
+                # the old and new entries impossible to tell apart. If the import then fails the
+                # profile has no SpireUEM certificate until the next pass, which retries.
+                self.remove_other_certs(prof, "")
+                res = self._run([pk12util, "-i", p12, "-d", f"sql:{prof}", "-w", pw_file], check=False)
+                if res.returncode != 0:
+                    results[prof] = res.stderr.strip() or "import failed (a Firefox primary password may be set)"
+                    continue
+                if nick not in self.key_ids(prof).values() or nick not in self.list_nicks(prof, NICK_PREFIX):
+                    results[prof] = "imported, but the key is not bound to the certificate"
+                    continue
+                results[prof] = "ok"
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return results
+
+    # ---- driver ----------------------------------------------------------------------
+
+    def write_state(self, status, message="", not_after=None):
+        os.makedirs(os.path.dirname(self.state_path), mode=0o700, exist_ok=True)
+        doc = {
+            "status": status,
+            "message": message,
+            "not_after": not_after.isoformat() if not_after else "",
+            "updated": self.now().isoformat(),
+        }
+        tmp = self.state_path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(doc, fh)
+        os.replace(tmp, self.state_path)
+
+    def read_state(self):
+        try:
+            with open(self.state_path) as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return {"status": "unknown", "message": ""}
+
+    def sync(self):
+        """One pass. Returns the status string. It never raises: the outcome is written to
+        the state file and returned."""
+        import fcntl
+
+        os.makedirs(os.path.dirname(self.lock_path), mode=0o700, exist_ok=True)
+        lock = open(self.lock_path, "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock.close()
+            return "busy"
+        try:
+            try:
+                cfg = self.ipc.browser_cert_config()
+            except Exception as exc:  # spired not running, or refused
+                self.write_state("error", f"Cannot reach the SpireUEM agent: {exc}")
+                return "error"
+            if not cfg.get("enabled"):
+                self.write_state("disabled")
+                return "disabled"
+            if not cfg.get("eligible"):
+                self.write_state("not_eligible", "Browser certificates are only issued to regular user accounts.")
+                return "not_eligible"
+            try:
+                self.certutil_path()
+                self.ensure_db()
+                cur = self.current_cert()
+                if cur is None or self.due(cur[1], cur[2]):
+                    try:
+                        nick = self.enroll()
+                    except BrowserCertError:
+                        if cur is None:
+                            raise
+                        # Renewal failed but the current certificate still works: keep it
+                        # and try again later.
+                        nick = cur[0]
+                        self.write_state("error", "Renewal failed; the current certificate is still valid.", cur[2])
+                        return "error"
+                    self.remove_other_certs(self.nssdb, nick)
+                    cur = self.current_cert()
+                    if cur is None or cur[0] != nick:
+                        raise BrowserCertError("the new certificate cannot be found after import")
+                fx = self.sync_firefox(cur[0])
+                bad = {p: m for p, m in fx.items() if m != "ok"}
+                if bad:
+                    self.write_state("ok", "Firefox profile not updated: " + "; ".join(sorted(set(bad.values()))), cur[2])
+                else:
+                    self.write_state("ok", "", cur[2])
+                return "ok"
+            except CertutilMissing as exc:
+                if not self._warned_missing:
+                    self._warned_missing = True
+                    print(f"spire-hub: {exc}", file=sys.stderr)
+                self.write_state("missing_certutil", str(exc))
+                return "missing_certutil"
+            except Exception as exc:
+                self.write_state("error", str(exc))
+                return "error"
+        finally:
+            lock.close()
+
+
+def browser_cert_status_text(state: dict) -> str:
+    """One short line for the client about the user's browser certificate."""
+    status = state.get("status")
+    if status == "ok":
+        until = (state.get("not_after") or "")[:10]
+        base = f"Installed, valid until {until}" if until else "Installed"
+        return base + (f". {state['message']}" if state.get("message") else "")
+    if status in ("error", "missing_certutil", "not_eligible"):
+        return state.get("message") or "Not available"
+    return ""
+
+
+def browser_cert_daemon(ipc):
+    """Background loop for the user session: sync now and every few hours."""
+    mgr = BrowserCertManager(ipc)
+    while True:
+        result = mgr.sync()
+        if result in ("ok", "missing_certutil"):
+            time.sleep(BROWSER_CERT_INTERVAL)
+        elif result in ("disabled", "not_eligible"):
+            time.sleep(BROWSER_CERT_POLL)  # the local check is cheap; notice a new policy soon
+        else:
+            time.sleep(BROWSER_CERT_RETRY)
 
 
 def get_status(socket_path: str = DEFAULT_SOCKET_PATH) -> dict:
@@ -156,6 +580,29 @@ def build_gtk_app():
             self._build_catalog_page()
 
             self.refresh_all_async()
+            self.browser_certs = BrowserCertManager(self.ipc)
+            self._sync_browser_cert_async()
+            GLib.timeout_add_seconds(BROWSER_CERT_INTERVAL, self._on_browser_cert_timer)
+
+        def _on_browser_cert_timer(self):
+            self._sync_browser_cert_async()
+            return True
+
+        def _sync_browser_cert_async(self):
+            def worker():
+                result = self.browser_certs.sync()
+                GLib.idle_add(self._apply_browser_cert, result)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _apply_browser_cert(self, result: str):
+            state = self.browser_certs.read_state()
+            text = browser_cert_status_text(state)
+            self.row_browser_cert.set_visible(bool(text))
+            self.row_browser_cert.set_subtitle(GLib.markup_escape_text(text))
+            if result in ("error", "missing_certutil"):
+                self.show_toast(text or "Browser certificate could not be updated")
+            return False
 
         def show_toast(self, message: str):
             toast = Adw.Toast.new(message)
@@ -229,6 +676,10 @@ def build_gtk_app():
             self.row_overall.add_suffix(self.sync_button)
             self.baseline_group.add(self.row_overall)
 
+            # Shown only while the device has a browser certificate policy.
+            self.row_browser_cert = Adw.ActionRow(title="Browser certificate", subtitle="")
+            self.row_browser_cert.set_visible(False)
+            self.baseline_group.add(self.row_browser_cert)
             self.row_tpm = Adw.ActionRow(
                 title="TPM 2.0 Attestation &amp; Secure Boot",
                 subtitle="Checking hardware root of trust...",
@@ -734,6 +1185,16 @@ def main():
         cid = sys.argv[2]
         res = SpireIPCClient().defer_campaign(cid)
         print(json.dumps(res))
+        return 0
+
+    if "--browser-cert-sync" in sys.argv:
+        mgr = BrowserCertManager(SpireIPCClient())
+        result = mgr.sync()
+        print(json.dumps({"result": result, "state": mgr.read_state()}))
+        return 0 if result in ("ok", "disabled", "not_eligible", "busy") else 1
+
+    if "--browser-cert-daemon" in sys.argv:
+        browser_cert_daemon(SpireIPCClient())
         return 0
 
     app = build_gtk_app()

@@ -184,6 +184,7 @@
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Tags</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">TPM &amp; Secure Boot</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Status</th>
+                    <th scope="col" class="px-4 py-2.5 text-left font-normal">Access</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Patch Status</th>
                     <th scope="col" class="px-4 py-2.5 text-left font-normal">Last Check-in</th>
                     <th scope="col" class="px-4 py-2.5 text-right font-normal">Actions</th>
@@ -196,7 +197,7 @@
                     {{end}}
                 {{else}}
                     <tr>
-                        <td colspan="9" class="px-4 py-8 text-center text-xs text-slate-600">
+                        <td colspan="10" class="px-4 py-8 text-center text-xs text-slate-600">
                             No matching endpoints found.
                         </td>
                     </tr>
@@ -316,6 +317,12 @@
                 {{.Status}}
             </span>
         {{end}}
+    </td>
+    <td class="px-4 py-3 whitespace-nowrap">
+        {{if eq .PostureState "COMPLIANT"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">COMPLIANT</span>
+        {{else if eq .PostureState "NONCOMPLIANT"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">NONCOMPLIANT</span>
+        {{else if eq .PostureState "QUARANTINED"}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400 border border-rose-500/20">QUARANTINED</span>
+        {{else}}<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-[#141b2a] text-slate-500 border border-[#1a2234]">{{if .PostureState}}{{.PostureState}}{{else}}-{{end}}</span>{{end}}
     </td>
     <td class="px-4 py-3 whitespace-nowrap">
         <div class="flex flex-wrap items-center gap-1 font-mono text-[10px]">
@@ -535,6 +542,8 @@
             </div>
         </div>
     </div>
+
+    {{template "device_posture_panel" .}}
 
     <!-- Lost-Device Actions -->
     <div class="bg-[#0a0e17] border {{if .Device.IsLost}}border-rose-500/40{{else}}border-[#1a2234]{{end}} rounded-lg p-4 space-y-3">
@@ -1010,31 +1019,62 @@
         </div>
         {{end}}
 
-        <!-- Device Client Certificate (mTLS) -->
-        <div class="p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-1.5">
+        <!-- Device certificates (agent mTLS, network 802.1X, browser) -->
+        <div class="p-3 rounded-md bg-[#0a0e17] border border-[#1a2234] space-y-2" id="device-certificates">
             <div class="flex items-center justify-between">
-                <div class="text-[11px] font-medium text-slate-400">Device Client Certificate (mTLS: {{.DeviceMTLSMode}})</div>
-                {{if .DeviceCert}}
-                    {{if .DeviceCert.Revoked}}
-                    <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/30">Revoked</span>
-                    {{else}}
-                    <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Active</span>
-                    {{end}}
+                <div class="text-[11px] font-medium text-slate-400">Device Certificates (mTLS: {{.DeviceMTLSMode}})</div>
+                {{if .DeviceCerts.ShowAll}}
+                <a class="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer" hx-get="/admin/devices/{{.Device.ID}}" hx-target="#device-detail-container" hx-swap="innerHTML">Show active only</a>
                 {{else}}
-                    <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-500/10 text-slate-400 border border-slate-500/30">None issued</span>
+                <a class="text-[10px] text-blue-400 hover:text-blue-300 cursor-pointer" hx-get="/admin/devices/{{.Device.ID}}?certs=all" hx-target="#device-detail-container" hx-swap="innerHTML">Show all{{if .DeviceCerts.Hidden}} (+{{.DeviceCerts.Hidden}} revoked or expired){{end}}</a>
                 {{end}}
             </div>
-            {{if .DeviceCert}}
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 font-mono text-[10px]">
-                <div class="px-2 py-1 rounded bg-[#0f1420] border border-[#1a2234] truncate">
-                    <span class="text-blue-400">Serial:</span> <span class="text-slate-300">{{.DeviceCert.ShortSerial}}</span>
-                </div>
-                <div class="px-2 py-1 rounded bg-[#0f1420] border border-[#1a2234] truncate">
-                    <span class="text-blue-400">Expires:</span> <span class="text-slate-300">{{.DeviceCert.NotAfter.Format "2006-01-02 15:04 MST"}}</span>
-                </div>
+            {{if .DeviceCerts.ReapprovalRequired}}
+            <div class="p-2 rounded bg-amber-500/10 border border-amber-500/30 text-[10px] font-mono text-amber-300 flex items-center justify-between gap-2">
+                <span>An administrator revoked this device's agent certificate. It cannot get a new one with its token alone until issuance is re-approved.</span>
+                {{if or (eq .AdminRole "SECURITY_ADMIN") (eq .AdminRole "SUPER_ADMIN")}}
+                <form hx-post="/admin/devices/{{.Device.ID}}/certificates/reapprove" hx-target="#device-detail-container" hx-swap="innerHTML" hx-confirm="Allow this device to request a new agent certificate?">
+                    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+                    <button type="submit" class="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-600 hover:bg-amber-500 text-white whitespace-nowrap">Re-approve issuance</button>
+                </form>
+                {{end}}
+            </div>
+            {{end}}
+            {{if .DeviceCerts.Rows}}
+            <div class="overflow-x-auto">
+            <table class="w-full text-left font-mono text-[10px] text-slate-300">
+                <thead class="text-slate-500"><tr>
+                    <th class="pr-2 py-1">Purpose</th><th class="pr-2">User</th><th class="pr-2">Serial</th><th class="pr-2">Fingerprint</th><th class="pr-2">Issued</th><th class="pr-2">Expires</th><th class="pr-2">Status</th><th></th>
+                </tr></thead>
+                <tbody>
+                {{range .DeviceCerts.Rows}}
+                <tr class="border-t border-[#1a2234]">
+                    <td class="pr-2 py-1 text-blue-400">{{.Purpose}}</td>
+                    <td class="pr-2">{{if .User}}{{.User}}{{else}}-{{end}}</td>
+                    <td class="pr-2" title="{{.Serial}}">{{.ShortSerial}}</td>
+                    <td class="pr-2" title="{{.Fingerprint}}">{{if gt (len .Fingerprint) 16}}{{slice .Fingerprint 0 16}}…{{else}}{{.Fingerprint}}{{end}}</td>
+                    <td class="pr-2">{{.NotBefore.Format "2006-01-02 15:04"}}</td>
+                    <td class="pr-2">{{.NotAfter.Format "2006-01-02 15:04"}}</td>
+                    <td class="pr-2">
+                        {{if eq .Status "active"}}<span class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">active</span>
+                        {{else if eq .Status "revoked"}}<span class="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/30">revoked</span>
+                        {{else}}<span class="px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-400 border border-slate-500/30">expired</span>{{end}}
+                    </td>
+                    <td>
+                        {{if and (eq .Status "active") (or (eq $.AdminRole "SECURITY_ADMIN") (eq $.AdminRole "SUPER_ADMIN"))}}
+                        <form hx-post="/admin/devices/{{$.Device.ID}}/certificates/{{.ID}}/revoke" hx-target="#device-detail-container" hx-swap="innerHTML" hx-confirm="Revoke this {{.Purpose}} certificate (serial {{.ShortSerial}})? It stops working immediately.">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <button type="submit" class="px-2 py-0.5 rounded text-[10px] font-medium bg-red-600/80 hover:bg-red-500 text-white">Revoke</button>
+                        </form>
+                        {{end}}
+                    </td>
+                </tr>
+                {{end}}
+                </tbody>
+            </table>
             </div>
             {{else}}
-            <div class="text-[10px] text-slate-500 font-mono">No client certificate has been issued to this device yet.</div>
+            <div class="text-[10px] text-slate-500 font-mono">{{if .DeviceCerts.ShowAll}}No certificate has been issued to this device yet.{{else}}No active certificates.{{end}}</div>
             {{end}}
         </div>
 

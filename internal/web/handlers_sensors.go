@@ -39,6 +39,10 @@ func (req sensorRequest) toSensor() *types.Sensor {
 
 // ListSensors GET /admin/sensors — SECURITY_ADMIN+ (read via the group).
 func (h *Handler) ListSensors(w http.ResponseWriter, r *http.Request) {
+	if wantsHTML(r) {
+		h.renderSensorsPage(w, r)
+		return
+	}
 	sensors, err := h.repo.ListSensors(r.Context())
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, "failed to list sensors")

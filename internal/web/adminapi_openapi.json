@@ -1,0 +1,2938 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "SpireUEM Admin API",
+  "version": "1.0.0",
+  "description": "Versioned admin API. Authenticate with `Authorization: Bearer spire_sa_...` (service account) or a personal access token. Cookie and Basic auth are not accepted. Every failure uses the Error schema. Every response carries X-Request-Id."
+ },
+ "servers": [
+  {
+   "url": "/api/admin/v1"
+  }
+ ],
+ "tags": [
+  {
+   "name": "meta"
+  },
+  {
+   "name": "devices"
+  },
+  {
+   "name": "groups"
+  },
+  {
+   "name": "policies"
+  },
+  {
+   "name": "campaigns"
+  },
+  {
+   "name": "audit"
+  },
+  {
+   "name": "posture"
+  },
+  {
+   "name": "pki"
+  }
+ ],
+ "paths": {
+  "/openapi.json": {
+   "get": {
+    "operationId": "getOpenAPI",
+    "summary": "This document (no authentication)",
+    "tags": [
+     "meta"
+    ],
+    "security": [],
+    "responses": {
+     "200": {
+      "description": "OpenAPI 3.1 document",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/me": {
+   "get": {
+    "operationId": "getMe",
+    "summary": "Describe the calling credential",
+    "tags": [
+     "meta"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "(none)",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [],
+    "responses": {
+     "200": {
+      "description": "Principal",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Me"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices": {
+   "get": {
+    "operationId": "listDevices",
+    "summary": "List devices",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "tag",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "ring",
+      "in": "query",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "CANARY",
+        "BETA",
+        "PILOT",
+        "PRODUCTION"
+       ]
+      }
+     },
+     {
+      "name": "status",
+      "in": "query",
+      "description": "Approval status",
+      "schema": {
+       "type": "string",
+       "enum": [
+        "PENDING_APPROVAL",
+        "APPROVED",
+        "REJECTED",
+        "REVOKED"
+       ]
+      }
+     },
+     {
+      "name": "hostname_prefix",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of devices",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Device"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices/{id}": {
+   "get": {
+    "operationId": "getDevice",
+    "summary": "Get a device with an inventory summary",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Device",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/DeviceDetail"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices/{id}/sync": {
+   "post": {
+    "operationId": "syncDevice",
+    "summary": "Ask the device to check in now",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "OPERATOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Action accepted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Action"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/devices/{id}/quarantine": {
+   "post": {
+    "operationId": "quarantineDevice",
+    "summary": "Quarantine a device",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Quarantine recorded",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "status",
+            "device_id"
+           ],
+           "properties": {
+            "status": {
+             "type": "string"
+            },
+            "device_id": {
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "reason"
+        ],
+        "properties": {
+         "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Creates an audited quarantine record. The device's access posture becomes QUARANTINED and only policies marked allowed_in_quarantine are delivered. Idempotent: an already quarantined device returns status already_quarantined. A device outside the credential's tag scope is reported as not found."
+   }
+  },
+  "/devices/{id}/release": {
+   "post": {
+    "operationId": "releaseDevice",
+    "summary": "Release a device from quarantine",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Release processed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "status",
+            "device_id"
+           ],
+           "properties": {
+            "status": {
+             "type": "string"
+            },
+            "device_id": {
+             "type": "string"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "reason"
+        ],
+        "properties": {
+         "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Ends the active quarantine (audited). The posture is re-evaluated; the device is not COMPLIANT until every enabled access check passes. Returns status not_quarantined when there was nothing to release."
+   }
+  },
+  "/devices/{id}/lock": {
+   "post": {
+    "operationId": "lockDevice",
+    "summary": "Lock all graphical sessions",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "OPERATOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Action accepted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Action"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "message": {
+          "type": "string",
+          "maxLength": 500
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/devices/{id}/reboot": {
+   "post": {
+    "operationId": "rebootDevice",
+    "summary": "Queue a reboot",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "OPERATOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "202": {
+      "description": "Action accepted",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Action"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    },
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    }
+   }
+  },
+  "/groups": {
+   "get": {
+    "operationId": "listGroups",
+    "summary": "List device groups",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "groups:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of groups",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Group"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/groups/{id}": {
+   "get": {
+    "operationId": "getGroup",
+    "summary": "Get a group",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "groups:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Group",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Group"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/groups/{id}/members": {
+   "get": {
+    "operationId": "listGroupMembers",
+    "summary": "List group members",
+    "tags": [
+     "groups"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "groups:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of members",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/GroupMember"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/policies": {
+   "get": {
+    "operationId": "listPolicies",
+    "summary": "List policies (secrets replaced by {\"set\":bool})",
+    "tags": [
+     "policies"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "policies:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of policies",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Policy"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/policies/{id}": {
+   "get": {
+    "operationId": "getPolicy",
+    "summary": "Get a policy (secrets replaced by {\"set\":bool})",
+    "tags": [
+     "policies"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "policies:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Policy",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/Policy"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/campaigns": {
+   "get": {
+    "operationId": "listCampaigns",
+    "summary": "List patch campaigns",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:read",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "state",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of campaigns",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/Campaign"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}": {
+   "get": {
+    "operationId": "getCampaign",
+    "summary": "Get a campaign with report and recent events",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:read",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Campaign",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignDetail"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/start": {
+   "post": {
+    "operationId": "startCampaign",
+    "summary": "Start a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/pause": {
+   "post": {
+    "operationId": "pauseCampaign",
+    "summary": "Pause a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/resume": {
+   "post": {
+    "operationId": "resumeCampaign",
+    "summary": "Resume a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/campaigns/{id}/cancel": {
+   "post": {
+    "operationId": "cancelCampaign",
+    "summary": "Cancel a campaign",
+    "tags": [
+     "campaigns"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "campaigns:write",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "New state",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/CampaignState"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     }
+    }
+   }
+  },
+  "/audit/events": {
+   "get": {
+    "operationId": "listAuditEvents",
+    "summary": "List audit events",
+    "tags": [
+     "audit"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "audit:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "action",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "actor",
+      "in": "query",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A page of audit events",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/AuditEvent"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ],
+           "description": "Opaque cursor for the next page; null on the last page."
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices/{id}/posture": {
+   "get": {
+    "operationId": "getDevicePosture",
+    "summary": "Get a device's access posture verdict",
+    "tags": [
+     "posture"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Posture (UNKNOWN with reason 'no posture verdict' when never evaluated)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/DevicePosture"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/posture/lookup": {
+   "get": {
+    "operationId": "lookupPosture",
+    "summary": "Resolve an identity to a device and return its verdict",
+    "tags": [
+     "posture"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "description": "Give exactly one of serial, fingerprint, mac, ip or user. serial/fingerprint (a device-CA certificate the CALLER has verified) are strong identities; mac, ip and user are weak. Tag-scoped credentials only match devices inside their tags before ambiguity is judged. Connectors must treat any non-200 as a deny.",
+    "parameters": [
+     {
+      "name": "serial",
+      "in": "query",
+      "description": "Decimal serial of a device-CA certificate",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "fingerprint",
+      "in": "query",
+      "description": "SHA-256 fingerprint (hex) of a device-CA certificate",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "mac",
+      "in": "query",
+      "description": "MAC address in any common notation",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "ip",
+      "in": "query",
+      "description": "IPv4 or IPv6 address the device last checked in from",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     },
+     {
+      "name": "user",
+      "in": "query",
+      "description": "Last active desktop user, case-insensitive",
+      "schema": {
+       "type": "string",
+       "maxLength": 256
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Lookup result",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/PostureLookup"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/access/forward-auth": {
+   "get": {
+    "operationId": "forwardAuth",
+    "summary": "Reverse-proxy forward-auth decision",
+    "tags": [
+     "posture"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "description": "Called by a trusted reverse proxy for every request it protects. 200 = allow (response headers X-Spire-Device-Id, X-Spire-Posture, X-Spire-Identity-Strength may be passed upstream); 403 = deny, always with the same generic body; 401 = the proxy's own credential is bad; 503 = posture could not be checked, which also denies. The proxy credential may be sent as Authorization: Bearer or, for Traefik, X-Spire-Connector-Token. The client identity comes from the configured certificate header or forwarded-address header and is only believed when the TCP peer is inside the trusted-proxy ranges (Admin > Access Proxy).",
+    "responses": {
+     "200": {
+      "description": "Allow",
+      "headers": {
+       "X-Spire-Device-Id": {
+        "schema": {
+         "type": "string",
+         "format": "uuid"
+        }
+       },
+       "X-Spire-Posture": {
+        "schema": {
+         "type": "string",
+         "enum": [
+          "COMPLIANT"
+         ]
+        }
+       },
+       "X-Spire-Identity-Strength": {
+        "schema": {
+         "type": "string",
+         "enum": [
+          "strong",
+          "weak"
+         ]
+        }
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "allowed"
+         ],
+         "properties": {
+          "allowed": {
+           "type": "boolean",
+           "enum": [
+            true
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "503": {
+      "description": "Posture check unavailable (denies)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "allowed": {
+           "type": "boolean"
+          },
+          "reason": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/access/radius/authorize": {
+   "post": {
+    "operationId": "radiusAuthorize",
+    "summary": "RADIUS / NAC access decision (FreeRADIUS rlm_rest)",
+    "description": "Called by FreeRADIUS 3.2 through rlm_rest with its JSON request body (attributes as {\"User-Name\":{\"type\":\"string\",\"value\":[\"x\"]}}). Identity is the device-CA certificate serial (TLS-Client-Cert-Serial, strong) or, only when enabled in settings, the Calling-Station-Id MAC (weak). 200 = accept: the body is an rlm_rest reply with control:Tmp-String-0 = spire-accept and optional Tunnel-* VLAN attributes. 403 = reject; the body never says why. Any other status must be treated as reject. Decisions are never cached or replayed, so no Idempotency-Key is accepted.",
+    "tags": [
+     "access"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "posture:read",
+    "x-minimum-role": "AUDITOR",
+    "x-no-idempotency": true,
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "additionalProperties": true
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Accept",
+      "headers": {
+       "X-Spire-Identity-Strength": {
+        "schema": {
+         "type": "string",
+         "enum": [
+          "strong",
+          "weak"
+         ]
+        }
+       }
+      },
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Reject (or insufficient scope/role; the standard error shape is used for those)",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "decision": {
+           "type": "string",
+           "enum": [
+            "reject"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     }
+    }
+   }
+  },
+  "/devices/{id}/certificates": {
+   "get": {
+    "operationId": "listDeviceCertificates",
+    "summary": "List a device's certificates",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:read",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/Limit"
+     },
+     {
+      "$ref": "#/components/parameters/Cursor"
+     },
+     {
+      "name": "active",
+      "in": "query",
+      "description": "true lists only unrevoked, unexpired certificates.",
+      "schema": {
+       "type": "boolean"
+      }
+     }
+    ],
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "200": {
+      "description": "A page of certificates, newest first",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data",
+          "next_cursor",
+          "has_more"
+         ],
+         "properties": {
+          "data": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/DeviceCertificate"
+           }
+          },
+          "next_cursor": {
+           "type": [
+            "string",
+            "null"
+           ]
+          },
+          "has_more": {
+           "type": "boolean"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Lists agent, network and browser certificates of one device. A device outside the credential's tag scope is reported as not found."
+   }
+  },
+  "/devices/{id}/certificates/{cert_id}/revoke": {
+   "post": {
+    "operationId": "revokeDeviceCertificate",
+    "summary": "Revoke one device certificate",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "name": "cert_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid"
+      }
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "409": {
+      "$ref": "#/components/responses/Conflict"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Certificate revoked",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "certificate",
+            "reapproval_required"
+           ],
+           "properties": {
+            "certificate": {
+             "$ref": "#/components/schemas/DeviceCertificate"
+            },
+            "reapproval_required": {
+             "type": "boolean",
+             "description": "True after revoking an agent certificate: the device cannot fetch a new one with its token alone until issuance is re-approved."
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Revokes one certificate. A certificate id that does not belong to this device is reported as not found; an already revoked one returns 409. Revoking an agent certificate also stops the device from minting a replacement with its bearer token until POST /devices/{id}/certificates/reapprove is called. Raises the device_cert_revoked webhook event."
+   }
+  },
+  "/devices/{id}/certificates/reapprove": {
+   "post": {
+    "operationId": "reapproveDeviceCertificates",
+    "summary": "Allow a device to request an agent certificate again",
+    "tags": [
+     "devices"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "devices:actions",
+    "x-minimum-role": "SECURITY_ADMIN",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/Id"
+     },
+     {
+      "$ref": "#/components/parameters/IdempotencyKey"
+     }
+    ],
+    "requestBody": {
+     "required": false,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object"
+       }
+      }
+     }
+    },
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "400": {
+      "$ref": "#/components/responses/BadRequest"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "422": {
+      "$ref": "#/components/responses/IdempotencyMismatch"
+     },
+     "200": {
+      "description": "Issuance re-approved",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "type": "object",
+           "required": [
+            "device_id",
+            "was_blocked",
+            "reapproval_required"
+           ],
+           "properties": {
+            "device_id": {
+             "type": "string"
+            },
+            "was_blocked": {
+             "type": "boolean"
+            },
+            "reapproval_required": {
+             "type": "boolean"
+            }
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Clears the flag set when an agent certificate was revoked. Safe to repeat: was_blocked is false when nothing was blocked."
+   }
+  },
+  "/pki/device-ca": {
+   "get": {
+    "operationId": "getDeviceCA",
+    "summary": "Get the device CA certificate",
+    "tags": [
+     "pki"
+    ],
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "x-required-scope": "none (any valid credential)",
+    "x-minimum-role": "AUDITOR",
+    "parameters": [],
+    "responses": {
+     "401": {
+      "$ref": "#/components/responses/Unauthorized"
+     },
+     "403": {
+      "$ref": "#/components/responses/Forbidden"
+     },
+     "429": {
+      "$ref": "#/components/responses/RateLimited"
+     },
+     "500": {
+      "$ref": "#/components/responses/InternalError"
+     },
+     "404": {
+      "$ref": "#/components/responses/NotFound"
+     },
+     "200": {
+      "description": "The device CA certificate",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "data"
+         ],
+         "properties": {
+          "data": {
+           "$ref": "#/components/schemas/DeviceCA"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "description": "Returns the CA certificate that signs device certificates, for RADIUS servers and reverse proxies to trust. The certificate is public, so any valid service account or token may read it, with no scope, role or tag check. 404 when no device CA is configured (device mTLS off)."
+   }
+  }
+ },
+ "components": {
+  "securitySchemes": {
+   "bearerAuth": {
+    "type": "http",
+    "scheme": "bearer",
+    "description": "spire_sa_<id>_<secret> or spire_pat_<...>"
+   }
+  },
+  "schemas": {
+   "Error": {
+    "type": "object",
+    "properties": {
+     "error": {
+      "type": "object",
+      "properties": {
+       "code": {
+        "type": "string"
+       },
+       "message": {
+        "type": "string"
+       },
+       "request_id": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "code",
+       "message",
+       "request_id"
+      ]
+     }
+    },
+    "required": [
+     "error"
+    ]
+   },
+   "Me": {
+    "type": "object",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "enum": [
+       "service_account",
+       "pat"
+      ]
+     },
+     "actor": {
+      "type": "string"
+     },
+     "role": {
+      "type": "string"
+     },
+     "scopes": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "allowed_tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "Device": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "hardware_uuid": {
+      "type": "string"
+     },
+     "hostname": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "patch_ring": {
+      "type": "string"
+     },
+     "reboot_required": {
+      "type": "boolean"
+     },
+     "last_checkin_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "ws_connected": {
+      "type": "boolean"
+     },
+     "attestation_status": {
+      "type": "string"
+     },
+     "agent_version": {
+      "type": "string"
+     },
+     "pending_updates_count": {
+      "type": "integer"
+     },
+     "security_updates_count": {
+      "type": "integer"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "DeviceDetail": {
+    "type": "object",
+    "properties": {
+     "device": {
+      "$ref": "#/components/schemas/Device"
+     },
+     "inventory_summary": {
+      "type": "object",
+      "additionalProperties": true
+     }
+    }
+   },
+   "Action": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string"
+     },
+     "device_id": {
+      "type": "string"
+     },
+     "command_id": {
+      "type": "string"
+     },
+     "pushed_live": {
+      "type": "boolean"
+     },
+     "connected": {
+      "type": "boolean"
+     }
+    }
+   },
+   "Group": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "kind": {
+      "type": "string"
+     },
+     "rule": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "member_count": {
+      "type": "integer"
+     },
+     "created_by": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "GroupMember": {
+    "type": "object",
+    "properties": {
+     "device_id": {
+      "type": "string"
+     },
+     "hostname": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string"
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "Policy": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "description": {
+      "type": "string"
+     },
+     "policy_type": {
+      "type": "string"
+     },
+     "payload": {
+      "description": "Policy payload with every credential replaced by {\"set\": true|false}"
+     },
+     "payload_withheld": {
+      "type": "boolean"
+     },
+     "target_tags": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "target_group_ids": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "is_active": {
+      "type": "boolean"
+     },
+     "version": {
+      "type": "integer"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "Campaign": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "name": {
+      "type": "string"
+     },
+     "state": {
+      "type": "string"
+     },
+     "target_kind": {
+      "type": "string"
+     },
+     "current_stage": {
+      "type": "integer"
+     },
+     "created_by": {
+      "type": "string"
+     }
+    }
+   },
+   "CampaignDetail": {
+    "type": "object",
+    "properties": {
+     "campaign": {
+      "$ref": "#/components/schemas/Campaign"
+     },
+     "report": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "events": {
+      "type": "array",
+      "items": {
+       "type": "object"
+      }
+     }
+    }
+   },
+   "CampaignState": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "state": {
+      "type": "string"
+     }
+    }
+   },
+   "AuditEvent": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "actor": {
+      "type": "string"
+     },
+     "action": {
+      "type": "string"
+     },
+     "target_id": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "details": {
+      "type": "object",
+      "additionalProperties": true
+     },
+     "ip_address": {
+      "type": "string"
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "DevicePosture": {
+    "type": "object",
+    "description": "A device's access verdict. state is the EFFECTIVE state: a missing or expired verdict reads UNKNOWN.",
+    "required": [
+     "device_id",
+     "state",
+     "allowed",
+     "stale",
+     "reasons",
+     "checks"
+    ],
+    "properties": {
+     "device_id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "COMPLIANT",
+       "NONCOMPLIANT",
+       "QUARANTINED",
+       "UNKNOWN"
+      ]
+     },
+     "allowed": {
+      "type": "boolean",
+      "description": "True only when state is COMPLIANT."
+     },
+     "stale": {
+      "type": "boolean",
+      "description": "A stored verdict exists but is past valid_until."
+     },
+     "stored_state": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "The state as stored, before staleness is applied; null when never evaluated."
+     },
+     "reasons": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     },
+     "checks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "required": [
+        "id",
+        "passed"
+       ],
+       "properties": {
+        "id": {
+         "type": "string"
+        },
+        "passed": {
+         "type": "boolean"
+        },
+        "detail": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "rule_set_version": {
+      "type": [
+       "integer",
+       "null"
+      ]
+     },
+     "evaluated_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "valid_until": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "state_changed_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     }
+    }
+   },
+   "PostureLookup": {
+    "type": "object",
+    "description": "Result of resolving an identity to a device and reading its verdict. An unknown device, a device outside the caller's tag scope and an unusable identity all read the same: allowed=false, state=UNKNOWN, device_id=null. Only an identity matching several devices says 'ambiguous identity', and then no device id is returned.",
+    "required": [
+     "allowed",
+     "state",
+     "device_id",
+     "hostname",
+     "identity_strength",
+     "matched_by",
+     "reasons"
+    ],
+    "properties": {
+     "allowed": {
+      "type": "boolean"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "COMPLIANT",
+       "NONCOMPLIANT",
+       "QUARANTINED",
+       "UNKNOWN"
+      ]
+     },
+     "device_id": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "uuid"
+     },
+     "hostname": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "identity_strength": {
+      "type": "string",
+      "enum": [
+       "strong",
+       "weak"
+      ],
+      "description": "weak = resolved by MAC, IP or user name, which can be spoofed or shared."
+     },
+     "matched_by": {
+      "type": "string",
+      "enum": [
+       "cert_serial",
+       "cert_fingerprint",
+       "mac",
+       "ip",
+       "user"
+      ]
+     },
+     "reasons": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      }
+     }
+    }
+   },
+   "DeviceCertificate": {
+    "type": "object",
+    "description": "Public metadata of a device certificate. The server never holds a private key.",
+    "required": [
+     "id",
+     "device_id",
+     "purpose",
+     "user",
+     "serial",
+     "fingerprint_sha256",
+     "not_before",
+     "not_after",
+     "revoked_at",
+     "status",
+     "created_at"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "device_id": {
+      "type": "string",
+      "format": "uuid"
+     },
+     "purpose": {
+      "type": "string",
+      "enum": [
+       "agent",
+       "network",
+       "browser"
+      ]
+     },
+     "user": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "description": "Local account a browser certificate was issued for; null for agent and network certificates."
+     },
+     "serial": {
+      "type": "string"
+     },
+     "fingerprint_sha256": {
+      "type": "string"
+     },
+     "not_before": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "not_after": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "revoked_at": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "format": "date-time"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "active",
+       "expired",
+       "revoked"
+      ]
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time"
+     }
+    }
+   },
+   "DeviceCA": {
+    "type": "object",
+    "required": [
+     "subject",
+     "not_before",
+     "not_after",
+     "fingerprint_sha256",
+     "pem"
+    ],
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "not_before": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "not_after": {
+      "type": "string",
+      "format": "date-time"
+     },
+     "fingerprint_sha256": {
+      "type": "string",
+      "description": "SHA-256 of the DER certificate, lowercase hex."
+     },
+     "pem": {
+      "type": "string",
+      "description": "The CA certificate, PEM encoded."
+     }
+    }
+   }
+  },
+  "parameters": {
+   "Id": {
+    "name": "id",
+    "in": "path",
+    "required": true,
+    "schema": {
+     "type": "string",
+     "format": "uuid"
+    }
+   },
+   "Limit": {
+    "name": "limit",
+    "in": "query",
+    "schema": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 500,
+     "default": 100
+    }
+   },
+   "Cursor": {
+    "name": "cursor",
+    "in": "query",
+    "description": "Opaque cursor from a previous next_cursor, valid only with the same filters",
+    "schema": {
+     "type": "string"
+    }
+   },
+   "IdempotencyKey": {
+    "name": "Idempotency-Key",
+    "in": "header",
+    "description": "1-255 printable ASCII chars. Retried requests with the same key replay the first response for 24h; the same key with a different request is a 422.",
+    "schema": {
+     "type": "string",
+     "maxLength": 255
+    }
+   }
+  },
+  "responses": {
+   "BadRequest": {
+    "description": "Invalid parameter or body",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Unauthorized": {
+    "description": "Missing or invalid credentials",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Forbidden": {
+    "description": "Scope or role cap does not permit this",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "NotFound": {
+    "description": "Not found, or outside the credential's tag scope",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "Conflict": {
+    "description": "State conflict, or an identical Idempotency-Key request is still in progress",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "IdempotencyMismatch": {
+    "description": "Idempotency-Key reused with a different request",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "RateLimited": {
+    "description": "Too many failed authentication attempts",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   },
+   "InternalError": {
+    "description": "Internal error",
+    "content": {
+     "application/json": {
+      "schema": {
+       "$ref": "#/components/schemas/Error"
+      }
+     }
+    }
+   }
+  }
+ }
+}

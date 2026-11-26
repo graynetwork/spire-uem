@@ -90,6 +90,13 @@ var EnterprisePolicyTemplates = []PolicyTemplate{
 		Payload:     json.RawMessage(`{"app_id":"org.mozilla.firefox","state":"present","remote":"flathub"}`),
 	},
 	{
+		ID:          "browser-telemetry-baseline",
+		Name:        "Browser Telemetry Off, Safe Browsing On",
+		Description: "Turns off usage reporting and studies in Chrome-family browsers and Firefox, and keeps Chrome Safe Browsing at standard protection.",
+		PolicyType:  PolicyTypeBrowserPolicy,
+		Payload:     json.RawMessage(`{"chromium":{"MetricsReportingEnabled":false,"SafeBrowsingProtectionLevel":1},"firefox":{"DisableTelemetry":true,"DisableFirefoxStudies":true}}`),
+	},
+	{
 		ID:          "libreoffice-flatpak",
 		Name:        "Deploy LibreOffice Suite (Flatpak)",
 		Description: "Ensures org.libreoffice.LibreOffice is installed system-wide from Flathub on targeted desktop endpoints.",
